@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 
 use crate::btree::BTree;
 use crate::heap::{Heap, LargeStore, Refused};
+use crate::key::Tid;
 use crate::runtime::Runtime;
-use crate::storage::{Lsn, Pager, Pid};
+use crate::storage::{Lsn, PageError, PageExclusive, Pager, Pid, Shape};
 
-use super::{Problem, verify_store};
+use super::{Problem, Report, verify_store};
 
 /// What one mend pass did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -152,4 +153,39 @@ pub fn mend_store<R: Runtime>(
             Err(e) => mended.stop(e.to_string()),
         }
     }
+}
+
+/// Lower each head `report` finds counting more versions than point at it to the number that
+/// do, in the store of `stores` its page belongs to, leaving a head whose page was freed as it
+/// is. Refuse the page of a head as naming another owner when it belongs to none of `stores`.
+///
+/// Precondition: `report` is complete, found over `stores` and every heap pointing into them,
+/// and no write ran since.
+pub fn lower_overcounted<R: Runtime>(
+    pager: &Pager<R>,
+    stores: &[LargeStore],
+    report: &Report,
+) -> Result<(), PageError> {
+    let named = |owner: u32| stores.iter().find(|s| s.id() == owner).copied();
+    for f in &report.findings {
+        let Problem::Overcounted { slot, versions, .. } = f.problem else {
+            continue;
+        };
+        let store = loop {
+            if let Some(store) = named(pager.read(f.pid)?.owner()) {
+                break store;
+            }
+            let foreign =
+                |p: &PageExclusive<'_, R>| named(p.owner()).is_none().then_some(Shape::Owner);
+            if let Some(e) = pager.refuse_if(f.pid, foreign) {
+                return Err(e);
+            }
+        };
+        let head = Tid::new(f.pid.0, slot).expect("a page id fits 48 bits");
+        match store.recount(pager, head, versions) {
+            Ok(()) | Err(Refused::Gone) => {}
+            Err(Refused::Page(e)) => return Err(e),
+        }
+    }
+    Ok(())
 }

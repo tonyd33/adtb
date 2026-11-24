@@ -14,7 +14,7 @@ use crate::mvcc::{CommitLog, Owes, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, LogFinding, PageError, PageKind, Pager, Pid};
 
-pub use mend::{Mended, finish_splits, mend_store};
+pub use mend::{Mended, finish_splits, lower_overcounted, mend_store};
 
 /// The heaps and indexes of one sum, as the caller knows them.
 #[derive(Debug)]

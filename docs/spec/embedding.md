@@ -68,7 +68,11 @@ A database handle may be used from any number of threads of the
 owning process at once; calls from different threads run concurrently
 as separate transactions under serializable isolation. A handle is
 cheap to clone; clones share one engine. There is no connection
-object: a call needs only the handle.
+object: a call needs only the handle. An interactive transaction
+stays on the thread that began it. While a thread holds an open
+read-write transaction, a `verify` or a deferrable read-only begin or
+block on that thread is refused with `Invalid`, since it would wait
+for that transaction to end.
 
 ### 1.3 Platforms
 

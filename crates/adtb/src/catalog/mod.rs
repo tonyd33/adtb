@@ -675,7 +675,8 @@ impl Catalog {
         if changing != Changing::None {
             let freed = catalog.free_leaked(pager, &txns, &[]);
             let lowered = freed.and_then(|f| {
-                catalog.lower_overcounted(pager, &f.report)?;
+                let stores = [catalog.large, catalog.kept.large()];
+                verify::lower_overcounted(pager, &stores, &f.report)?;
                 Ok(f.released)
             });
             match lowered {
@@ -892,35 +893,6 @@ impl Catalog {
             counted,
             released,
         })
-    }
-
-    /// Lower each head `report` finds counting more versions than point at it to the number
-    /// that do, leaving a head whose change is abandoned as it is.
-    ///
-    /// Precondition: `report` is complete, found over this catalog's structures, and no write
-    /// ran since.
-    fn lower_overcounted<R: Runtime>(
-        &self,
-        pager: &Pager<R>,
-        report: &Report,
-    ) -> Result<(), Error> {
-        let stores = [self.large, self.kept.large()];
-        for f in &report.findings {
-            let Problem::Overcounted { slot, versions, .. } = f.problem else {
-                continue;
-            };
-            let owner = pager.read(f.pid)?.owner();
-            let store = stores
-                .iter()
-                .find(|s| s.id() == owner)
-                .expect("an overcounted head lies in a store the catalog names");
-            let head = Tid::new(f.pid.0, slot).expect("a page id fits 48 bits");
-            match store.recount(pager, head, versions) {
-                Ok(()) | Err(heap::Refused::Gone) => {}
-                Err(heap::Refused::Page(e)) => return Err(e.into()),
-            }
-        }
-        Ok(())
     }
 
     /// Returns every heap of this catalog, current and history.

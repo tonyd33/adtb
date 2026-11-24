@@ -289,7 +289,7 @@ impl LargeStore {
     ///
     /// Chunks are written last first, each in an update of its own that also makes the chunk
     /// written before it a tail, so a crash leaves a head of count 0 on a touched page.
-    pub fn write<R: Runtime>(
+    pub(crate) fn write<R: Runtime>(
         &self,
         pager: &Pager<R>,
         (xid, heap): (Xid, HeapNo),
@@ -575,7 +575,11 @@ impl LargeStore {
 
     /// Count one version fewer pointing at `pointer`, in an update of its own. A head left at
     /// count 0 is freed by a later [`LargeStore::sweep`].
-    pub fn release<R: Runtime>(&self, pager: &Pager<R>, pointer: Pointer) -> Result<(), Refused> {
+    pub(crate) fn release<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pointer: Pointer,
+    ) -> Result<(), Refused> {
         let pid = Pid(pointer.first.page());
         let mut write = HeapWrite::new(pager);
         let stage = write.stage();
@@ -783,7 +787,7 @@ impl LargeStore {
 
     /// Set the count of the head at `head` to `count`, marking its page touched when the count
     /// is 0. Refuses the page when no head is at `head`.
-    pub fn recount<R: Runtime>(
+    pub(crate) fn recount<R: Runtime>(
         &self,
         pager: &Pager<R>,
         head: Tid,
@@ -793,11 +797,24 @@ impl LargeStore {
         self.set_counts(HeapWrite::new(pager), pager, pid, &[(head.slot(), count)])
     }
 
+    /// Set the count of the head at `head` to `count`, as [`LargeStore::recount`] does. Plants
+    /// a count for a test.
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "testing"))]
+    pub fn plant_count<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        head: Tid,
+        count: u32,
+    ) -> Result<(), Refused> {
+        self.recount(pager, head, count)
+    }
+
     /// Lower the count of each head on page `pid` that `heads` names by its slot to the count
     /// it gives, in one update, unless an update of the page was logged at or after `since`.
     /// Returns how many heads it lowered, none of a head that counts no more than its count, or
     /// `None` when the page changed. Refuses the page when no head is at a slot of `heads`.
-    pub fn lower_unchanged<R: Runtime>(
+    pub(crate) fn lower_unchanged<R: Runtime>(
         &self,
         pager: &Pager<R>,
         pid: Pid,

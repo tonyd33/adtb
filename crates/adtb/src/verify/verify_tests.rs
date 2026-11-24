@@ -412,7 +412,10 @@ fn a_large_value(db: &Db) -> crate::heap::Pointer {
 fn a_head_counting_too_many_versions_is_overcounted() {
     run(10, |db| {
         let p = a_large_value(db);
-        db.heaps[0].large().recount(&db.pager, p.first, 3).unwrap();
+        db.heaps[0]
+            .large()
+            .plant_count(&db.pager, p.first, 3)
+            .unwrap();
         let report = db.verify();
         assert_eq!(
             vec![(

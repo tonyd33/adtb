@@ -209,7 +209,7 @@ fn planted() -> Files {
                     let pointers = heap.out_of_line(pager).expect("the heap reads");
                     for p in pointers.expect("the heap is sound") {
                         store
-                            .recount(pager, p.first, 1 + PLANTED)
+                            .plant_count(pager, p.first, 1 + PLANTED)
                             .expect("the head recounts");
                     }
                 }
