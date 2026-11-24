@@ -439,20 +439,14 @@ impl Model {
     /// Put back each constraint and check of `kept` that `prior` declares and this model does not.
     fn keep(&mut self, prior: &Model, kept: &[Kept]) {
         for k in kept {
-            let held = prior.decls.iter().find(|d| {
-                d.module == k.module
-                    && match d.item {
-                        Item::Constraint(c) => !k.check && prior.denials[&c].name == k.name,
-                        Item::Check(c) => k.check && prior.denials[&c].name == k.name,
-                        _ => false,
-                    }
-            });
+            let id = k.0.raw();
+            let held = prior
+                .decls
+                .iter()
+                .find(|d| matches!(d.item, Item::Constraint(x) | Item::Check(x) if x == id));
             let Some(d) = held else { continue };
-            let (Item::Constraint(c) | Item::Check(c)) = d.item else {
-                continue;
-            };
-            if let std::collections::btree_map::Entry::Vacant(e) = self.denials.entry(c) {
-                e.insert(prior.denials[&c].clone());
+            if let std::collections::btree_map::Entry::Vacant(e) = self.denials.entry(id) {
+                e.insert(prior.denials[&id].clone());
                 self.decls.push(d.clone());
             }
         }

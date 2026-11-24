@@ -163,16 +163,10 @@ impl Pending {
 
     /// Returns the declaration a migration keeps for this drop, `None` for a unique or an old key.
     pub(super) fn kept(&self) -> Option<Kept> {
-        let check = match self.kind {
-            Kind::Constraint(_) => false,
-            Kind::Check(_) => true,
-            Kind::Unique(_) | Kind::Key { .. } => return None,
-        };
-        Some(Kept {
-            module: self.module.clone(),
-            name: self.name.clone(),
-            check,
-        })
+        match self.kind {
+            Kind::Constraint(id) | Kind::Check(id) => Some(Kept(id)),
+            Kind::Unique(_) | Kind::Key { .. } => None,
+        }
     }
 
     fn unique(&self) -> Option<CatIndexId> {
@@ -384,7 +378,10 @@ fn owners(f: &evolve::Failed, pending: &[Pending]) -> Vec<Option<String>> {
             .find(|p| {
                 p.module == file.module.text
                     && p.name == *name
-                    && p.kept().is_some_and(|k| k.check == check)
+                    && matches!(
+                        (&p.kind, check),
+                        (Kind::Constraint(_), false) | (Kind::Check(_), true)
+                    )
             })
             .map(Pending::object)
     };
