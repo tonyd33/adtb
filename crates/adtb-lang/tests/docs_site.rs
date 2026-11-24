@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 
 use adtb_lang::lex::Kw;
 
+#[path = "docs_site/agents.rs"]
+mod agents;
+
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }

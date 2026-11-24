@@ -13,6 +13,8 @@ entered through direnv.
 This file holds the shared project instructions for coding agents. Read
 it directly if your harness does not load `AGENTS.md` automatically.
 Keep project guidance here; `CLAUDE.md` imports this file for Claude Code.
+Nested `AGENTS.md` files hold each subsystem's working rules; read the nearest one above the
+files you change.
 
 ## Version control
 
