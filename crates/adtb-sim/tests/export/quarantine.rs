@@ -319,9 +319,12 @@ fn a_plan_over_the_index_is_replanned_with_the_same_rows() {
                 damage: Damage::Checksum,
             })
             .unwrap();
-        let what = quarantined(&call(&db, "by_gid", &gid).unwrap_err()).to_owned();
-        assert!(what.contains("(gid)"), "{what}");
         assert_eq!(before, call(&db, "by_gid", &gid).unwrap());
+        let t = db.testing();
+        let index = t
+            .own_mark(t.index("app::identities", "index (gid) in Google").unwrap())
+            .unwrap();
+        assert_eq!(BTreeSet::from([index]), marks(&db));
         assert!(!shown(&db).contains("Probe"), "{}", shown(&db));
     });
 }
@@ -732,7 +735,7 @@ fn a_call_meeting_damage_ends_its_transaction_and_one_refused_by_its_mark_does_n
 }
 
 #[test]
-fn an_orphan_entry_fails_the_call_that_finds_it_and_leaves_its_transaction_open() {
+fn an_orphan_entry_fails_the_call_that_finds_it_and_ends_its_transaction() {
     let mut sim = Sim::new(43, Config::default());
     process::run(&mut sim, |rt| {
         let db = open_app(rt);
@@ -753,14 +756,21 @@ fn an_orphan_entry_fails_the_call_that_finds_it_and_leaves_its_transaction_open(
             },
         })
         .unwrap();
+        let refused = Error::Fatal {
+            reason: FatalReason::Quarantined {
+                what: format!("app::identities {USER_INDEX}"),
+            },
+        };
         let got = t.query_text(BY_USER, &[], &TxnCallOptions::default());
         assert_eq!(
-            format!("app::identities {USER_INDEX}"),
-            quarantined(&got.unwrap_err())
+            Err(refused.clone()),
+            got.map(|_| ()),
+            "the call that finds it"
         );
         assert_eq!(BTreeSet::from([user_index_mark(&db)]), marks(&db));
-        assert_eq!(12, api::in_txn(&mut t, SIDES).len());
-        t.commit(None).unwrap();
+        let later = t.query_text(SIDES, &[], &TxnCallOptions::default());
+        assert_eq!(Err(refused.clone()), later.map(|_| ()), "a later call");
+        assert_eq!(Err(refused), t.commit(None).map(|_| ()), "the commit");
     });
 }
 
@@ -2314,7 +2324,7 @@ fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its
 }
 
 #[test]
-fn a_commit_walks_no_record_whose_last_mapping_was_incomplete() {
+fn a_record_whose_last_mapping_was_incomplete_is_walked_at_each_call_end_and_by_no_commit() {
     let mut sim = Sim::new(65, Config::default());
     process::run(&mut sim, |rt| {
         let db = open_app(rt);
@@ -2350,17 +2360,21 @@ fn a_commit_walks_no_record_whose_last_mapping_was_incomplete() {
         }
         assert_eq!(None, t.probe().mapped_to(unheld));
         assert_eq!(BTreeSet::new(), marks(&db));
-        let first = walked[0] + 1;
-        assert_eq!(vec![walked[0], first, first, first], walked);
+        let w0 = walked[0];
+        assert_eq!(
+            vec![w0, w0 + 2, w0 + 3, w0 + 4],
+            walked,
+            "the first commit walks it, each call's end walks it again, and no later commit does"
+        );
         let detail = format!("page {} is unreadable", root.0);
         let failed = Error::Fatal {
             reason: FatalReason::Storage { detail },
         };
         assert_eq!(failed, api::failure(&db, ALL));
         assert_eq!(
-            first + 1,
+            w0 + 6,
             t.probe().walks(),
-            "a failing call walks it again"
+            "a failing call walks it at its failure and at its end"
         );
     });
 }

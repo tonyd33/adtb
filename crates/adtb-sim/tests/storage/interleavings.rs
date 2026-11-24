@@ -26,10 +26,8 @@ const KEY: i64 = 1;
 const FIRST: i64 = 10;
 /// The element a racing append appends.
 const RACED: i64 = 20;
-/// The list key and element a committing mapper appends.
+/// The list key and element a commit beside an incomplete mapping appends.
 const COMMITTED: (i64, i64) = (2, 30);
-/// The list key and element a second committing transaction appends.
-const SECOND: (i64, i64) = (3, 40);
 
 /// The boundaries a mapper reaches mapping one record whose holders it finds.
 const MAPPED: [Map; 3] = [Map::Begun, Map::Walked, Map::Marked];
@@ -39,7 +37,8 @@ const MAPPED: [Map; 3] = [Map::Begun, Map::Walked, Map::Marked];
 enum Mapper {
     /// A read of the damaged counter, which fails and maps the damage.
     Read,
-    /// The commit of an append, which maps the damage under the serialization lock.
+    /// A commit of a transaction that ran no call since the damage was recorded, which maps the
+    /// damage under the serialization lock.
     Commit,
 }
 
@@ -220,7 +219,14 @@ struct Ran {
 /// page as failing its checksum. Returns the history's transaction of the setup, the page and
 /// its damage, and the mark of the counters' heap.
 fn damaged(rt: &SimRuntime, e: &Arc<Elems>) -> (iso::Txn, (Pid, Damage), Quarantine) {
-    let db = e.database();
+    let setup = seeded(rt, e);
+    let (page, mark) = refused(e);
+    (setup, page, mark)
+}
+
+/// Commit a counter, a cell and an append of [`FIRST`] to [`KEY`]. Returns the history's
+/// transaction of the setup.
+fn seeded(rt: &SimRuntime, e: &Arc<Elems>) -> iso::Txn {
     let setup = Worker::start(rt, e, Kind::ReadWrite);
     let insert = Req::Text("insert counters { id: 1, n: 0 }".to_owned());
     setup.call(rt, insert).expect("a counter inserts");
@@ -233,6 +239,14 @@ fn damaged(rt: &SimRuntime, e: &Arc<Elems>) -> (iso::Txn, (Pid, Damage), Quarant
         key: KEY,
         elem: FIRST,
     };
+    iso::Txn::new(0, Outcome::Committed, vec![append])
+}
+
+/// Refuse the page of the counter [`seeded`] commits as failing its checksum, recording the
+/// damage and mapping nothing. Returns the page and its damage, and the mark of the counters'
+/// heap.
+fn refused(e: &Arc<Elems>) -> ((Pid, Damage), Quarantine) {
+    let db = e.database();
     let heap = db
         .testing()
         .heap("elle::counters", "Counter")
@@ -243,8 +257,7 @@ fn damaged(rt: &SimRuntime, e: &Arc<Elems>) -> (iso::Txn, (Pid, Damage), Quarant
         .plant(Plant::Refuse { page, damage })
         .expect("the page is refused");
     let mark = db.testing().own_mark(heap).expect("its mark");
-    let setup = iso::Txn::new(0, Outcome::Committed, vec![append]);
-    (setup, (page, damage), mark)
+    ((page, damage), mark)
 }
 
 fn read_counters() -> Req {
@@ -258,7 +271,7 @@ fn run(case: Case, (i, j): (usize, usize)) -> Ran {
     process::run(&mut sim, |rt| {
         let e = Arc::new(Elems::open(&rt, &elle::options()).expect("the workload opens"));
         let db = e.database();
-        let (setup, page, planted) = damaged(&rt, &e);
+        let setup = seeded(&rt, &e);
         let mut mapper = match case.mapper {
             Mapper::Read => Txn::start(
                 &rt,
@@ -268,8 +281,7 @@ fn run(case: Case, (i, j): (usize, usize)) -> Ran {
                 vec![read_counters()],
             ),
             Mapper::Commit => {
-                let (k, v) = COMMITTED;
-                let reqs = vec![Req::Append(k, v), Req::Commit];
+                let reqs = vec![Req::Commit];
                 Txn::start(&rt, &e, (1, Kind::ReadWrite), of_a_commit, reqs)
             }
         };
@@ -289,11 +301,9 @@ fn run(case: Case, (i, j): (usize, usize)) -> Ran {
             }
             Racer::Mapper => txn(of_the_mapper, vec![read_counters()]),
             Racer::Damaged(w) => txn(of_a_statement, vec![text(w.text()), Req::Commit]),
-            Racer::Commit => {
-                let (k, v) = SECOND;
-                txn(of_a_commit, vec![Req::Append(k, v), Req::Commit])
-            }
+            Racer::Commit => txn(of_a_commit, vec![Req::Commit]),
         };
+        let (page, planted) = refused(&e);
         let mut marked_at_stop = None;
         let [mapper_reached, racer_reached] = match case.first {
             First::Mapper => {
@@ -327,7 +337,7 @@ fn run(case: Case, (i, j): (usize, usize)) -> Ran {
             raced = racer.replies().to_vec();
             raced_as = racer.outcome();
         }
-        let keys = KEY..SECOND.0 + 1;
+        let keys = KEY..COMMITTED.0 + 1;
         let lists = e.lists(keys.clone());
         let last = keys
             .zip(lists)
@@ -432,7 +442,7 @@ fn judged(case: Case, pair: (usize, usize), stopped: bool, r: &Ran) -> Vec<Strin
     }
     let mapped = match case.mapper {
         Mapper::Read => vec![quarantined()],
-        Mapper::Commit => vec![Ok(vec![]), Ok(vec![])],
+        Mapper::Commit => vec![Ok(vec![])],
     };
     expect("the mapper's replies", r.mapped == mapped, &r.mapped);
     match case.racer {
@@ -449,7 +459,8 @@ fn judged(case: Case, pair: (usize, usize), stopped: bool, r: &Ran) -> Vec<Strin
         }
         racer => {
             let raced = match racer {
-                Racer::Append | Racer::Update | Racer::Commit => vec![Ok(vec![]), Ok(vec![])],
+                Racer::Append | Racer::Update => vec![Ok(vec![]), Ok(vec![])],
+                Racer::Commit => vec![Ok(vec![])],
                 Racer::Read => vec![Ok(vec![FIRST]), Ok(vec![])],
                 Racer::Checkpoint => vec![],
                 Racer::Mapper => vec![quarantined()],
@@ -564,15 +575,21 @@ fn the_mapper_of_a_commit_racing_a_read_a_checkpoint_or_a_second_commit_marks_on
 }
 
 /// A walk of the damaged page's holders that meets the heap's unreadable directory is
-/// incomplete: the mapping marks nothing and leaves the record unmapped, and a later commit's
-/// mapping leaves the record out.
+/// incomplete: each mapping of the failing read marks nothing and leaves the record unmapped, and
+/// a later commit's mapping leaves the record out.
 #[test]
 fn an_incomplete_walk_marks_nothing_and_leaves_its_record_to_a_later_mapping() {
     let mut sim = Sim::with_files(0, Config::default(), elle::created());
     process::run(&mut sim, |rt| {
         let e = Arc::new(Elems::open(&rt, &elle::options()).expect("the workload opens"));
         let db = e.database();
-        let (_, (page, damage), _) = damaged(&rt, &e);
+        seeded(&rt, &e);
+        let reqs = vec![read_counters()];
+        let mut mapper = Txn::start(&rt, &e, (1, Kind::ReadOnly), of_the_mapper, reqs);
+        let (k, v) = COMMITTED;
+        let reqs = vec![Req::Append(k, v), Req::Commit];
+        let mut commit = Txn::start(&rt, &e, (2, Kind::ReadWrite), of_a_commit, reqs);
+        let ((page, damage), _) = refused(&e);
         let heap = db
             .testing()
             .heap("elle::counters", "Counter")
@@ -585,11 +602,6 @@ fn an_incomplete_walk_marks_nothing_and_leaves_its_record_to_a_later_mapping() {
                 damage: unreadable,
             })
             .expect("the directory is refused");
-        let reqs = vec![read_counters()];
-        let mut mapper = Txn::start(&rt, &e, (1, Kind::ReadOnly), of_the_mapper, reqs);
-        let (k, v) = COMMITTED;
-        let reqs = vec![Req::Append(k, v), Req::Commit];
-        let mut commit = Txn::start(&rt, &e, (2, Kind::ReadWrite), of_a_commit, reqs);
         let whole = (usize::MAX, usize::MAX);
         let [m, c] = steps::interleave(
             &rt,
@@ -599,7 +611,14 @@ fn an_incomplete_walk_marks_nothing_and_leaves_its_record_to_a_later_mapping() {
             steps::nothing_between(),
         );
         let walked = [Map::Begun, Map::Incomplete, Map::Marked].map(Step::Map);
-        assert_eq!(walked, m.steps(), "the failing read's mapping");
+        let steps = m.steps();
+        assert!(!steps.is_empty(), "the failing read maps");
+        for mapping in steps.chunks(walked.len()) {
+            assert_eq!(
+                walked, mapping,
+                "each mapping of the failing read: {steps:?}"
+            );
+        }
         let committed = [Map::Begun, Map::Marked].map(Step::CommitMap);
         assert_eq!(committed, c.steps(), "the commit's mapping");
         let failed = Err(Error::Fatal {
@@ -614,5 +633,28 @@ fn an_incomplete_walk_marks_nothing_and_leaves_its_record_to_a_later_mapping() {
         assert_eq!(None, probe.mapped_to(page));
         let refused = BTreeMap::from([(page, damage), (directory, unreadable)]);
         assert_eq!(refused, probe.refusals());
+    });
+}
+
+/// A call that succeeds without meeting the damage recorded before it maps that damage at its
+/// end: the damaged heap is marked once the call returns.
+#[test]
+fn a_call_that_succeeds_maps_the_damage_recorded_before_it() {
+    let mut sim = Sim::with_files(0, Config::default(), elle::created());
+    process::run(&mut sim, |rt| {
+        let e = Arc::new(Elems::open(&rt, &elle::options()).expect("the workload opens"));
+        let db = e.database();
+        let (_, _, mark) = damaged(&rt, &e);
+        assert_eq!(
+            BTreeSet::new(),
+            db.testing().probe().marks(),
+            "a plant maps nothing"
+        );
+        assert_eq!(
+            vec!["1".to_owned()],
+            api::query(db, "from c in cells select c.id"),
+            "a read of another heap"
+        );
+        assert_eq!(BTreeSet::from([mark]), db.testing().probe().marks());
     });
 }

@@ -1058,7 +1058,11 @@ fn a_stale_page_a_commits_walk_meets_marks_only_the_structure_whose_walk_met_it(
             "the commit's walk records the lost write"
         );
         assert_eq!(BTreeSet::from([tags]), marks(&db));
-        assert_eq!(None, t.probe().mapped_to(leaf), "the met page's record");
+        assert_eq!(
+            Some(BTreeSet::from([tags])),
+            t.probe().mapped_to(leaf),
+            "the call's end maps the met page's record"
+        );
         assert_eq!(8, api::query(&db, "from u in users select u.id").len());
         assert_eq!(18, api::query(&db, ALL).len());
         assert_eq!(
@@ -1103,7 +1107,11 @@ fn a_stale_page_whose_header_names_another_structure_marks_only_the_structure_wh
         let all = marks(&db);
         assert!(!all.contains(&users), "{all:?}");
         assert_eq!(BTreeSet::from([tags]), all);
-        assert_eq!(None, t.probe().mapped_to(leaf), "the met page's record");
+        assert_eq!(
+            Some(BTreeSet::from([tags])),
+            t.probe().mapped_to(leaf),
+            "the call's end maps the met page's record"
+        );
         db.close().unwrap();
     });
 }

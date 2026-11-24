@@ -138,6 +138,13 @@ impl<R: Runtime> Database<R> {
         )
     }
 
+    /// End an API call: map the damage recorded and not yet mapped, whatever the call returned.
+    ///
+    /// Precondition: the calling thread holds no page latch and not the serialization lock.
+    pub fn end_call(&self) {
+        self.map_damage();
+    }
+
     /// Map the damage recorded and not yet mapped for a commit, so that a mark its damage sets
     /// stops the commit. Leave out a record whose last mapping was incomplete; damage the walks
     /// detect marks nothing of its own until a later mapping maps its record.

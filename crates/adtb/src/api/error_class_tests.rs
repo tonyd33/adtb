@@ -120,7 +120,7 @@ fn write_rows() -> Vec<Row> {
         row(
             quarantined(By::Found),
             Class::Found,
-            false,
+            true,
             quarantined_reply(),
         ),
         row(
@@ -246,7 +246,7 @@ fn exec_rows() -> Vec<Row> {
         exec_row(
             exec::Error::OrphanEntry(9),
             Class::Found,
-            false,
+            true,
             storage_failure("an entry of index 9 names no version"),
         ),
         exec_row(

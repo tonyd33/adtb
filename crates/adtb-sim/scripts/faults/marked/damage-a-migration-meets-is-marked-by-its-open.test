@@ -1,0 +1,41 @@
+# A migration that reads nothing of a damaged heap applies; the damage its walk meets is marked
+# by the open that applies it, and stays marked across a reopen.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Doc = { id: Key docs, title: Text }
+  add relation docs : Doc key id generate sequence
+
+run
+  insert users { name: "a" }
+
+run
+  insert docs { title: "t" }
+
+flip heap app::users User
+
+migrate
+  module app
+  add type Label = { id: Key tags, name: Text }
+  add relation tags : Label key id generate sequence
+
+probe damage
+----
+heap app::users User: Checksum
+
+probe marks
+----
+app::users.User
+
+query
+  from d in docs select d.title
+----
+"t"
+
+reopen
+
+probe marks
+----
+app::users.User

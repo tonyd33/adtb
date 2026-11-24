@@ -15,9 +15,24 @@ use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
-use super::{OpenError, corrupt};
+use super::{OpenError, bundle, corrupt};
 
 const HOUR: i64 = 3_600_000_000;
+
+/// Returns the bundles and settings the file holds, none when the database is refused whole.
+pub(super) fn deployed_state<R: Runtime>(
+    catalog: &Catalog,
+    pager: &Pager<R>,
+    txns: &Transactions<R>,
+) -> Result<(bundle::Stored, Settings), OpenError> {
+    if pager.refused_whole() {
+        return Ok((bundle::Stored::default(), Settings::default()));
+    }
+    Ok((
+        bundle::stored(catalog, pager, txns)?,
+        Settings::stored(catalog, pager, txns)?,
+    ))
+}
 
 /// The file settings the engine acts on, each in microseconds or a count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

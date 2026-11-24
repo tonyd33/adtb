@@ -429,16 +429,36 @@ impl<R: Runtime> Drop for Engine<R> {
     }
 }
 
+/// An engine held open for one call. Dropping it ends the call: it maps the damage recorded and
+/// not yet mapped, whatever the call returned.
+///
+/// Precondition: the dropping thread holds no page latch and not the serialization lock.
+struct Entered<'e, R: Runtime> {
+    db: &'e write::Database<R>,
+    _open: std::sync::RwLockReadGuard<'e, bool>,
+}
+
+impl<R: Runtime> Drop for Entered<'_, R> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.db.end_call();
+        }
+    }
+}
+
 impl<R: Runtime> Engine<R> {
     fn schema(&self) -> &Arc<CommittedSchema> {
         self.compiled.shared_schema()
     }
 
     /// Returns the engine held open for one call, or refuses a call of a closed database.
-    fn enter(&self) -> Result<std::sync::RwLockReadGuard<'_, bool>, Error> {
+    fn enter(&self) -> Result<Entered<'_, R>, Error> {
         let open = self.open.read(&self.rt);
         if *open {
-            Ok(open)
+            Ok(Entered {
+                db: &self.db,
+                _open: open,
+            })
         } else {
             Err(Error::closed())
         }
@@ -816,23 +836,6 @@ fn setup_of<R: Runtime>(
     }
 }
 
-/// Returns the bundles and settings the file holds, none when the commit log's damage leaves
-/// their rows unreadable.
-fn deployed_state<R: Runtime>(
-    catalog: &Catalog,
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
-    clog_damaged: bool,
-) -> Result<(bundle::Stored, Settings), OpenError> {
-    if clog_damaged {
-        return Ok((bundle::Stored::default(), Settings::default()));
-    }
-    Ok((
-        bundle::stored(catalog, pager, txns)?,
-        Settings::stored(catalog, pager, txns)?,
-    ))
-}
-
 impl<R: Runtime> Engine<R> {
     /// Open the database `name`, or create it in a reserved directory and publish it once open,
     /// calling `hold` with each reserved file before create removes or renames it.
@@ -1060,7 +1063,7 @@ impl<R: Runtime> Engine<R> {
         let writable = !pager.opens_unwritten();
         catalog.set_query_memory(query_memory(options));
         diverged(&catalog, log)?;
-        let (mut stored, settings) = deployed_state(&catalog, &pager, &txns, clog_damaged)?;
+        let (mut stored, settings) = settings::deployed_state(&catalog, &pager, &txns)?;
         let opened = micros(pager.wall());
         let regs = &commanded(&options.registrations, &stored, opened, &settings)?;
         registered::downgrade(&catalog, regs)?;
@@ -1089,7 +1092,9 @@ impl<R: Runtime> Engine<R> {
             let replay = options.create.as_ref().and_then(|c| c.replay.as_ref());
             let migrated = migrate::migrate(&mut catalog, (&pager, &txns), log, &live, replay);
             *unapplied = migrate::unapplied(&catalog, log);
-            migrated?
+            let migrated = migrated?;
+            mark_open_damage(&pager, opening, &catalog, &txns);
+            migrated
         } else {
             migrate::Migrated::unwritten(&pager)
         };

@@ -1135,10 +1135,10 @@ impl<R: Runtime> Database<R> {
         eval::Stmt::new(self, tx, text, t, options, (stop, grant))
     }
 
-    /// Take back the statements of `ran` unless `failed` ends the transaction. Returns `failed`,
-    /// or the failure of taking them back.
+    /// Take back the statements of `ran` when the class of `failed` takes them back. Returns
+    /// `failed`, or the failure of taking them back.
     fn taken_back(&self, tx: &Txn, ran: &[eval::Stmt<'_, R>], failed: Failed) -> Failed {
-        match self.take_back(tx, ran, failed.ends) {
+        match self.take_back(tx, ran, !failed.error.class().takes_back()) {
             Ok(()) => failed,
             Err(error) => Failed::undone(failed.item, error),
         }

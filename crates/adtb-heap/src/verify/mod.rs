@@ -224,9 +224,7 @@ impl<R: Runtime> Walk<'_, R> {
                 }
             }
         }
-        let mut pages = vec![clog.root()];
-        pages.extend(clog.directory_pages());
-        pages.extend(clog.status_pages().values().copied());
+        let pages = clog.pages();
         for &pid in &pages {
             let kind = self.pager.read(pid).map(|page| storage::kind(&page));
             match kind {

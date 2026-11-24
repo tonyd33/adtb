@@ -108,13 +108,6 @@ impl Catalog {
 }
 
 /// Returns the commit log's pages: its root, status and directory pages.
-fn commit_log_pages(clog: &CommitLog) -> Vec<Pid> {
-    let mut pages = vec![clog.root()];
-    pages.extend(clog.status_pages().values());
-    pages.extend(clog.directory_pages());
-    pages
-}
-
 impl Structures {
     /// Returns the catalog's root, its rows heap and the commit log, as far as the root page names
     /// them, for a catalog that does not open.
@@ -166,7 +159,7 @@ impl Structures {
     ) -> Option<BTreeSet<Holder>> {
         let large = self.large();
         pager.holders_meeting(pid, phase, |h| {
-            let clog = commit_log_pages(&txns.commit_log());
+            let clog = txns.commit_log().pages();
             h.walk(Holder::CatalogRoot, || Ok(vec![self.root]));
             h.walk(Holder::CommitLog, || Ok(clog.clone()));
             h.walk(Holder::Counters, || Ok(self.counters.into_iter().collect()));
@@ -245,7 +238,7 @@ impl Unopened {
             });
             h.walk(Holder::CommitLog, || {
                 let clog = CommitLog::load(pager, named?.1)?;
-                Ok(commit_log_pages(&clog))
+                Ok(clog.pages())
             });
         })
     }

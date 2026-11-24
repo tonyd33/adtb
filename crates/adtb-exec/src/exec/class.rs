@@ -26,9 +26,18 @@ impl Class {
     /// Returns whether a failure of this class ends the transaction: the caller must abort it.
     pub fn ends(self) -> bool {
         match self {
-            Class::Retry | Class::Damage | Class::Transactions => true,
-            Class::Reject | Class::Found | Class::Refused | Class::Checker | Class::Suspended => {
-                false
+            Class::Retry | Class::Damage | Class::Transactions | Class::Found => true,
+            Class::Reject | Class::Refused | Class::Checker | Class::Suspended => false,
+        }
+    }
+
+    /// Returns whether the statements a failure of this class stopped are taken back before the
+    /// transaction goes on or ends.
+    pub fn takes_back(self) -> bool {
+        match self {
+            Class::Retry | Class::Damage | Class::Transactions => false,
+            Class::Found | Class::Reject | Class::Refused | Class::Checker | Class::Suspended => {
+                true
             }
         }
     }

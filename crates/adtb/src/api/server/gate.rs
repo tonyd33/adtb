@@ -29,7 +29,7 @@ use super::tables::{CallOrigin, CallRow, Tables, service};
 use super::task::{TaskOptions, args_hash};
 use super::{Capability, RoleAuthority, denied};
 
-type Opened<'e> = std::sync::RwLockReadGuard<'e, bool>;
+type Opened<'e, R> = crate::api::Entered<'e, R>;
 
 /// The authority of a role's call, judged by this gate alone: the issuer of its text, which
 /// holds what the role held when judged.
@@ -50,7 +50,7 @@ impl<R: Runtime> RoleSession<R> {
         text: &str,
         params: &[(&str, Ty, Val)],
         opts: &TaskOptions,
-    ) -> Result<(Admitted, RoleCall<R>, Opened<'e>), Error> {
+    ) -> Result<(Admitted, RoleCall<R>, Opened<'e, R>), Error> {
         let authority = RoleAuthority {
             engine: self.engine.clone(),
         };
@@ -189,7 +189,7 @@ impl<R: Runtime> RoleBinding<R> {
         ordinal: u32,
         args: &[Val],
         opts: &TaskOptions,
-    ) -> Result<(Admitted, Work, RoleCall<R>, Opened<'e>), Error> {
+    ) -> Result<(Admitted, Work, RoleCall<R>, Opened<'e, R>), Error> {
         let session = self.session();
         let callee = self
             .registered()

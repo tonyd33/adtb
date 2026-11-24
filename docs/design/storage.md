@@ -1125,7 +1125,8 @@ or the record itself under its new holder, maps on its own. Which records are ma
 open, so every open maps every record again and a mark a crash lost comes
 back. The mapper runs at three points and nowhere else:
 
-- every open, once the catalog loads, whether the open succeeds or fails;
+- every open, once the catalog loads, whether the open succeeds or fails,
+  and again once its migrations apply;
 - the end of an API call, holding no page latch and not the serialization
   lock, whatever the call returns;
 - a commit, under its hold of the serialization lock and before it checks
@@ -1152,9 +1153,9 @@ mark their index at the call that finds them. The failure a call returns
 names what its page's record was mapped to, and a failure of the
 transactions layer names the database once the database is marked. A
 failure reaches the client once, after the write path maps it. It ends the
-transaction when the call failed on a page or the transactions layer
-failed; a call a mark or an index finding refused leaves the transaction
-open. A page maps as follows:
+transaction when the call failed on a page, an index finding refused it
+or the transactions layer failed; a call a mark refused before it read
+anything leaves the transaction open. A page maps as follows:
 
 - a page of a constructor's heap, current or history, marks that heap; a
   page of an index marks that index, and a page of a history key index

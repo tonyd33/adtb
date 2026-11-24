@@ -557,6 +557,14 @@ impl CommitLog {
         &self.pages
     }
 
+    /// Returns every page of the commit log: its root, its status pages and its directory pages.
+    pub fn pages(&self) -> Vec<Pid> {
+        let mut pages = vec![self.root_pid];
+        pages.extend(self.pages.values());
+        pages.extend(self.directory_pages());
+        pages
+    }
+
     /// Returns the directory pages, first to last.
     pub fn directory_pages(&self) -> Vec<Pid> {
         self.directories.iter().map(|d| d.pid).collect()
