@@ -311,9 +311,10 @@ impl Model {
         Ok((
             Resolved::RedefineFn {
                 function,
-                decl: built
-                    .canonical(file)?
-                    .ok_or(Fail::Broken("a redefined function does not resolve".into()))?,
+                decl: match built.canonical(file)? {
+                    Some(decl) => decl,
+                    None => run.late(Late::Decl(Item::Fn(function))),
+                },
             },
             Vec::new(),
         ))

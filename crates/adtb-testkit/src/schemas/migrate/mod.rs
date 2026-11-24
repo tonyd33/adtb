@@ -6,7 +6,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::draw::{Draw, Keys};
-use super::{Action, Case, Field, Schema, Scope, Stage, Ty, literal};
+use super::{
+    Action, Case, Field, SEARCH_REVERT_DROPPED_WAITING, Schema, Scope, Stage, Ty, literal,
+};
 use crate::Rng;
 
 mod model;
@@ -167,14 +169,20 @@ pub enum Reach {
     ArmLater,
     /// A merge of constructors a check over one of them names.
     MergeUnderCheck,
+    /// An `add relation` after a `redefine fn` of a function whose signature names its key.
+    RewrittenWaiting,
+    /// An `add relation` after a `drop type` of a type whose field names its key.
+    DroppedWaiting,
 }
 
 impl Reach {
-    pub const ALL: [Reach; 4] = [
+    pub const ALL: [Reach; 6] = [
         Reach::MergeAcrossStages,
         Reach::MovedDownAction,
         Reach::ArmLater,
         Reach::MergeUnderCheck,
+        Reach::RewrittenWaiting,
+        Reach::DroppedWaiting,
     ];
 }
 
@@ -312,7 +320,10 @@ impl Migration {
     /// Returns whether a `revert` of the migration, right after it, restores the data and
     /// schema before it, each operator drawn where no switch steers a known finding.
     pub fn exact(&self) -> bool {
-        self.ops.iter().all(|o| !o.broken && o.kind.exact())
+        self.ops.iter().all(|o| {
+            let dropped = o.reach == Some(Reach::DroppedWaiting);
+            !o.broken && o.kind.exact() && (SEARCH_REVERT_DROPPED_WAITING || !dropped)
+        })
     }
 
     /// Returns the rows the migration leaves of `rows`, those of the case it was drawn over, or
@@ -554,6 +565,8 @@ struct Model {
     keys: Keys,
     /// The version the migration produces.
     version: u64,
+    /// Whether the declarations build before the operator drawn next.
+    building: bool,
 }
 
 /// What a scope of constructors becomes when constructors are replaced: each old constructor's
@@ -719,6 +732,7 @@ impl Case {
             s: self.schema.clone(),
             keys: self.keys.clone(),
             version,
+            building: !broke,
         };
         let mut ops = m.draw(&mut rng, kind, broke)?;
         let mut steps = vec![(ops.len(), m.s.clone(), m.keys.clone())];

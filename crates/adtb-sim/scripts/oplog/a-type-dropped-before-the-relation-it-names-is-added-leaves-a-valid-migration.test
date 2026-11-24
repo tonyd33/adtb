@@ -1,0 +1,26 @@
+seed 5
+
+migrate
+  module m
+  add module m
+  add type O = { id: Key os, n: I64 }
+  add relation os : O key id generate sequence
+
+migrate
+  module m
+  add type S = { id: Key ss, z: Option (Key zs) }
+  add relation ss : S key id generate sequence
+  drop relation ss
+  drop type S
+  add type Z = { id: Key zs }
+  add relation zs : Z key id generate sequence
+
+reopen
+
+run
+  insert zs {}
+
+query
+  from z in zs select z.id == zs.key(1)
+----
+true

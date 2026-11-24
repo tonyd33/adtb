@@ -1,0 +1,25 @@
+seed 5
+
+migrate
+  module m
+  add module m
+  add type O = { id: Key os, n: I64 }
+  add relation os : O key id generate sequence
+
+migrate
+  module m
+  define fn f (k: Key ws.Settled) -> Key ws = k
+  redefine fn f (k: Key ws.Settled) -> Key ws = k
+  add type W { id: Key ws } = Open | Done
+  add relation ws : W key id generate sequence
+  add set Settled of ws = Done
+
+reopen
+
+run
+  insert ws.Done {}
+
+query
+  from w in ws.Settled select 1
+----
+1

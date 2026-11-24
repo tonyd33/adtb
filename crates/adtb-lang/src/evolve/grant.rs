@@ -212,12 +212,10 @@ pub(super) struct HeldGrant {
 
 /// Set what each role of `back` holds of its privilege in `grants` to what it states, putting a
 /// grant it lacks back at its place.
-///
-/// Preconditions:
-/// - The privileges of `back` with a place are in ascending order of it.
 pub(super) fn hold(grants: &mut Vec<LogGrant>, back: Vec<HeldGrant>) {
-    let (gone, kept): (Vec<HeldGrant>, Vec<HeldGrant>) =
+    let (gone, mut kept): (Vec<HeldGrant>, Vec<HeldGrant>) =
         back.into_iter().partition(|h| h.held.is_none());
+    kept.sort_by_key(|h| h.held.map(|(place, ..)| place));
     for h in gone.into_iter().chain(kept) {
         let privilege = h.privilege;
         let at = grants

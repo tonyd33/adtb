@@ -542,17 +542,46 @@ impl Model {
                 rel.uniques.clear();
                 self.s.rels.push(rel);
                 self.keys.add();
-                Some(vec![
-                    op(
-                        Kind::AddType,
-                        format!("add type {ty} = {{ id: Key {name}, a: I64 }}"),
-                    ),
+                let waiting = self.building || super::super::SEARCH_WAITING_AFTER_BROKEN;
+                let variant = if waiting { self.s.extra.next % 8 } else { 7 };
+                let (mut out, reach, last) = match variant {
+                    0..=4 => {
+                        let f = self.fresh("f");
+                        let decl = format!("{f} (k: Key {name}) -> Key {name} = k");
+                        let ops = vec![
+                            op(Kind::DefineFn, format!("define fn {decl}")),
+                            op(Kind::RedefineFn, format!("redefine fn {decl}")),
+                        ];
+                        let drop = op(Kind::DropFn, format!("drop fn {f}"));
+                        (ops, Some(super::Reach::RewrittenWaiting), Some(drop))
+                    }
+                    5 | 6 => {
+                        let w = self.fresh("W");
+                        let ops = vec![
+                            op(
+                                Kind::AddType,
+                                format!("add type {w} = {{ id: Key {name} }}"),
+                            ),
+                            op(Kind::DropType, format!("drop type {w}")),
+                        ];
+                        (ops, Some(super::Reach::DroppedWaiting), None)
+                    }
+                    _ => (Vec::new(), None, None),
+                };
+                out.push(op(
+                    Kind::AddType,
+                    format!("add type {ty} = {{ id: Key {name}, a: I64 }}"),
+                ));
+                out.push(
                     op(
                         kind,
                         format!("add relation {name} : {ty} key id generate sequence"),
                     )
-                    .with(Effect::AddRel(name)),
-                ])
+                    .with(Effect::AddRel(name))
+                    .reaching(reach),
+                );
+                out.extend(last);
+                Some(out)
             }
             Kind::DropRelation => {
                 if broke {

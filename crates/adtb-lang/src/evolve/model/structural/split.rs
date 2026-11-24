@@ -61,10 +61,12 @@ fn index_clause(kind: IndexKind, elems: &[String], names: &[String], was: Vec<u6
 type Added = (String, ClauseM);
 
 /// How a split rewrites the unique and index clauses: by relation variable, the positions of
-/// those it removes and the clauses it appends; and those it rescopes in place.
+/// those it removes and the clauses it appends, and the place among those appended of each
+/// replacement the split states; and those it rescopes in place.
 #[derive(Default)]
 struct Rewrites {
     clauses_of: BTreeMap<u64, (BTreeSet<usize>, Vec<Added>)>,
+    replaced_at: BTreeMap<u64, Vec<usize>>,
     rescoped: Vec<(u64, usize, Vec<Term>)>,
 }
 
@@ -325,13 +327,21 @@ impl Model {
             header: self.header_names(t),
         };
         let mut rewrites = self.split_clauses(&built, t, &made, &image, &replacements)?;
-        for (_, added) in rewrites.clauses_of.values_mut() {
+        for (r, (_, added)) in &mut rewrites.clauses_of {
+            let mut at = Vec::new();
             for (text, clause) in &replacements {
-                match added.iter_mut().find(|(x, _)| x == text) {
-                    Some(x) => x.1 = clause.clone(),
-                    None => added.push((text.clone(), clause.clone())),
+                match added.iter().position(|(x, _)| x == text) {
+                    Some(k) => {
+                        added[k].1 = clause.clone();
+                        at.push(k);
+                    }
+                    None => {
+                        at.push(added.len());
+                        added.push((text.clone(), clause.clone()));
+                    }
                 }
             }
+            rewrites.replaced_at.insert(*r, at);
         }
         let (arm_edits, written) = self.arm_writes(run, &built, t, (&[c], &[c]), &arm_clauses)?;
         edits.extend(arm_edits);
@@ -360,7 +370,7 @@ impl Model {
             .into_iter()
             .map(|r| r.0)
             .find(|r| rewrites.clauses_of.contains_key(r));
-        let (rels, replaced_at) = self.rewrite_split(rewrites, &replacements, first);
+        let (rels, replaced_at) = self.rewrite_split(rewrites, first);
         self.identify();
         self.replace_ctors(t, &[c], &made);
         self.rebind(&before);
@@ -508,13 +518,8 @@ impl Model {
     }
 
     /// Apply `rw` to the relation variables. Returns the relation variables it rewrites, and the
-    /// positions `first` of them gives `replacements`, in order.
-    fn rewrite_split(
-        &mut self,
-        rw: Rewrites,
-        replacements: &[Added],
-        first: Option<u64>,
-    ) -> (Vec<u64>, Vec<usize>) {
+    /// positions `first` of them gives the split's replacements, in order.
+    fn rewrite_split(&mut self, mut rw: Rewrites, first: Option<u64>) -> (Vec<u64>, Vec<usize>) {
         let rels: Vec<u64> = rw
             .clauses_of
             .keys()
@@ -533,7 +538,6 @@ impl Model {
         }
         let mut replaced_at: Vec<usize> = Vec::new();
         for (r, (gone, added)) in rw.clauses_of {
-            let texts: Vec<String> = added.iter().map(|(x, _)| x.clone()).collect();
             let added: Vec<ClauseM> = added.into_iter().map(|(_, c)| c).collect();
             let rel = self.relations.get_mut(&r).expect("a relation variable");
             let kept: Vec<ClauseM> = rel
@@ -546,11 +550,8 @@ impl Model {
             rel.clauses = kept;
             let base = rel.clauses.len();
             if Some(r) == first {
-                replaced_at = replacements
-                    .iter()
-                    .filter_map(|(x, _)| texts.iter().position(|y| y == x))
-                    .map(|k| base + k)
-                    .collect();
+                let at = rw.replaced_at.remove(&r).unwrap_or_default();
+                replaced_at = at.into_iter().map(|k| base + k).collect();
             }
             rel.clauses.extend(added);
         }

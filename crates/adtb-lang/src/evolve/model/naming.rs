@@ -14,8 +14,9 @@ use crate::span::{Diag, FileId, Span};
 #[derive(Clone, Debug, Default)]
 pub(super) struct Naming {
     names: Names,
-    /// The copies not named yet: each range of the migration's text and where it was copied.
-    pending: Vec<(Range<usize>, At)>,
+    /// The copies not named yet: each range of the migration's text, where it was copied, and
+    /// the names the last build that held it resolved in it, `None` when no build did.
+    pending: Vec<(Range<usize>, At, Option<Names>)>,
     /// The range of the migration's text each arm an operator wrote copies, by the arm's key.
     arms: BTreeMap<u64, Range<usize>>,
     /// The copies a later operator rewrote before they were named.
@@ -225,7 +226,9 @@ impl Model {
         let made = self.copies_of(run, op, resolved, &mut unpaired);
         self.naming.missing.extend(unpaired);
         let Ok((built, _)) = self.built(&[], &run.ahead(self)) else {
-            self.naming.pending.extend(made);
+            self.naming
+                .pending
+                .extend(made.into_iter().map(|(from, at)| (from, at, None)));
             return;
         };
         let mut naming = std::mem::take(&mut self.naming);
@@ -241,10 +244,10 @@ impl Model {
                         false,
                     );
                     if waits(&built, file, &names) {
-                        naming.pending.push((from, at));
+                        naming.pending.push((from, at, Some(Names::default())));
                     }
                 }
-                None => naming.pending.push((from, at)),
+                None => naming.pending.push((from, at, None)),
             }
         }
         self.name_pending(&mut naming, &built, run.text(), false);
@@ -261,7 +264,7 @@ impl Model {
             Ok((built, _)) => self.name_pending(&mut naming, &built, run.text(), true),
             Err(_) => naming
                 .missing
-                .extend(naming.pending.drain(..).map(|(from, _)| {
+                .extend(naming.pending.drain(..).map(|(from, ..)| {
                 Diag::new(
                     Span::new(from.start, from.end),
                     "the migration's result does not build, so this operand's names do not resolve",
@@ -272,24 +275,33 @@ impl Model {
     }
 
     /// Name each pending copy of `naming` whose declaration `built` resolves every name of, or
-    /// every one when `last`; note as missing each whose place is gone.
+    /// every one when `last`, and hold for the others the names `built` resolves in them. Name
+    /// each whose place is gone by the names held for it, noting it as missing when none are.
     fn name_pending(&self, naming: &mut Naming, built: &Built, migration: &str, last: bool) {
         let mut kept = Vec::new();
-        for (from, at) in std::mem::take(&mut naming.pending) {
+        for (from, at, named) in std::mem::take(&mut naming.pending) {
             let Some((file, span)) = self.span_of(built, at) else {
-                if self.gone(at) {
-                    naming.missing.push(Diag::new(
+                match named {
+                    _ if !self.gone(at) => kept.push((from, at, named)),
+                    Some(names) => naming.names.extend(names),
+                    None => naming.missing.push(Diag::new(
                         Span::new(from.start, from.end),
-                        "a later operator of the migration rewrites the declaration this operand was written into, so its names do not resolve",
-                    ));
-                } else {
-                    kept.push((from, at));
+                        "a later operator of the migration rewrites the declaration this operand was written into before any build named it, so its names do not resolve",
+                    )),
                 }
                 continue;
             };
             let names = built.names(file);
             if !last && waits(built, file, &names) {
-                kept.push((from, at));
+                let (mut held, mut unpaired) = (Names::default(), Vec::new());
+                copy_tokens(
+                    (&mut held, &mut unpaired),
+                    &names,
+                    (built.text(file), span.range()),
+                    (migration, from.clone()),
+                    false,
+                );
+                kept.push((from, at, unpaired.is_empty().then_some(held).or(named)));
                 continue;
             }
             copy_tokens(
