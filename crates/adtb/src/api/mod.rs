@@ -37,6 +37,7 @@ mod registered;
 mod reindex;
 mod server;
 mod settings;
+mod stated;
 mod statements;
 mod stop;
 #[cfg(any(test, feature = "testing"))]
@@ -559,6 +560,7 @@ impl<R: Runtime> Database<R> {
         let caller = e.principal(opts.assert.as_ref())?;
         let p = e.admit_text(Prepared::new(
             &e.compiled,
+            &e.hash,
             &e.explained(),
             text,
             params,

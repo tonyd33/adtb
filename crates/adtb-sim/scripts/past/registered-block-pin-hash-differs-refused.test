@@ -1,0 +1,9 @@
+seed 30
+use stock
+
+bundle reports-1.0 pins 1 edition "2026-10"
+  import stock
+  query names_then (c: Position) -> Set Text =
+    at commit c pins 1 (0000000000000000000000000000000000000000000000000000000000000000) { from i in items select i.name }
+
+reopen refused RegistrationRefused { bundle: "reports-1.0", reason: Rejected { reason: Invalid { detail: "an `at` block pins version 1 with hash 0000000000000000000000000000000000000000000000000000000000000000, and the log's version 1 has hash 272e7f56969475443ee3ccfc4496be0ac0efefeac82777c432e911fe0c6517ae" } } }

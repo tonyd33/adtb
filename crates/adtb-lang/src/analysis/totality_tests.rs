@@ -273,7 +273,7 @@ fn judge(case: &Case, text: &str) -> Result<(bool, Vec<Prim>), String> {
     let prims = reachable(n.terms(), item)
         .into_iter()
         .filter_map(|t| match n.terms().kind(t) {
-            Kind::Prim(p, _) => Some(*p),
+            Kind::Prim(p, _) => Some(p.clone()),
             _ => None,
         })
         .collect();
@@ -387,13 +387,13 @@ fn every_operator_and_partial_form_the_spec_lists_is_judged_as_listed_alone_and_
     for (i, p) in PRIMS.iter().enumerate() {
         assert_eq!(
             i,
-            prim_form(*p),
+            prim_form(p.clone()),
             "`{p:?}` is listed at the position of its form"
         );
     }
     let unreached: Vec<&Prim> = PRIMS
         .iter()
-        .filter(|p| !reached.contains(&prim_form(**p)))
+        .filter(|p| !reached.contains(&prim_form((*p).clone())))
         .collect();
     assert!(
         unreached.is_empty(),

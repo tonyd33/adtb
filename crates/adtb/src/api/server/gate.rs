@@ -131,6 +131,7 @@ impl<R: Runtime> RoleSession<R> {
             .and_then(|items| {
                 let p = Prepared::naming(
                     &e.compiled,
+                    &e.hash,
                     scope.as_ref(),
                     &e.explained(),
                     &items,

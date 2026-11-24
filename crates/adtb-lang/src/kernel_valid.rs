@@ -547,7 +547,7 @@ impl Validator<'_> {
         match self.terms.kind(t) {
             Kind::Var(x) => self.same("the variable's type", &self.terms.var_info(*x).ty, ty),
             Kind::Const(c) => self.constant(c, ty),
-            Kind::Prim(p, args) => self.prim(*p, args, ty),
+            Kind::Prim(p, args) => self.prim(p.clone(), args, ty),
             Kind::Record(fs) => self.record(fs, ty),
             Kind::Field(e, l) => self.field(*e, l, ty),
             Kind::Ctor { ctor, fields } => self.ctor(*ctor, fields, ty),
@@ -934,7 +934,7 @@ impl Validator<'_> {
     }
 
     fn prim(&self, p: Prim, args: &[Tm], ty: &Ty) -> Checked {
-        let want = prim_ty(self.schema, self.terms, self.bounds, p, args, Some(ty))?;
+        let want = prim_ty(self.schema, self.terms, self.bounds, &p, args, Some(ty))?;
         self.within(&format!("`{p:?}`"), &want, ty)
     }
 

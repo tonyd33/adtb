@@ -1,0 +1,20 @@
+seed 29
+use history
+
+error Invalid { detail: "an `at` block pins version 1 with hash 0000000000000000000000000000000000000000000000000000000000000000, and the log's version 1 has hash 272e7f56969475443ee3ccfc4496be0ac0efefeac82777c432e911fe0c6517ae" }
+  at commit $first pins 1 (0000000000000000000000000000000000000000000000000000000000000000) { from i in items select i.name }
+
+migrate
+  module stock
+  add type Note = { id: Key notes, text: Text }
+  add relation notes : Note key id generate sequence
+
+# Version 1 is now before the database's.
+error Invalid { detail: "an `at` block pins version 1 with hash 0000000000000000000000000000000000000000000000000000000000000000, and the log's version 1 has hash 272e7f56969475443ee3ccfc4496be0ac0efefeac82777c432e911fe0c6517ae" }
+  at commit $first pins 1 (0000000000000000000000000000000000000000000000000000000000000000) { from i in items select i.name }
+
+query rowsort
+  at commit $first pins 1 { from i in items select i.name }
+----
+"ann"
+"bo"

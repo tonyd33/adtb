@@ -1,7 +1,7 @@
 use super::expr::{empty_union, wants_expected};
 use super::*;
 use crate::ast::{BinOp, Expr, ExprKind};
-use crate::kernel::{Agg, Kind};
+use crate::kernel::{Agg, Kind, StatedVersion};
 
 /// A clause of a comprehension, elaborated: a generator, a binding or a filter.
 enum Frame {
@@ -50,7 +50,9 @@ impl Checker<'_> {
             ));
         }
         let ty = b.ty.clone();
-        let tm = self.b().at(instant, p.tm, pins.map(|v| v.number), b.tm, ty);
+        let tm = self
+            .b()
+            .at(instant, p.tm, pins.map(StatedVersion::of), b.tm, ty);
         Ok(self.out(tm))
     }
 

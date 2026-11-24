@@ -241,7 +241,7 @@ pub fn choose(
     } else {
         ty.clone()
     };
-    let op = match arith(p) {
+    let op = match arith(&p) {
         Some(a) => arith_op(schema, p, a, args, &result)?,
         None => other_op(schema, p, args, consts, ty)?,
     };
@@ -252,7 +252,7 @@ pub fn choose(
     })
 }
 
-fn arith(p: Prim) -> Option<Arith> {
+fn arith(p: &Prim) -> Option<Arith> {
     match p {
         Prim::Add | Prim::CheckedAdd => Some(Arith::Add),
         Prim::Sub | Prim::CheckedSub => Some(Arith::Sub),

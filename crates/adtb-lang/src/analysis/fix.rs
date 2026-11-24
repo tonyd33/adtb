@@ -448,7 +448,7 @@ impl Bounds<'_> {
                 }
             }
             Kind::Prim(p, xs) => {
-                if constructing(*p) && xs.iter().any(|x| self.taint(*x) != Taint::None) {
+                if constructing(p.clone()) && xs.iter().any(|x| self.taint(*x) != Taint::None) {
                     self.ok = false;
                 }
             }

@@ -619,8 +619,8 @@ mod tests {
         let e = db.engine.clone();
         let caller = e.principal(None).expect("principal");
         let items = Prepared::parsed("verify").expect("parses");
-        let p =
-            Prepared::of_items(&e.compiled, &e.explained(), &items, &[], caller).expect("checks");
+        let p = Prepared::of_items(&e.compiled, &e.hash, &e.explained(), &items, &[], caller)
+            .expect("checks");
         let call = RoleCall {
             role: "w".to_owned(),
             session: 0,

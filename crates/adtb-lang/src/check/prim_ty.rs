@@ -30,7 +30,7 @@ pub(crate) fn prim_ty(
     schema: &Schema,
     terms: &Terms,
     bounds: Bounds<'_>,
-    p: Prim,
+    p: &Prim,
     args: &[Tm],
     target: Option<&Ty>,
 ) -> Result<Ty, String> {
@@ -48,7 +48,7 @@ struct Signature<'a> {
     schema: &'a Schema,
     terms: &'a Terms,
     bounds: Bounds<'a>,
-    p: Prim,
+    p: &'a Prim,
     args: &'a [Tm],
 }
 
@@ -212,7 +212,7 @@ impl Signature<'_> {
         let p = self.p;
         let text = Ty::Base(Base::Text);
         match p {
-            Prim::Convert { checked } => self.convert(checked, self.target(target)?),
+            Prim::Convert { checked } => self.convert(*checked, self.target(target)?),
             Prim::Wrap => {
                 let [a] = self.arity()?;
                 let t = self.target(target)?;
@@ -411,7 +411,7 @@ impl Signature<'_> {
                 let [a, b] = self.arity()?;
                 let t = self.span_arg(a).ok_or_else(|| self.refused(&[a, b]))?;
                 let ok = subtype(self.schema, b, a)
-                    || (p == Prim::Covers
+                    || (*p == Prim::Covers
                         && self.span_arg(b).is_none()
                         && subtype(self.schema, b, t));
                 self.admits(ok, &[a, b])?;
@@ -431,7 +431,7 @@ impl Signature<'_> {
             Prim::Add | Prim::Sub | Prim::CheckedAdd | Prim::CheckedSub
         );
         let product = matches!(p, Prim::Mul | Prim::CheckedMul);
-        let quotient = p == Prim::Div;
+        let quotient = *p == Prim::Div;
         let difference = matches!(p, Prim::Sub | Prim::CheckedSub);
         let r = match (a, b) {
             (Ty::Base(x), Ty::Base(y)) if is_integer(a) && x == y => *x,
@@ -443,7 +443,7 @@ impl Signature<'_> {
                 })?;
                 Decimal(s + t)
             }
-            (Ty::Base(x @ (F32 | F64)), Ty::Base(y)) if x == y && p != Prim::Rem => *x,
+            (Ty::Base(x @ (F32 | F64)), Ty::Base(y)) if x == y && *p != Prim::Rem => *x,
             (Ty::Base(Duration), Ty::Base(Duration)) if additive => Duration,
             (Ty::Base(Duration), Ty::Base(I64)) if product || quotient => Duration,
             (Ty::Base(Period), Ty::Base(Period)) if additive => Period,

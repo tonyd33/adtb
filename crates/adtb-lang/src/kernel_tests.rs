@@ -1301,7 +1301,7 @@ fn after(p: Option<Prim>) -> Option<Prim> {
 }
 
 fn every_prim() -> Vec<(Prim, usize)> {
-    let prims = std::iter::successors(after(None), |p| after(Some(*p)));
+    let prims = std::iter::successors(after(None), |p| after(Some(p.clone())));
     prims
         .map(|p| {
             let n = match p {
@@ -1419,11 +1419,11 @@ fn validate_refuses_every_primitive_over_operands_of_a_function_type() {
             Prim::Convert { checked: true } => fx.option(int()),
             _ => int(),
         };
-        let t = terms.add(Kind::Prim(p, args), ty);
+        let t = terms.add(Kind::Prim(p.clone(), args), ty);
         let got = validate(&fx.schema, &terms, &[(t, vec![x])])
             .map(drop)
             .map_err(|e| (e.at(), e.reason().to_string()));
-        if got != Err((t, want(p))) {
+        if got != Err((t, want(p.clone()))) {
             differ.push(format!("{p:?}: {got:?}"));
         }
     }

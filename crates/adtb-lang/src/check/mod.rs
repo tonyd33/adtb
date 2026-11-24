@@ -393,7 +393,7 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> R<Out> {
         let bounds = prim_ty::Bounds::Declared(&self.tparams);
-        let ty = prim_ty::prim_ty(self.schema, &self.terms, bounds, p, &args, target.as_ref())
+        let ty = prim_ty::prim_ty(self.schema, &self.terms, bounds, &p, &args, target.as_ref())
             .map_err(|m| diag(span, m))?;
         let tm = self.b().prim(p, args, ty);
         Ok(self.out(tm))

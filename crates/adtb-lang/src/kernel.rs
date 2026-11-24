@@ -28,6 +28,38 @@ pub struct Tm(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Var(pub u32);
 
+/// A schema version a text states: its number and its hash, `None` where an example elides it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct StatedVersion {
+    number: u64,
+    hash: Option<Box<[u8; 32]>>,
+}
+
+impl StatedVersion {
+    /// Preconditions: the hash of `v`, when stated, is 64 hex digits.
+    pub fn of(v: &crate::ast::Version) -> StatedVersion {
+        let hash = v.hash.as_deref().map(|h| {
+            let mut bytes = [0; 32];
+            for (i, b) in bytes.iter_mut().enumerate() {
+                *b = u8::from_str_radix(&h[2 * i..2 * i + 2], 16).expect("a hash is hex digits");
+            }
+            Box::new(bytes)
+        });
+        StatedVersion {
+            number: v.number,
+            hash,
+        }
+    }
+
+    pub fn number(&self) -> u64 {
+        self.number
+    }
+
+    pub fn hash(&self) -> Option<&[u8; 32]> {
+        self.hash.as_deref()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Const {
     /// An integer at the node's integer type.
@@ -41,7 +73,7 @@ pub enum Const {
     Duration(i64),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Prim {
     Add,
     Sub,
@@ -113,7 +145,7 @@ pub enum Prim {
     /// files' constructor names are read at, the caller's when `None`.
     ReadFile {
         format: FileFormat,
-        pins: Option<u64>,
+        pins: Option<StatedVersion>,
     },
 }
 
@@ -224,7 +256,7 @@ pub enum Kind {
     At {
         instant: bool,
         point: Tm,
-        pins: Option<u64>,
+        pins: Option<StatedVersion>,
         body: Tm,
     },
     /// The final result delivered in order; each key is `(expr, desc)` over `var`.
@@ -907,7 +939,7 @@ impl Kind {
             | Kind::Fresh(..)
             | Kind::Unreachable
             | Kind::Skip => self.clone(),
-            Kind::Prim(p, xs) => Kind::Prim(*p, xs.iter().map(|_| next()).collect()),
+            Kind::Prim(p, xs) => Kind::Prim(p.clone(), xs.iter().map(|_| next()).collect()),
             Kind::Par(xs) => Kind::Par(xs.iter().map(|_| next()).collect()),
             Kind::Placeholder {
                 occurrence,
@@ -1014,7 +1046,7 @@ impl Kind {
             Kind::At { instant, pins, .. } => Kind::At {
                 instant: *instant,
                 point: next(),
-                pins: *pins,
+                pins: pins.clone(),
                 body: next(),
             },
             Kind::Present {

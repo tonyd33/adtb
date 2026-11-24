@@ -23,6 +23,8 @@ pub type Hash = [u8; 32];
 pub struct VersionHash {
     source: Arc<Source>,
     hash: Arc<OnceLock<Hash>>,
+    /// The hash of each version of the log, by number from 0.
+    log: Arc<OnceLock<Vec<Hash>>>,
 }
 
 impl VersionHash {
@@ -31,6 +33,7 @@ impl VersionHash {
         VersionHash {
             source,
             hash: Arc::default(),
+            log: Arc::default(),
         }
     }
 
@@ -41,6 +44,26 @@ impl VersionHash {
         }
         let h = version_hash(&self.source).map_err(super::unresolved)?;
         Ok(*self.hash.get_or_init(|| h))
+    }
+
+    /// Returns the hash of version `v` of the log, `None` for a version after the one `source` is
+    /// at.
+    pub fn at(&self, v: u64) -> Result<Option<Hash>, Error> {
+        if v == self.source.version() {
+            return self.get().map(Some);
+        }
+        let log = match self.log.get() {
+            Some(log) => log,
+            None => {
+                let mut log = vec![[0; 32]];
+                chain(super::engine_declarations(), &self.source, |_, h| {
+                    log.push(h);
+                })
+                .map_err(super::unresolved)?;
+                self.log.get_or_init(|| log)
+            }
+        };
+        Ok(usize::try_from(v).ok().and_then(|v| log.get(v)).copied())
     }
 
     /// Hold `hash` as the version's when no hash is held yet.

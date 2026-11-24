@@ -33,6 +33,7 @@ use super::pinned;
 use super::reads::Reads;
 use super::server::{holds_monitor, monitored};
 use super::settings::Settings;
+use super::stated;
 use super::text::{DynRows, Prepared, rows};
 use super::txn::{AdHocTransaction, Committed, TxnCallOptions};
 use super::{CallOptions, Database, Engine, OWNER_ID, OpenError};
@@ -560,10 +561,9 @@ pub(super) fn registration(
     s: &Settings,
     pins: &mut Pins,
 ) -> Result<Checked, Error> {
-    let version = over.source.version();
     let Some(h) = &r.header else {
         let c = checked(over, r)?;
-        pinned_within(&c, version)?;
+        pinned_within(&c, over)?;
         return Ok(c);
     };
     let at_pin = pinned(over, h, pins)?;
@@ -592,7 +592,7 @@ pub(super) fn registration(
             e.served = Some(s);
         }
     }
-    pinned_within(&c, version)?;
+    pinned_within(&c, over)?;
     if let Some(ctor) = stale(over, &c)? {
         return Err(bundle::stale(stored, h, now, s, ctor));
     }
@@ -624,8 +624,10 @@ fn untranslatable(
     })
 }
 
-/// Refuse a callable of `c` with an `at` block pinned at a version after `version`.
-fn pinned_within(c: &Checked, version: u64) -> Result<(), Error> {
+/// Refuse a callable of `c` with an `at` block pinned at a version after the one `over` is at,
+/// or stating a version with another hash than the log's.
+fn pinned_within(c: &Checked, over: &Over<'_>) -> Result<(), Error> {
+    let version = over.source.version();
     for e in &c.entries {
         let mut seen = BTreeSet::new();
         let mut todo = vec![e.body];
@@ -634,15 +636,17 @@ fn pinned_within(c: &Checked, version: u64) -> Result<(), Error> {
                 continue;
             }
             if let Kind::At { pins: Some(v), .. } = e.terms.kind(t)
-                && *v > version
+                && v.number() > version
             {
                 return Err(Error::invalid(format!(
-                    "`{}` reads the past at version {v}, and the database is at version {version}",
-                    e.name
+                    "`{}` reads the past at version {}, and the database is at version {version}",
+                    e.name,
+                    v.number()
                 )));
             }
             todo.extend(e.terms.children(t));
         }
+        stated::held(&e.terms, over.hash)?;
     }
     Ok(())
 }
@@ -701,20 +705,16 @@ fn pinned(now: &Over<'_>, h: &Header, pins: &mut Pins) -> Result<Option<Arc<Pin>
     }
     let at = now.source.version();
     let hashed = |over: &Over<'_>| {
-        let hash: String = over
+        let hash = over
             .hash
             .get()
-            .map_err(|e| Error::internal(Broken::CatalogError(e)))?
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+            .map_err(|e| Error::internal(Broken::CatalogError(e)))?;
+        let hash = stated::hex(&hash);
         if hash == h.hash {
             return Ok(());
         }
-        Err(Error::invalid(format!(
-            "bundle {} pins version {} with hash {}, and the log's version {} has hash {hash}",
-            h.name, h.pins, h.hash, h.pins
-        )))
+        let what = format!("bundle {}", h.name);
+        Err(stated::differs(&what, h.pins, &h.hash, &hash))
     };
     if h.pins == at {
         return hashed(now).map(|()| None);

@@ -1,7 +1,7 @@
 use super::call::Callee;
 use super::*;
 use crate::ast::{BinOp, Expr, ExprKind, Lit};
-use crate::kernel::{FileFormat, Prim, Transition};
+use crate::kernel::{FileFormat, Prim, StatedVersion, Transition};
 
 impl Checker<'_> {
     fn arity<'e>(&self, name: &str, es: &'e [Expr], n: usize, span: Span) -> R<&'e [Expr]> {
@@ -713,7 +713,7 @@ impl Checker<'_> {
         };
         let row = self.row_type_arg(name, row)?;
         let path = self.base_arg(path, Base::Text)?;
-        let pins = pins.map(|v| v.number);
+        let pins = pins.map(StatedVersion::of);
         self.prim(
             Prim::ReadFile { format, pins },
             vec![path],

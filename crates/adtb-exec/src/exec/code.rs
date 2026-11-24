@@ -747,7 +747,7 @@ impl<'a> Compiler<'a> {
                         _ => None,
                     })
                     .collect();
-                let op = prim::choose(self.schema, *p, &tys, &consts, ty)?;
+                let op = prim::choose(self.schema, p.clone(), &tys, &consts, ty)?;
                 let dst = e.reg();
                 ins.push(Ins::Prim { op, args, dst });
                 Opd::Reg(dst)

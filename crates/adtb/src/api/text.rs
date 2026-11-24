@@ -11,6 +11,7 @@ use adtb_lang::schema::{Schema, Scope};
 use adtb_lang::textual::Form;
 use adtb_lang::types::{FnId, KeyCtors, RelRef, Ty};
 
+use crate::catalog::VersionHash;
 use crate::exec::Val;
 use crate::write::Outcome;
 
@@ -18,6 +19,7 @@ use super::cause::Broken;
 use super::command;
 use super::error::Error;
 use super::server::Holds;
+use super::stated;
 
 /// The rows one item of ad hoc text returned, with their type.
 #[derive(Debug)]
@@ -95,16 +97,17 @@ pub(super) struct Issuer {
 
 impl Prepared {
     /// Returns `text` checked against `compiled`, each free name typed and bound by `params`, run
-    /// for `caller`.
+    /// for `caller`, refusing a version it states with another hash than `hash` gives.
     pub fn new(
         compiled: &Compiled,
+        hash: &VersionHash,
         bundles: &Bundles,
         text: &str,
         params: &[(&str, Ty, Val)],
         caller: Val,
     ) -> Result<Prepared, Error> {
         let items = Self::parsed(text)?;
-        Self::of_items(compiled, bundles, &items, params, caller)
+        Self::of_items(compiled, hash, bundles, &items, params, caller)
     }
 
     /// Returns the items of `text`, reading no schema.
@@ -117,12 +120,13 @@ impl Prepared {
     /// Returns `items` checked as [`Prepared::new`] checks the text they were parsed from.
     pub fn of_items(
         compiled: &Compiled,
+        hash: &VersionHash,
         bundles: &Bundles,
         items: &[AdhocItem],
         params: &[(&str, Ty, Val)],
         caller: Val,
     ) -> Result<Prepared, Error> {
-        Self::naming(compiled, None, bundles, items, params, caller).map_err(|e| match e {
+        Self::naming(compiled, hash, None, bundles, items, params, caller).map_err(|e| match e {
             TextError::Checker(e) | TextError::Other(e) => e,
         })
     }
@@ -131,6 +135,7 @@ impl Prepared {
     /// holds when given.
     pub(super) fn naming(
         compiled: &Compiled,
+        hash: &VersionHash,
         scope: Option<&Scope>,
         bundles: &Bundles,
         items: &[AdhocItem],
@@ -176,6 +181,7 @@ impl Prepared {
             .collect();
         let normal = norm::adhoc(compiled, &adhoc)
             .map_err(|e| TextError::Other(Error::not_normal(e, Broken::AdhocNotNormal)))?;
+        stated::held(normal.terms(), hash).map_err(TextError::Checker)?;
         let bound = params
             .iter()
             .filter_map(|(n, _, v)| normal.params().get(*n).map(|x| (*x, v.clone())))

@@ -1,4 +1,6 @@
-use super::{Agg, Conflict, Const, Kind, Prim, Terms, Tm, Transition, TxnOptions, Var};
+use super::{
+    Agg, Conflict, Const, Kind, Prim, StatedVersion, Terms, Tm, Transition, TxnOptions, Var,
+};
 use crate::check::prim_ty::{Bounds, prim_ty};
 use crate::check::sums::canonical;
 use crate::check::ty::{elem, held_fields, restrict};
@@ -377,7 +379,7 @@ impl<'a> Build<'a> {
     /// its operands do not, or at `Unit` with the arena recording it as broken when the operands
     /// are not its own.
     pub fn prim_typed(&mut self, p: Prim, args: Vec<Tm>, target: Option<&Ty>) -> Tm {
-        let ty = prim_ty(self.schema, self.terms, Bounds::Unknown, p, &args, target);
+        let ty = prim_ty(self.schema, self.terms, Bounds::Unknown, &p, &args, target);
         match ty {
             Ok(ty) => self.put(Kind::Prim(p, args), ty),
             Err(reason) => self.untypable(Kind::Prim(p, args), reason),
@@ -619,7 +621,14 @@ impl<'a> Build<'a> {
         })
     }
 
-    pub fn at(&mut self, instant: bool, point: Tm, pins: Option<u64>, body: Tm, ty: Ty) -> Tm {
+    pub fn at(
+        &mut self,
+        instant: bool,
+        point: Tm,
+        pins: Option<StatedVersion>,
+        body: Tm,
+        ty: Ty,
+    ) -> Tm {
         self.put(
             Kind::At {
                 instant,

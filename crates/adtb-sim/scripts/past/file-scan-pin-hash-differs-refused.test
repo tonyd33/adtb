@@ -1,0 +1,9 @@
+seed 31
+use stock
+
+error Invalid { detail: "a file scan pins version 1 with hash 0000000000000000000000000000000000000000000000000000000000000000, and the log's version 1 has hash 272e7f56969475443ee3ccfc4496be0ac0efefeac82777c432e911fe0c6517ae" }
+  from r in read_csv("items.csv", Item) pins 1 (0000000000000000000000000000000000000000000000000000000000000000) select r.name
+
+# The log's hash passes to the read.
+error BadInput { source: "items.csv", line: 0, detail: "items.csv: No such file or directory (os error 2)" }
+  from r in read_csv("items.csv", Item) pins 1 select r.name

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use adtb_lang::analysis::Totality;
 use adtb_lang::ast::FnBody;
-use adtb_lang::kernel::{self, Agg, Kind, PathStep, Terms, Tm, Valid, Var};
+use adtb_lang::kernel::{self, Agg, Kind, PathStep, StatedVersion, Terms, Tm, Valid, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{CtorSet, Fields, KeyCtors, RelId, Ty};
@@ -816,7 +816,13 @@ impl Planner<'_> {
 
     /// Returns the read of `body` at the state `point` names, planned apart from every query
     /// that holds it.
-    fn at(&mut self, instant: bool, point: Tm, pins: Option<u64>, body: Tm) -> Result<Eval, Error> {
+    fn at(
+        &mut self,
+        instant: bool,
+        point: Tm,
+        pins: Option<StatedVersion>,
+        body: Tm,
+    ) -> Result<Eval, Error> {
         if self.bounded {
             return Err(Error::Outside("at"));
         }
@@ -833,7 +839,7 @@ impl Planner<'_> {
         let at = AtRead {
             instant,
             point,
-            pins,
+            pins: pins.map(|v| v.number()),
             body,
         };
         Ok(wrap_eval(lets, Eval::At(Box::new(at))))

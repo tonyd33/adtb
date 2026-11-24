@@ -211,7 +211,7 @@ impl<'s> Totality<'s> {
         match k {
             Kind::Prim(p, xs) => {
                 let args: Vec<&Ty> = xs.iter().map(|x| terms.ty(*x)).collect();
-                self.prim(*p, &args, terms.ty(t))
+                self.prim(p.clone(), &args, terms.ty(t))
             }
             Kind::Agg { op, .. } => match op {
                 Agg::Count | Agg::Min | Agg::Max | Agg::Avg => Abort::Never,

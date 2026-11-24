@@ -170,7 +170,14 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     ) -> Result<Vec<DynRows>, Error> {
         let e = &self.engine.enter()?;
         let compiled = self.temps.as_ref().unwrap_or(&e.compiled);
-        let p = Prepared::new(compiled, &e.explained(), text, params, self.caller.clone())?;
+        let p = Prepared::new(
+            compiled,
+            &e.hash,
+            &e.explained(),
+            text,
+            params,
+            self.caller.clone(),
+        )?;
         for c in p.commands() {
             super::command::outside_transaction(&c.command)?;
         }

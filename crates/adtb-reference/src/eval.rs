@@ -586,7 +586,7 @@ impl Run<'_, '_> {
             Kind::Prim(p, args) => {
                 let vs = self.eval_all(h, args, env)?;
                 let tys: Vec<Ty> = args.iter().map(|a| self.ty(h, *a)).collect();
-                prim::apply(it, *p, vs, &self.ty(h, t), &tys)
+                prim::apply(it, p.clone(), vs, &self.ty(h, t), &tys)
             }
             Kind::Record(fs) => {
                 let mut out = Vec::new();
