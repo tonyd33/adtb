@@ -38,26 +38,6 @@ impl Source {
         Ok(src)
     }
 
-    pub(super) fn state(&self, s: StateOf) -> Option<State> {
-        match s {
-            StateOf::Relation(r, c) => self.states.get(&(r, c)),
-            StateOf::Value(c) => self.value_states.get(&c),
-        }
-        .copied()
-    }
-
-    pub(super) fn every_state(&self) -> impl Iterator<Item = (StateOf, State)> + '_ {
-        let relations = self
-            .states
-            .iter()
-            .map(|(&(r, c), &v)| (StateOf::Relation(r, c), v));
-        let values = self
-            .value_states
-            .iter()
-            .map(|(&c, &v)| (StateOf::Value(c), v));
-        relations.chain(values)
-    }
-
     /// Returns the module files of the declarations, file `i` holding declaration `i`.
     pub fn files(&self) -> Result<Vec<(FileId, ast::SchemaFile)>, Vec<FileDiag>> {
         let mut out = Vec::new();

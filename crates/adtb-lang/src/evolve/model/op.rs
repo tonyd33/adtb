@@ -50,7 +50,7 @@ impl Kind {
         .find(|k| k.word() == word)
     }
 
-    fn of(item: Item) -> Kind {
+    pub(super) fn of(item: Item) -> Kind {
         match item {
             Item::Type(_) => Kind::Type,
             Item::Relation(_) => Kind::Relation,
@@ -71,6 +71,16 @@ impl Kind {
 pub(super) enum StateKey {
     Relation(u64, u64),
     Value(u64),
+}
+
+impl StateKey {
+    /// Returns the key with each id replaced by the one `id` maps it to.
+    pub(super) fn mapped(self, id: &impl Fn(u64) -> u64) -> StateKey {
+        match self {
+            StateKey::Relation(r, c) => StateKey::Relation(id(r), id(c)),
+            StateKey::Value(c) => StateKey::Value(id(c)),
+        }
+    }
 }
 
 /// An operator with every name it writes resolved to the object it names in the model it
@@ -460,7 +470,7 @@ impl Model {
     }
 
     /// Returns the name a declaration is found by: a set's as `relation.set`.
-    fn decl_name(&self, item: Item) -> String {
+    pub(super) fn decl_name(&self, item: Item) -> String {
         match item {
             Item::Type(t) => self.types[&t].name.clone(),
             Item::Relation(r) => self.relations[&r].name.clone(),

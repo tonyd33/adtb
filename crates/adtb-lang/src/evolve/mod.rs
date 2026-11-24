@@ -6,15 +6,11 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::ast::{
-    self, CtorSel, CtorTarget, Decl, Expr, Fill, MigrationFile, Operator, OperatorKind, QName,
-    RelationClause,
+    self, CtorSel, Decl, Expr, Fill, MigrationFile, Operator, OperatorKind, QName, RelationClause,
 };
 use crate::canon::Names;
 use crate::check::{self, Compiled, Ref};
-use crate::ids::{
-    CatConstraintId, CatCtorId, CatFieldId, CatFunctionId, CatIndexId, CatRelId, CatSetId,
-    CatTypeId, ObjectKey, held_id,
-};
+use crate::ids::{CatCtorId, CatFieldId, CatFunctionId, CatRelId, CatSetId, ObjectKey};
 use crate::lex::{Tok, lex};
 use crate::parse::{Options, parse_schema};
 use crate::schema::{self, Committed, Schema, TypeDefKind, ValueDef};
@@ -37,7 +33,6 @@ mod model;
 mod names;
 mod recorded;
 mod resolved;
-mod revert;
 mod rowmap;
 mod source;
 mod text;
@@ -423,14 +418,6 @@ struct Cx<'a> {
 }
 
 type R<T> = Result<T, Vec<Diag>>;
-
-/// The write state of a constructor relation, by the ids of the relation variable and the
-/// constructor, or of a value-level constructor, by its id.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(in crate::evolve) enum StateOf {
-    Relation(CatRelId, CatCtorId),
-    Value(CatCtorId),
-}
 
 /// Returns the name of a field of type `def` whose delete action retags into constructor `c`.
 fn retag_into(schema: &Schema, def: TypeId, c: u32) -> Option<String> {

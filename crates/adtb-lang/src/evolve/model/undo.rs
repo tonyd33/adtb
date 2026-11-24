@@ -5,22 +5,16 @@ use super::run::Run;
 use super::*;
 use crate::ast::{self, Fill};
 use crate::check::{self, Ref};
-use crate::evolve::revert::{DeclOf, Late as Gone, NamedId, PlacedArms, Spelled, Undo, dropped};
+use crate::evolve::model::inverse::{DeclOf, Late as Gone, PlacedArms, Term, Undo, dropped};
 use crate::evolve::{Resolved, holds, match_arms};
-use crate::ids::{CatCtorId, CatIndexId, CatSetId, KeyKind};
+use crate::ids::KeyKind;
 use crate::parse::{Options, parse_schema};
 use crate::span::FileId;
 
 /// The parts of a structural inverse: the uniques and indexes it drops first, its operator, the
 /// operators that add their replacements, how it applies its operator, and the text each check
 /// takes.
-pub(super) type Restructuring = (
-    Vec<CatIndexId>,
-    Spelled,
-    Spelled,
-    Undo,
-    Vec<(crate::ids::CatConstraintId, Spelled)>,
-);
+pub(super) type Restructuring = (Vec<u64>, Term, Term, Undo, Vec<(u64, Term)>);
 
 impl Model {
     /// Apply a structural inverse: drop its uniques and indexes, apply its operator as `how`
@@ -38,7 +32,7 @@ impl Model {
         let adds = self.spell_copies(&adds, of, gone)?;
         let mut set = Vec::new();
         for (c, t) in checks {
-            let Some(item) = self.decl_of(DeclOf::Object(KeyKind::Constraint, c.raw())) else {
+            let Some(item) = self.decl_of(DeclOf::Object(KeyKind::Constraint, c)) else {
                 return refuse(dropped(of, "constraint"));
             };
             set.push((item, self.spell(&t, of, gone)?));
@@ -47,21 +41,20 @@ impl Model {
         let mut renames = None;
         match &how {
             Undo::UpFrom(ctors) => {
-                for c in ctors {
-                    if !self.ctors.contains_key(&c.raw()) {
+                for &c in ctors {
+                    if !self.ctors.contains_key(&c) {
                         return refuse(dropped(of, "constructor"));
                     }
-                    from.push(c.raw());
+                    from.push(c);
                 }
             }
             Undo::Unnest(ty, products) => {
-                let schema = self.schema_now(run)?.into_schema();
-                let Some((module, t)) = NamedId::Type(*ty).spelled(&schema) else {
+                let Some((module, t)) = self.spelled_obj((Space::Shared, *ty)) else {
                     return refuse(dropped(of, "type"));
                 };
                 let mut moved = Vec::new();
                 for (c, was) in products {
-                    let Some(n) = self.ctors.get(&c.raw()).map(|x| x.name.clone()) else {
+                    let Some(n) = self.ctors.get(c).map(|x| x.name.clone()) else {
                         return refuse(dropped(of, "constructor"));
                     };
                     if n != *was {
@@ -99,7 +92,7 @@ impl Model {
         }
         if !drops.is_empty() {
             for id in drops {
-                if !self.drop_index_id(id.raw()) {
+                if !self.drop_index_id(id) {
                     return refuse(dropped(of, "index"));
                 }
             }
@@ -151,7 +144,7 @@ impl Model {
         &mut self,
         run: &mut Run,
         ctor: u64,
-        record: Option<Vec<crate::ids::CatFieldId>>,
+        record: Option<Vec<u64>>,
         of: &str,
     ) -> Res<()> {
         let Some(t) = self.ctors.get(&ctor).map(|c| c.ty) else {
@@ -178,7 +171,6 @@ impl Model {
         }
         let own = self.ctors[&one].fields.clone().unwrap_or_default();
         let mut all: Vec<u64> = header.into_iter().chain(own).collect();
-        let order: Vec<u64> = order.iter().map(|f| f.raw()).collect();
         all.sort_by_key(|f| order.iter().position(|x| x == f).unwrap_or(usize::MAX));
         self.ctors.get_mut(&one).expect("the constructor").fields = Some(all);
         self.types.get_mut(&t).expect("the type").body = TypeBody::Record { ctor: one };
@@ -197,7 +189,7 @@ impl Model {
         run: &mut Run,
         (ty, ctor, name): (u64, u64, &str),
         text: &str,
-        (after, joins, arms): (Vec<CatCtorId>, Vec<CatSetId>, Vec<PlacedArms>),
+        (after, joins, arms): (Vec<u64>, Vec<u64>, Vec<PlacedArms>),
         of: &str,
         gone: &Gone,
     ) -> Res<()> {
@@ -205,15 +197,14 @@ impl Model {
             return refuse(dropped(of, "type"));
         }
         let after = after
-            .iter()
-            .map(|c| c.raw())
+            .into_iter()
             .find(|c| self.ctors.get(c).is_some_and(|m| m.ty == ty));
         let mut sets = Vec::new();
         for s in joins {
-            if !self.sets.contains_key(&s.raw()) {
+            if !self.sets.contains_key(&s) {
                 return refuse(dropped(of, "set"));
             }
-            sets.push(s.raw());
+            sets.push(s);
         }
         let built = self.schema_now(run)?;
         let schema = built.schema();
@@ -221,11 +212,11 @@ impl Model {
         let refs = check::schema_refs(schema);
         let mut placed = Vec::new();
         for (c, n, beside, texts) in arms {
-            let Some(item) = self.decl_of(DeclOf::Object(KeyKind::Constraint, c.raw())) else {
+            let Some(item) = self.decl_of(DeclOf::Object(KeyKind::Constraint, c)) else {
                 return refuse(dropped(of, "constraint"));
             };
             let beside = match beside {
-                Some(b) => match schema.ids().ctor_of(b) {
+                Some(b) => match schema.ids().ctor_of(cat_ctor(b)) {
                     Some(r) if r.def() == def => Some(r.index()),
                     _ => return refuse(dropped(of, "constructor")),
                 },
@@ -316,8 +307,7 @@ impl Model {
                 .members
                 .push(Term::name((Space::Shared, c), name));
         }
-        let again: crate::evolve::revert::Recreated =
-            [((Space::Shared, ctor), c)].into_iter().collect();
+        let again: inverse::Recreated = [((Space::Shared, ctor), c)].into_iter().collect();
         placed.sort_by_key(|p| std::cmp::Reverse(p.1));
         for (item, at, first, texts) in placed {
             let mut joined = String::new();

@@ -17,6 +17,9 @@ pub(in crate::evolve) struct Migrated {
     model: Model,
     /// For each operator applied, its resolved form, or why it was refused.
     ops: Vec<Result<ResolvedOp, Refused>>,
+    /// For each operator applied, the operator as it was resolved before it applied, when it
+    /// applied.
+    inputs: Vec<Option<Op>>,
     /// For each operator applied, the row maps of its one step, or why they fail.
     maps: Vec<Maps>,
     /// For each operator applied, its steps when it is a `revert`.
@@ -45,6 +48,17 @@ impl Migrated {
     /// Returns, for each operator applied, the model it leaves.
     pub(super) fn afters(&self) -> &[Model] {
         &self.afters
+    }
+
+    /// Returns the model before the migration's first operator.
+    pub(super) fn start(&self) -> &Model {
+        &self.start
+    }
+
+    /// Returns, for each operator applied, the operator as it was resolved before it applied,
+    /// when it applied.
+    pub(super) fn inputs(&self) -> &[Option<Op>] {
+        &self.inputs
     }
 
     /// Returns the names of the migration's text, when they were asked for.
@@ -289,6 +303,7 @@ impl Model {
         model.expecting(m);
         model.naming = naming::Naming::of(text);
         let mut ops = Vec::new();
+        let mut inputs = Vec::new();
         let mut maps = Vec::new();
         let mut steps = Vec::new();
         let mut afters = Vec::new();
@@ -308,7 +323,7 @@ impl Model {
                     | OperatorKind::RenameConstructor(..)
                     | OperatorKind::RenameField(..)
             );
-            let applied = next.operator(&mut run, &op.kind).and_then(|x| {
+            let applied = next.operator_as(&mut run, &op.kind).and_then(|x| {
                 if renames {
                     next.faithful(&model, &mut run)?;
                 }
@@ -316,7 +331,8 @@ impl Model {
                 next.ids_fit().map(|()| x)
             });
             match applied {
-                Ok((r, m)) => {
+                Ok((input, r, m)) => {
+                    inputs.push(Some(input));
                     if let OperatorKind::Rekey { relation, .. } = &op.kind {
                         rekeyed.push((k, relation.clone(), op.span));
                     }
@@ -336,6 +352,7 @@ impl Model {
                     ops.push(Ok(r));
                 }
                 Err(Fail::Refused(why)) => {
+                    inputs.push(None);
                     maps.push(Ok(Vec::new()));
                     steps.push(None);
                     run.discard();
@@ -408,6 +425,7 @@ impl Model {
             start: self.clone(),
             model,
             ops,
+            inputs,
             maps,
             steps,
             afters,
@@ -639,6 +657,11 @@ impl Model {
 
     /// Resolve operator `op` and apply it. Returns it resolved.
     pub(super) fn operator(&mut self, run: &mut Run, op: &OperatorKind) -> Res<(ResolvedOp, Maps)> {
+        self.operator_as(run, op).map(|(_, r, m)| (r, m))
+    }
+
+    /// Resolve operator `op` and apply it. Returns it as resolved before and after applying it.
+    fn operator_as(&mut self, run: &mut Run, op: &OperatorKind) -> Res<(Op, ResolvedOp, Maps)> {
         if matches!(
             op,
             OperatorKind::RenameConstructor(..)
@@ -652,7 +675,7 @@ impl Model {
         let resolved = resolving.op(op)?;
         resolving.tie_rest(op);
         let ties = resolving.into_ties();
-        let out = self.apply(run, resolved)?;
+        let (r, m) = self.apply(run, resolved.clone())?;
         if run.is_copying() {
             let after = Resolving::of(self, run.module(), run.text());
             after.tie_declared(op);
@@ -660,7 +683,7 @@ impl Model {
             ties.extend(after.into_ties());
             run.note_names(ties);
         }
-        Ok(out)
+        Ok((resolved, r, m))
     }
 
     /// Apply operator `op`. Returns it resolved.

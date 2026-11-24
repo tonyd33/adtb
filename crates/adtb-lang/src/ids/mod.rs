@@ -130,10 +130,11 @@ from_raw!(
     CatRelId,
     CatFieldId,
     CatSetId,
-    CatIndexId,
     CatFunctionId,
-    CatConstraintId,
 );
+
+#[cfg(test)]
+from_raw!(CatIndexId, CatConstraintId);
 
 /// The id of a temp relation of ad hoc text, from a space of its own: never stored, and never
 /// a catalog id.

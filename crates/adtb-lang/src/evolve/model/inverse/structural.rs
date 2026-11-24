@@ -1,4 +1,4 @@
-use super::inverse::Inverting;
+use super::of_op::Inverting;
 use super::*;
 use crate::ids::{KeyKind, Owner, Space};
 
@@ -10,10 +10,10 @@ pub(in crate::evolve) enum Undo {
     /// A merge whose arms' fixed values tell its constructors apart.
     Derived,
     /// A move to the header of the field of every constructor of the ids.
-    UpFrom(Vec<CatCtorId>),
+    UpFrom(Vec<u64>),
     /// An unnest, then a rename of each constructor of the type of the id that it brings up from
     /// the product of an id to the name beside it.
-    Unnest(CatTypeId, Vec<(CatCtorId, String)>),
+    Unnest(u64, Vec<(u64, String)>),
 }
 
 /// A unique or index clause of a relation: its id, the declaration, its position among the
@@ -61,33 +61,33 @@ fn index_clauses(src: &Source, schema: &Schema, rel: RelId) -> Vec<IndexClause> 
 }
 
 /// Returns relation `rel` of `schema` qualified by its module, held by its id.
-fn relation_spelled(schema: &Schema, rel: RelId) -> Spelled {
+fn relation_spelled(schema: &Schema, rel: RelId) -> Term {
     let rd = schema.relation(rel);
-    let mut out = Spelled::from(format!("{}::", schema.module(rd.module).name));
+    let mut out = Term::from(format!("{}::", schema.module(rd.module).name));
     let id = schema.ids().relation_id(rel).map(CatRelId::raw);
-    out.name(&rd.name, Space::Shared, id);
+    out.push_name(&rd.name, Space::Shared, id);
     out
 }
 
 /// Returns type `t` of module `m` qualified by its module, held by its id in `src`.
-fn type_spelled(src: &Source, m: &str, t: &str) -> Spelled {
-    let mut out = Spelled::from(format!("{m}::"));
+fn type_spelled(src: &Source, m: &str, t: &str) -> Term {
+    let mut out = Term::from(format!("{m}::"));
     let key = ObjectKey::named(KeyKind::Type, Owner::Module(m.to_string()), t);
-    out.name(t, Space::Shared, src.ids.get(&key).copied());
+    out.push_name(t, Space::Shared, src.ids.get(&key).copied());
     out
 }
 
 /// Returns constructor `c` of type `t` of module `m`, held by its id in `src`.
-fn ctor_spelled(src: &Source, m: &str, t: &str, c: &str) -> Spelled {
-    let mut out = Spelled::default();
-    out.name(c, Space::Shared, src.ctor_key_id(m, t, c));
+fn ctor_spelled(src: &Source, m: &str, t: &str, c: &str) -> Term {
+    let mut out = Term::default();
+    out.push_name(c, Space::Shared, src.ctor_key_id(m, t, c));
     out
 }
 
 impl Inverting<'_> {
     /// Returns each unique and index the operator created over a relation of type `t` of module
     /// `m`, and the operators that add back each it removed, each on a line after a line break.
-    fn clauses_back(&self, m: &str, t: &str) -> R<(Vec<CatIndexId>, Spelled)> {
+    fn clauses_back(&self, m: &str, t: &str) -> R<(Vec<u64>, Term)> {
         let (before, after) = (self.before(), self.after());
         let replays = || vec![Diag::new(self.op().span, "the log does not replay")];
         let bs = before.schema().map_err(|_| replays())?;
@@ -97,7 +97,7 @@ impl Inverting<'_> {
             .and_then(|mid| bs.module(mid).types.get(t).copied())
             .ok_or_else(|| vec![Diag::new(self.op().span, "the log does not hold the type")])?;
         let mut drops = Vec::new();
-        let mut adds = Spelled::default();
+        let mut adds = Term::default();
         for (rel, ..) in Cx::relations_of(&bs, def) {
             let was = index_clauses(before, &bs, rel);
             let Some(ar) = bs
@@ -110,7 +110,7 @@ impl Inverting<'_> {
             let now = index_clauses(after, &r#as, ar);
             for (id, ..) in &now {
                 if !was.iter().any(|c| c.0 == *id) {
-                    drops.push(CatIndexId::from_raw(*id));
+                    drops.push(*id);
                 }
             }
             for (id, i, _, range) in &was {
@@ -132,9 +132,9 @@ impl Inverting<'_> {
 
     /// Returns the `add default` operators that put back each default over constructor `ctor`
     /// of each relation variable of type `def` of `schema`, the schema before the operator.
-    fn defaults_back(&self, schema: &Schema, def: TypeId, ctor: &str) -> R<Spelled> {
+    fn defaults_back(&self, schema: &Schema, def: TypeId, ctor: &str) -> R<Term> {
         let before = self.before();
-        let mut out = Spelled::default();
+        let mut out = Term::default();
         for (rel, ..) in Cx::relations_of(schema, def) {
             let Some((i, d, ranges)) = relation_clauses(before, schema, rel) else {
                 continue;
@@ -160,14 +160,9 @@ impl Inverting<'_> {
     /// Returns the `arm` clauses that put back, for each declaration an `arm` of `clauses`
     /// names, its arms over a constructor of type `ty` named in `ctors` as `before` declares
     /// them.
-    fn restored_arms(
-        &self,
-        clauses: &[ast::ArmClause],
-        ty: &QName,
-        ctors: &[String],
-    ) -> R<Spelled> {
+    fn restored_arms(&self, clauses: &[ast::ArmClause], ty: &QName, ctors: &[String]) -> R<Term> {
         let before = self.before();
-        let mut out = Spelled::default();
+        let mut out = Term::default();
         if clauses.is_empty() {
             return Ok(out);
         }
@@ -221,7 +216,7 @@ impl Inverting<'_> {
 
     /// Returns the text of constructor `c` of type `ty` as `before` declares it, with its field
     /// names.
-    fn before_ctor(&self, ty: &QName, c: &str) -> R<(Spelled, Vec<String>)> {
+    fn before_ctor(&self, ty: &QName, c: &str) -> R<(Term, Vec<String>)> {
         let before = self.before();
         let m = self.module_of(ty);
         let missing = || {
@@ -248,13 +243,7 @@ impl Inverting<'_> {
     /// Returns the step applying `op`, the inverse operator, as `how` says, after dropping the
     /// clauses the operator created over the relations of type `ty` and before adding back
     /// those it removed.
-    fn restructure(
-        &self,
-        ty: &QName,
-        op: Spelled,
-        how: Undo,
-        checks: Vec<(CatConstraintId, Spelled)>,
-    ) -> R<Inverse> {
+    fn restructure(&self, ty: &QName, op: Term, how: Undo, checks: Vec<(u64, Term)>) -> R<Inverse> {
         let (drops, adds) = self.clauses_back(&self.module_of(ty), &ty.name.text)?;
         Ok(Inverse::Restructure {
             drops,
@@ -273,12 +262,12 @@ fn clause_op(
     verb: &str,
     text: &str,
     range: &Range<usize>,
-    rel: &Spelled,
-    copy: impl Fn(Range<usize>) -> R<Spelled>,
-) -> R<Spelled> {
+    rel: &Term,
+    copy: impl Fn(Range<usize>) -> R<Term>,
+) -> R<Term> {
     let clause = text[range.clone()].trim_end();
     let end = range.start + clause.len();
-    let mut out = Spelled::from(format!("{verb} "));
+    let mut out = Term::from(format!("{verb} "));
     match clause.rfind(") in ") {
         Some(p) => {
             out.append(copy(range.start..range.start + p + 1)?);
@@ -333,7 +322,7 @@ impl Cx<'_> {
             ));
         }
         let (c_text, c_fields) = at.before_ctor(&path.ty, &path.ctor.text)?;
-        let mut inverse_arms = Spelled::default();
+        let mut inverse_arms = Term::default();
         for a in arms {
             let Some(ast::Pattern {
                 kind: ast::PatternKind::Ctor { payload, .. },
@@ -412,7 +401,7 @@ impl Cx<'_> {
         }
         let m = at.module_of(&path.ty);
         let products: Vec<String> = into.iter().map(|d| d.name.text.clone()).collect();
-        let mut op = Spelled::from("merge constructor ");
+        let mut op = Term::from("merge constructor ");
         op.append(type_spelled(at.before(), &m, &path.ty.name.text));
         op.push(format!(".({}) into ", products.join(" | ")));
         op.append(c_text);
@@ -480,8 +469,8 @@ impl Cx<'_> {
             .map(|f| f.name.text.clone())
             .filter(|f| *f != disc)
             .collect();
-        let mut out_arms = Spelled::default();
-        let mut products = Spelled::default();
+        let mut out_arms = Term::default();
+        let mut products = Term::default();
         for (k, src) in sources.iter().enumerate() {
             let (text, src_fields) = at.before_ctor(ty, src)?;
             if k > 0 {
@@ -505,14 +494,14 @@ impl Cx<'_> {
                 .and_then(|c| schema.ids().ctor_id(c))
                 .map(CatCtorId::raw);
             out_arms.push(format!("\n    | {} {{ {disc}: ", into.name.text));
-            out_arms.name(src, Space::Shared, value);
+            out_arms.push_name(src, Space::Shared, value);
             for f in &m_fields {
                 out_arms.push(format!(", {f}"));
             }
             out_arms.push(format!(" }} -> {src} {{ {} }}", given.join(", ")));
         }
         let m = at.module_of(ty);
-        let mut op = Spelled::from("split constructor ");
+        let mut op = Term::from("split constructor ");
         op.append(type_spelled(before, &m, &ty.name.text));
         op.push(format!(".{} into ", into.name.text));
         op.append(products);
@@ -538,13 +527,17 @@ impl Cx<'_> {
         let ids = schema.ids();
         let missing = || vec![Diag::new(self.span, "the log does not hold the type")];
         Ok(Inverse::PlaceCtors {
-            ty: ids.type_id(def).ok_or_else(missing)?,
-            order: td.ctor_refs().filter_map(|c| ids.ctor_id(c)).collect(),
+            ty: ids.type_id(def).ok_or_else(missing)?.raw(),
+            order: td
+                .ctor_refs()
+                .filter_map(|c| ids.ctor_id(c))
+                .map(CatCtorId::raw)
+                .collect(),
             placed: ctors
                 .iter()
                 .filter_map(|c| td.ctor_named(c).and_then(|c| ids.ctor_id(c)))
+                .map(CatCtorId::raw)
                 .collect(),
-            of: at.of(),
         })
     }
 
@@ -556,7 +549,7 @@ impl Cx<'_> {
         schema: &Schema,
         ty: &QName,
         sources: &[String],
-    ) -> R<Vec<(CatConstraintId, Spelled)>> {
+    ) -> R<Vec<(u64, Term)>> {
         let def = self.type_id(schema, ty)?;
         let td = schema.ty(def);
         let src_ix: Vec<u32> = sources.iter().filter_map(|s| td.ctor_index(s)).collect();
@@ -577,7 +570,7 @@ impl Cx<'_> {
             let Some(id) = schema.ids().check_id(k) else {
                 return self.err("the log does not hold the check the operator rewrites");
             };
-            out.push((id, at.decl(chk.file.0 as usize)?));
+            out.push((id.raw(), at.decl(chk.file.0 as usize)?));
         }
         Ok(out)
     }
@@ -621,7 +614,7 @@ impl Cx<'_> {
                 .ok_or_else(missing)?;
             let was = before.ctor_key_id(&m, t, c).ok_or_else(missing)?;
             arms = arms.aliased(Space::Shared, was, product.raw());
-            products.push((product, c.clone()));
+            products.push((product.raw(), c.clone()));
         }
         let ty_id = before
             .ids
@@ -632,17 +625,12 @@ impl Cx<'_> {
             ))
             .copied()
             .ok_or_else(missing)?;
-        let mut op = Spelled::from("unnest constructor ");
+        let mut op = Term::from("unnest constructor ");
         op.append(type_spelled(before, &m, t));
         op.push(format!(".{}", into.name.text));
         op.append(arms);
         Ok(vec![
-            at.restructure(
-                ty,
-                op,
-                Undo::Unnest(CatTypeId::from_raw(ty_id), products),
-                Vec::new(),
-            )?,
+            at.restructure(ty, op, Undo::Unnest(ty_id, products), Vec::new())?,
             self.placed_back(at, ty, &names)?,
         ])
     }
@@ -674,7 +662,7 @@ impl Cx<'_> {
             })
             .unwrap_or_default();
         let m = at.module_of(&path.ty);
-        let mut op = Spelled::from("nest constructor ");
+        let mut op = Term::from("nest constructor ");
         op.append(type_spelled(before, &m, &path.ty.name.text));
         op.push(format!(".({}) into ", products.join(" | ")));
         op.append(ctext);
@@ -692,7 +680,7 @@ impl Cx<'_> {
     pub(super) fn move_inverse(
         &self,
         at: &Inverting,
-        path: &ast::FieldPath,
+        (moved, path): (u64, &ast::FieldPath),
         sel: Option<&CtorSel>,
     ) -> R<Vec<Inverse>> {
         let (before, after) = (at.before(), at.after());
@@ -700,13 +688,13 @@ impl Cx<'_> {
         let t = &path.ty.name.text;
         let f = &path.field.text;
         let ty = type_spelled(before, &m, t);
-        let mut op = Spelled::from("move field ");
+        let mut op = Term::from("move field ");
         op.append(ty.clone());
         op.push(".");
         match (&path.ctor, sel) {
             (Some(c), None) => {
-                let mut field = Spelled::default();
-                field.name(f, Space::Field, after.field_key_id(&m, t, None, f));
+                let mut field = Term::default();
+                field.push_name(f, Space::Field, after.field_key_id(&m, t, None, f));
                 op.append(field);
                 op.push(" to ");
                 op.append(ty);
@@ -714,7 +702,7 @@ impl Cx<'_> {
                 op.append(ctor_spelled(before, &m, t, &c.text));
                 Ok(vec![
                     at.restructure(&path.ty, op, Undo::Written, Vec::new())?,
-                    self.reorder(before, path, Some(c.text.clone()), at.of())?,
+                    at.reorder(moved),
                 ])
             }
             (None, Some(sel)) => {
@@ -725,8 +713,8 @@ impl Cx<'_> {
                     .iter()
                     .find(|c| after.field_key_id(&m, t, Some(c), f) == header)
                     .unwrap_or(first);
-                let mut field = Spelled::default();
-                field.name(f, Space::Field, header);
+                let mut field = Term::default();
+                field.push_name(f, Space::Field, header);
                 op.append(ctor_spelled(after, &m, t, holder));
                 op.push(".");
                 op.append(field);
@@ -773,8 +761,8 @@ impl Cx<'_> {
                 }
                 let from = names
                     .iter()
-                    .map(|c| after.ctor_key_id(&m, t, c).map(CatCtorId::from_raw))
-                    .collect::<Option<Vec<CatCtorId>>>()
+                    .map(|c| after.ctor_key_id(&m, t, c))
+                    .collect::<Option<Vec<u64>>>()
                     .ok_or_else(|| {
                         vec![Diag::new(
                             self.span,
@@ -783,123 +771,102 @@ impl Cx<'_> {
                     })?;
                 Ok(vec![
                     at.restructure(&path.ty, op, Undo::UpFrom(from), Vec::new())?,
-                    self.reorder(before, path, None, at.of())?,
+                    at.reorder(moved),
                 ])
             }
             _ => Ok(Vec::new()),
         }
     }
 
-    pub(super) fn added_ctor_inverse(
-        &self,
-        at: &Inverting,
-        path: &ast::CtorPath,
-    ) -> R<Vec<Inverse>> {
-        let (before, after) = (at.before(), at.after());
-        let m = at.module_of(&path.ty);
-        let t = &path.ty.name.text;
-        let record = match before.find("type", &m, t).and_then(|i| before.parsed(i)) {
-            Some(Decl::Type(
-                td @ ast::TypeDecl {
-                    body: ast::TypeBody::Record(_),
-                    ..
-                },
-            )) => Some(
-                decl_fields(&td)
-                    .into_iter()
-                    .filter_map(|(c, f)| before.field_key_id(&m, t, c, &f.name.text))
-                    .map(CatFieldId::from_raw)
-                    .collect(),
-            ),
-            _ => None,
-        };
-        let Some(ctor) = after.ctor_key_id(&m, t, &path.ctor.text) else {
+    /// Returns the inverse of adding a constructor to type `ty`: removing it, and setting the type
+    /// back to a record of its fields when it was one.
+    pub(super) fn added_ctor_inverse(&self, at: &Inverting, ty: u64) -> R<Vec<Inverse>> {
+        let (before, after) = (at.before_m(), at.after_m());
+        let was = before.ctors_of(ty);
+        let Some(ctor) = after.ctors_of(ty).into_iter().find(|c| !was.contains(c)) else {
             return self.err("the log does not hold the object the operator adds");
         };
+        let record = matches!(
+            before.types.get(&ty).map(|t| &t.body),
+            Some(TypeBody::Record { .. })
+        )
+        .then(|| before.fields_of(ty));
         Ok(vec![Inverse::Unadd {
-            ctor: CatCtorId::from_raw(ctor),
+            ctor,
             record,
             of: at.of(),
         }])
     }
 
+    /// Returns the inverse of removing constructor `ctor` of type `ty`: adding it back after the
+    /// constructors before it, with its sets, arms, clauses, defaults and write states.
     pub(super) fn removed_ctor_inverse(
         &self,
         at: &Inverting,
-        path: &ast::CtorPath,
+        ty: u64,
+        ctor: u64,
     ) -> R<Vec<Inverse>> {
         let before = at.before();
-        let m = at.module_of(&path.ty);
-        let t = &path.ty.name.text;
+        let q = at.type_qname(ty)?;
+        let (m, t) = (at.module_of(&q), q.name.text.clone());
         let missing = || {
             vec![Diag::new(
                 self.span,
                 "the log does not hold the removed constructor",
             )]
         };
-        let i = before.find("type", &m, t).ok_or_else(missing)?;
+        let name = at
+            .before_m()
+            .ctors
+            .get(&ctor)
+            .ok_or_else(missing)?
+            .name
+            .clone();
+        let i = before.find("type", &m, &t).ok_or_else(missing)?;
         let Some(Decl::Type(td)) = before.parsed(i) else {
             return Err(missing().into());
         };
         let ctors = ctor_extents(&before.decls[i].text, header(&m).len(), &td);
-        let k = ctors
-            .iter()
-            .position(|c| c.0 == path.ctor.text)
-            .ok_or_else(missing)?;
+        let k = ctors.iter().position(|c| c.0 == name).ok_or_else(missing)?;
         let text = at.decl_range(i, ctors[k].1.start..ctors[k].2)?;
         let schema = before
             .schema()
             .map_err(|_| vec![Diag::new(self.span, "the log does not replay")])?;
-        let def = self.type_id(&schema, &path.ty)?;
-        let after: Vec<CatCtorId> = ctors[..k]
+        let def = self.type_id(&schema, &q)?;
+        let after: Vec<u64> = ctors[..k]
             .iter()
             .rev()
             .filter_map(|(n, ..)| {
                 let c = schema.ty(def).ctor_named(n)?;
-                schema.ids().ctor_id(c)
+                schema.ids().ctor_id(c).map(CatCtorId::raw)
             })
             .collect();
-        let c = schema
-            .ty(def)
-            .ctor_index(&path.ctor.text)
-            .ok_or_else(missing)?;
+        let c = schema.ty(def).ctor_index(&name).ok_or_else(missing)?;
         let mut joins = Vec::new();
         for (rel, ..) in Self::relations_of(&schema, def) {
             for s in &schema.relation(rel).sets {
                 if s.ctors.contains(&c) {
-                    joins.extend(schema.ids().set_id(rel, &s.name));
+                    joins.extend(schema.ids().set_id(rel, &s.name).map(CatSetId::raw));
                 }
             }
         }
         let arms = self.removed_arms(at, &schema, def, c)?;
-        let ty = before
-            .ids
-            .get(&ObjectKey::named(
-                KeyKind::Type,
-                Owner::Module(m.clone()),
-                t,
-            ))
-            .copied()
-            .ok_or_else(missing)?;
-        let id = before
-            .ctor_key_id(&m, t, &path.ctor.text)
-            .ok_or_else(missing)?;
         let mut out = vec![Inverse::Readd {
-            ty: CatTypeId::from_raw(ty),
-            ctor: CatCtorId::from_raw(id),
-            name: path.ctor.text.clone(),
+            ty,
+            ctor,
+            name: name.clone(),
             text,
             after,
             joins,
             arms,
             of: at.of(),
         }];
-        let (drops, mut adds) = at.clauses_back(&m, t)?;
-        adds.append(at.defaults_back(&schema, def, &path.ctor.text)?);
+        let (drops, mut adds) = at.clauses_back(&m, &t)?;
+        adds.append(at.defaults_back(&schema, def, &name)?);
         if !drops.is_empty() || !adds.is_empty() {
             out.push(Inverse::Restructure {
                 drops,
-                op: Spelled::default(),
+                op: Term::default(),
                 adds,
                 how: Undo::Written,
                 checks: Vec::new(),
@@ -907,7 +874,7 @@ impl Cx<'_> {
             });
         }
         out.push(at.states_back(|s| match s {
-            StateOf::Relation(_, c) | StateOf::Value(c) => c.raw() == id,
+            StateKey::Relation(_, c) | StateKey::Value(c) => c == ctor,
         }));
         Ok(out)
     }
@@ -927,7 +894,7 @@ impl Cx<'_> {
         let refs = check::schema_refs(schema);
         let id_of = |k: u32| {
             let r = schema.ty(def).ctor_refs().nth(k as usize)?;
-            schema.ids().ctor_id(r)
+            schema.ids().ctor_id(r).map(CatCtorId::raw)
         };
         let mut out = Vec::new();
         for (k, chk) in schema.constraint_defs() {
@@ -962,7 +929,7 @@ impl Cx<'_> {
                 let Some(id) = schema.ids().constraint_id(k) else {
                     return self.err("the log does not hold the constraint the operator rewrites");
                 };
-                out.push((id, n, beside, texts));
+                out.push((id.raw(), n, beside, texts));
             }
         }
         Ok(out)
@@ -1056,92 +1023,4 @@ fn routed_from(arms: &[ast::Arm], src: &str, f: &str) -> Option<String> {
 /// Arms of a constructor an inverse puts back in a match of a constraint: the constraint's id,
 /// the match's position among those over the type in it, the constructor of the arm they follow,
 /// none for first, and the arms.
-pub(in crate::evolve) type PlacedArms = (CatConstraintId, usize, Option<CatCtorId>, Vec<Spelled>);
-
-impl Inverse {
-    /// Returns the structural step with each id an earlier step of the revert created again
-    /// replaced by the id `again` maps it to.
-    pub(super) fn mapped_structural(self, again: &Recreated) -> Inverse {
-        let shared = |id: u64| again_id(again, Space::Shared, id);
-        let ctor = |c: CatCtorId| CatCtorId::from_raw(shared(c.raw()));
-        let constraint = |c: CatConstraintId| {
-            CatConstraintId::from_raw(again_id(again, Space::Constraint, c.raw()))
-        };
-        match self {
-            Inverse::Restructure {
-                drops,
-                op,
-                adds,
-                how,
-                checks,
-                of,
-            } => Inverse::Restructure {
-                drops: drops
-                    .into_iter()
-                    .map(|i| CatIndexId::from_raw(again_id(again, KeyKind::Index.space(), i.raw())))
-                    .collect(),
-                op: op.mapped(again),
-                adds: adds.mapped(again),
-                how: match how {
-                    Undo::UpFrom(cs) => Undo::UpFrom(cs.into_iter().map(ctor).collect()),
-                    Undo::Unnest(ty, products) => Undo::Unnest(
-                        CatTypeId::from_raw(shared(ty.raw())),
-                        products.into_iter().map(|(c, n)| (ctor(c), n)).collect(),
-                    ),
-                    how => how,
-                },
-                checks: checks
-                    .into_iter()
-                    .map(|(c, t)| (constraint(c), t.mapped(again)))
-                    .collect(),
-                of,
-            },
-            Inverse::Unadd {
-                ctor: c,
-                record,
-                of,
-            } => Inverse::Unadd {
-                ctor: ctor(c),
-                record: record.map(|fs| {
-                    fs.into_iter()
-                        .map(|f| CatFieldId::from_raw(again_id(again, Space::Field, f.raw())))
-                        .collect()
-                }),
-                of,
-            },
-            Inverse::Readd {
-                ty,
-                ctor: c,
-                name,
-                text,
-                after,
-                joins,
-                arms,
-                of,
-            } => Inverse::Readd {
-                ty: CatTypeId::from_raw(shared(ty.raw())),
-                ctor: ctor(c),
-                name,
-                text: text.mapped(again),
-                after: after.into_iter().map(ctor).collect(),
-                joins: joins
-                    .into_iter()
-                    .map(|s| CatSetId::from_raw(again_id(again, Space::Set, s.raw())))
-                    .collect(),
-                arms: arms
-                    .into_iter()
-                    .map(|(c, n, b, ts)| {
-                        (
-                            constraint(c),
-                            n,
-                            b.map(ctor),
-                            ts.into_iter().map(|t| t.mapped(again)).collect(),
-                        )
-                    })
-                    .collect(),
-                of,
-            },
-            _ => unreachable!("mapped_structural is given a structural step"),
-        }
-    }
-}
+pub(in crate::evolve) type PlacedArms = (u64, usize, Option<u64>, Vec<Term>);

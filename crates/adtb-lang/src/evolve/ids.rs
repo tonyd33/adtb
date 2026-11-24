@@ -103,20 +103,6 @@ impl Source {
         out
     }
 
-    /// Returns the ids of the constructors of type `t` of module `m`.
-    pub(super) fn ctors_of(&self, m: &str, t: &str) -> BTreeSet<CatCtorId> {
-        let Some(Owner::Object(_, ty)) = self.type_owner(m, t) else {
-            return BTreeSet::new();
-        };
-        self.ids
-            .iter()
-            .filter(|(k, _)| {
-                k.kind() == KeyKind::Ctor && *k.owner() == Owner::Object(Space::Shared, ty)
-            })
-            .map(|(_, &id)| CatCtorId::from_raw(id))
-            .collect()
-    }
-
     /// Returns the module and name of the relation variable of id `id`.
     pub(super) fn relation_named(&self, id: CatRelId) -> Option<(String, String)> {
         self.ids
@@ -127,22 +113,6 @@ impl Source {
                 }
                 _ => None,
             })
-    }
-
-    /// Returns the id of relation variable `r` of module `m`.
-    pub(super) fn relation_key_id(&self, m: &str, r: &str) -> Option<CatRelId> {
-        self.ids
-            .get(&ObjectKey::named(
-                KeyKind::Relation,
-                Owner::Module(m.to_string()),
-                r,
-            ))
-            .map(|&id| CatRelId::from_raw(id))
-    }
-
-    /// Returns type `t` of module `m` as an owner.
-    pub(super) fn type_owner(&self, m: &str, t: &str) -> Option<Owner> {
-        field_owner(&self.ids, m, t, None)
     }
 
     /// Returns what holds a field of type `t` of module `m`: constructor `ctor`, else the header.

@@ -4,16 +4,23 @@ use std::collections::BTreeMap;
 
 use super::{Model, Obj};
 use crate::canon::Names;
+use crate::evolve::Written;
+use crate::evolve::model::inverse::{Late, Recreated, dropped, word};
 use crate::ids::{FIRST_LOG_ID, ObjectKey, Space};
 use crate::schema::Adder;
 
 /// Text written in the language, each name in it held as the objects it resolves to.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct Term(Vec<Piece>);
+pub(in crate::evolve) struct Term(Vec<Piece>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Piece {
     Text(String),
+    /// Text copied from the text of the migration being applied, at `from`.
+    Copy {
+        text: String,
+        from: Range<usize>,
+    },
     /// Text of the arm `key` an operator wrote, held apart until the declarations build.
     Arm {
         key: u64,
@@ -44,9 +51,10 @@ enum Piece {
 impl Piece {
     fn print(&self, model: &Model) -> String {
         match self {
-            Piece::Text(s) | Piece::Arm { text: s, .. } | Piece::Dropped { written: s, .. } => {
-                s.clone()
-            }
+            Piece::Text(s)
+            | Piece::Copy { text: s, .. }
+            | Piece::Arm { text: s, .. }
+            | Piece::Dropped { written: s, .. } => s.clone(),
             Piece::Added { by, written } => model
                 .ahead
                 .iter()
@@ -258,6 +266,7 @@ impl Term {
             .flat_map(|p| match p {
                 Piece::Name { ids, .. } => ids.as_slice(),
                 Piece::Text(_)
+                | Piece::Copy { .. }
                 | Piece::Arm { .. }
                 | Piece::Added { .. }
                 | Piece::Dropped { .. } => &[],
@@ -325,8 +334,167 @@ impl Term {
                         };
                     }
                 }
-                Piece::Text(_) | Piece::Arm { .. } | Piece::Added { .. } => {}
+                Piece::Text(_) | Piece::Copy { .. } | Piece::Arm { .. } | Piece::Added { .. } => {}
             }
         }
+    }
+
+    /// Append text `s`.
+    pub(in crate::evolve) fn push(&mut self, s: impl Into<Written>) {
+        let w: Written = s.into();
+        let mut at = 0;
+        for (o, from) in &w.copies {
+            if *o > at {
+                self.0.push(Piece::Text(w.text[at..*o].to_string()));
+            }
+            let end = o + from.len();
+            self.0.push(Piece::Copy {
+                text: w.text[*o..end].to_string(),
+                from: from.clone(),
+            });
+            at = end;
+        }
+        if at < w.text.len() {
+            self.0.push(Piece::Text(w.text[at..].to_string()));
+        }
+    }
+
+    /// Append name `written`, held by the id `id` of `space` when it is `Some`.
+    pub(in crate::evolve) fn push_name(&mut self, written: &str, space: Space, id: Option<u64>) {
+        self.0.push(Piece::Name {
+            ids: id.map(|id| (space, id)).into_iter().collect(),
+            written: written.to_string(),
+            pun: false,
+        });
+    }
+
+    pub(in crate::evolve) fn append(&mut self, other: Term) {
+        self.0.extend(other.0);
+    }
+
+    pub(in crate::evolve) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Append `text[range]`, each name in it that `names` resolves held by its ids, where
+    /// `names` gives the names of `text` at offsets `at` past those of `text`.
+    pub(in crate::evolve) fn copy(
+        &mut self,
+        text: &str,
+        range: Range<usize>,
+        names: &Names,
+        at: usize,
+    ) {
+        let mut from = range.start;
+        for (r, ids, pun) in names.ids_within(range.start + at..range.end + at) {
+            let r = r.start - at..r.end - at;
+            if r.start < from {
+                continue;
+            }
+            if r.start > from {
+                self.0.push(Piece::Text(text[from..r.start].to_string()));
+            }
+            self.0.push(Piece::Name {
+                ids: ids.iter().copied().collect(),
+                written: text[r.clone()].to_string(),
+                pun,
+            });
+            from = r.end;
+        }
+        if from < range.end {
+            self.0.push(Piece::Text(text[from..range.end].to_string()));
+        }
+    }
+
+    /// Returns the term with each name held by id `id` of `space` also held by id `also` of it.
+    pub(in crate::evolve) fn aliased(mut self, space: Space, id: u64, also: u64) -> Term {
+        for p in &mut self.0 {
+            if let Piece::Name { ids, .. } = p
+                && ids.contains(&(space, id))
+                && !ids.contains(&(space, also))
+            {
+                ids.push((space, also));
+                ids.sort_unstable();
+            }
+        }
+        self
+    }
+
+    /// Returns the term with each id a step of a revert created again replaced by the id `again`
+    /// maps it to.
+    pub(in crate::evolve) fn mapped(mut self, again: &Recreated) -> Term {
+        for p in &mut self.0 {
+            if let Piece::Name { ids, .. } = p {
+                for (s, id) in ids.iter_mut() {
+                    if let Some(&to) = again.get(&(*s, *id)) {
+                        *id = to;
+                    }
+                }
+                ids.sort_unstable();
+                ids.dedup();
+            }
+        }
+        self
+    }
+
+    /// Returns the term with each name spelled as `now` names its objects, a name none of whose
+    /// objects `now` or `late` holds kept as written, and a pun whose name changes written as
+    /// `name: variable`.
+    ///
+    /// Fail with the refusal of the inverse of operator text `of` when a name stands for an object
+    /// `late` holds and `now` lacks, which a later migration dropped, or when the objects of one
+    /// name now have different names.
+    pub(in crate::evolve) fn spelled(
+        &self,
+        now: &BTreeMap<Obj, &str>,
+        late: &Late,
+        of: &str,
+    ) -> Result<Written, String> {
+        let mut out = Written::default();
+        for p in &self.0 {
+            match p {
+                Piece::Copy { text, from } => out.append(Written {
+                    text: text.clone(),
+                    copies: vec![(0, from.clone())],
+                }),
+                Piece::Text(s)
+                | Piece::Arm { text: s, .. }
+                | Piece::Added { written: s, .. }
+                | Piece::Dropped { written: s, .. } => out.push(s),
+                Piece::Name { ids, written, pun } => {
+                    if let Some(kind) = ids
+                        .iter()
+                        .filter(|i| !now.contains_key(i))
+                        .find_map(|i| late.get(i))
+                    {
+                        return Err(dropped(of, word(*kind)));
+                    }
+                    let named: std::collections::BTreeSet<&str> =
+                        ids.iter().filter_map(|i| now.get(i)).copied().collect();
+                    let mut named = named.into_iter();
+                    match (named.next(), named.next()) {
+                        (Some(n), None) if *pun && n != written => {
+                            out.push(&format!("{n}: {written}"));
+                        }
+                        (Some(n), None) => out.push(n),
+                        (Some(_), Some(_)) => {
+                            return Err(format!(
+                                "in the inverse of `{of}`, the name `{written}` stood for objects a later migration renamed apart"
+                            ));
+                        }
+                        (None, _) => out.push(written),
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl<T: Into<Written>> From<T> for Term {
+    fn from(text: T) -> Term {
+        let mut t = Term::default();
+        t.push(text);
+        t
     }
 }

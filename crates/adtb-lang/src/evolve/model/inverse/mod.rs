@@ -1,19 +1,20 @@
-use super::*;
+use crate::evolve::*;
 use crate::ids::{KeyKind, Owner, Space};
+
+use super::op::{Kind as OpKind, Op, StateKey};
+use super::{IndexKind, Item, Model, Obj, TypeBody};
 
 type R<T> = Replaying<T>;
 
 mod by_id;
-mod inverse;
-mod spelled;
+mod of_op;
 mod structural;
 
+pub(in crate::evolve) use super::Term;
 pub(super) use by_id::Recreated;
-pub(in crate::evolve) use by_id::{DeclOf, NamedId, dropped, holding, recreate};
-use by_id::{again_id, removed};
-use inverse::Run;
-pub(in crate::evolve) use spelled::{Late, Spelled, word};
-use spelled::{late, spellings};
+use by_id::removed;
+pub(in crate::evolve) use by_id::{DeclOf, dropped, holding, recreate};
+use of_op::Run;
 pub(in crate::evolve) use structural::{PlacedArms, Undo};
 
 /// The `fill` clauses of a revert, each with the key of the field an inverse took it for.
@@ -31,28 +32,29 @@ impl<'a> Fills<'a> {
     }
 }
 
-/// The steps of the inverse of a run of operators, each run ending at a source that builds, with
-/// each object the run removed, by its key before the run, and its id.
-pub(in crate::evolve) type Undoing = (Vec<Inverse>, Vec<(ObjectKey, u64)>);
+/// The parts of the inverse of an operator, with each object the operator removed, by its key
+/// before it, and its id.
+pub(in crate::evolve::model) type Undoing = (Vec<Inverse>, Vec<(ObjectKey, u64)>);
 
-/// One step of the inverse of an operator.
+/// One part of the inverse of an operator.
 #[derive(Clone, Debug)]
-pub(in crate::evolve) enum Inverse {
-    /// Rename the object of an id to `to`; `of` is the text of the operator inverted.
+pub(in crate::evolve::model) enum Inverse {
+    /// Rename object `object`, a `word`, to `to`; `of` is the text of the operator inverted.
     Rename {
-        object: NamedId,
+        object: Obj,
+        word: &'static str,
         to: String,
         of: String,
     },
     /// Drop the named set of an id, whatever its current name and relation; `of` is the text of
     /// the operator inverted.
-    DropSet { set: CatSetId, of: String },
+    DropSet { set: u64, of: String },
     /// Add named set `name` of a relation over constructors, each by id; `of` is the text of the
     /// operator inverted.
     AddSet {
-        relation: CatRelId,
+        relation: u64,
         name: String,
-        members: Vec<CatCtorId>,
+        members: Vec<u64>,
         of: String,
     },
     /// Drop each unique and index of `drops`, then apply operator `op` as `how` says, setting
@@ -60,22 +62,22 @@ pub(in crate::evolve) enum Inverse {
     /// text whose names are held by id applied in the migration's module; `of` is the text of the
     /// operator inverted.
     Restructure {
-        drops: Vec<CatIndexId>,
-        op: Spelled,
-        adds: Spelled,
+        drops: Vec<u64>,
+        op: Term,
+        adds: Term,
         how: Undo,
-        checks: Vec<(CatConstraintId, Spelled)>,
+        checks: Vec<(u64, Term)>,
         of: String,
     },
     /// Apply operators, as a text whose names are held by id, in the migration's module; `of` is
     /// the text of the operator inverted.
-    Apply { text: Spelled, of: String },
+    Apply { text: Term, of: String },
     /// Remove the constructor of an id, with its arms; with `record`, then set its type, when a
     /// sum of one constructor named after it, to a record of its fields, those of `record` in
     /// that order first; `of` is the text of the operator inverted.
     Unadd {
-        ctor: CatCtorId,
-        record: Option<Vec<CatFieldId>>,
+        ctor: u64,
+        record: Option<Vec<u64>>,
         of: String,
     },
     /// Put back constructor `name` of a type as `text`, after the first constructor of `after`
@@ -84,19 +86,19 @@ pub(in crate::evolve) enum Inverse {
     /// the constructor beside them, else last, or first without one; `ctor` is the id it held,
     /// which the arms name it by; `of` is the text of the operator inverted.
     Readd {
-        ty: CatTypeId,
-        ctor: CatCtorId,
+        ty: u64,
+        ctor: u64,
         name: String,
-        text: Spelled,
-        after: Vec<CatCtorId>,
-        joins: Vec<CatSetId>,
+        text: Term,
+        after: Vec<u64>,
+        joins: Vec<u64>,
         arms: Vec<PlacedArms>,
         of: String,
     },
     /// Set write states back, `None` removing the state; `of` is the text of the operator
     /// inverted.
     States {
-        states: Vec<(StateOf, Option<State>)>,
+        states: Vec<(StateKey, Option<State>)>,
         of: String,
     },
     /// Set what each role holds of a privilege back.
@@ -107,7 +109,7 @@ pub(in crate::evolve) enum Inverse {
         module: String,
         kind: &'static str,
         name: String,
-        text: Spelled,
+        text: Term,
         of: String,
     },
     /// Add back the declaration `text` of relation variable `name` of module `module`, `typed`
@@ -115,7 +117,7 @@ pub(in crate::evolve) enum Inverse {
     RestoreRelation {
         module: String,
         name: String,
-        text: Spelled,
+        text: Term,
         of: String,
         typed: bool,
     },
@@ -123,7 +125,7 @@ pub(in crate::evolve) enum Inverse {
     /// operator inverted.
     Redeclare {
         decl: DeclOf,
-        text: Option<Spelled>,
+        text: Option<Term>,
         of: String,
     },
     /// Add module `name` with the declaration texts `decls`, or with `present` false remove it.
@@ -131,7 +133,7 @@ pub(in crate::evolve) enum Inverse {
         name: String,
         present: bool,
         installed: bool,
-        decls: Vec<Spelled>,
+        decls: Vec<Term>,
         of: String,
     },
     /// Apply a logged migration's operators again, each as its text of `texts` spelled with the
@@ -140,32 +142,31 @@ pub(in crate::evolve) enum Inverse {
     /// `again`; `of` is the text of the operator inverted.
     Replay {
         logged: Box<Logged>,
-        texts: Vec<Spelled>,
+        texts: Vec<Term>,
         again: Recreated,
         of: String,
     },
     /// Set a relation's key clause to its text, generator included; `of` is the text of the
     /// operator inverted.
     KeyClause {
-        relation: CatRelId,
-        text: Spelled,
+        relation: u64,
+        text: Term,
         of: String,
     },
     /// Put the fields of a constructor, or of the header when `ctor` is `None`, in `order`; `of`
     /// is the text of the operator inverted.
     Reorder {
-        ty: CatTypeId,
-        ctor: Option<CatCtorId>,
-        order: Vec<CatFieldId>,
+        ty: u64,
+        ctor: Option<u64>,
+        order: Vec<u64>,
         of: String,
     },
     /// Put each constructor of `placed` of a type, in turn, after the nearest constructor before
-    /// it in `order` the type holds, else first; `of` is the text of the operator inverted.
+    /// it in `order` the type holds, else first.
     PlaceCtors {
-        ty: CatTypeId,
-        order: Vec<CatCtorId>,
-        placed: Vec<CatCtorId>,
-        of: String,
+        ty: u64,
+        order: Vec<u64>,
+        placed: Vec<u64>,
     },
 }
 
@@ -213,7 +214,7 @@ impl Source {
     /// before it names it.
     ///
     /// Fail with the diagnostics of a later migration that does not resolve.
-    pub(super) fn dependants(&self, pos: usize) -> R<Vec<(u64, String)>> {
+    pub(in crate::evolve) fn dependants(&self, pos: usize) -> R<Vec<(u64, String)>> {
         let made = self.created(pos);
         if made.is_empty() {
             return Ok(Vec::new());
@@ -236,7 +237,7 @@ impl Source {
 
     /// Returns the catalog objects and modules the source after the migration at `pos` of the log
     /// holds and the source before it does not.
-    pub(super) fn created(&self, pos: usize) -> BTreeSet<Reached> {
+    pub(in crate::evolve) fn created(&self, pos: usize) -> BTreeSet<Reached> {
         let held = |s: &Source| -> BTreeSet<Reached> {
             s.ids
                 .iter()
@@ -250,7 +251,12 @@ impl Source {
 
     /// Returns the id each object the migration at `pos` of the log removed takes in `after`,
     /// for each one `after` holds again under an id `before` lacks.
-    pub(super) fn recreated_by(&self, pos: usize, before: &Source, after: &Source) -> Recreated {
+    pub(in crate::evolve) fn recreated_by(
+        &self,
+        pos: usize,
+        before: &Source,
+        after: &Source,
+    ) -> Recreated {
         let mut again = Recreated::new();
         let gone = removed(&self.log[pos].before, self.after(pos));
         recreate(&mut again, &gone, &holding(&before.ids), &after.ids);
@@ -388,28 +394,37 @@ impl<'a> Spelling<'a> {
     }
 }
 
-/// A migration of the log applied again: the source before its first operator and after each,
-/// and the names of its text, each operand naming an object tied to its id, when the replay
-/// gives them.
-pub(in crate::evolve) struct Replayed {
+/// A migration of the log applied again: the source and the model before its first operator and
+/// after each, the operators as the model resolved them, and the names of its text, each operand
+/// naming an object tied to its id, when the replay gives them.
+pub(in crate::evolve::model) struct Replayed {
     states: Vec<Source>,
+    models: Vec<Model>,
+    ops: Vec<Op>,
     spelling: Option<Replaying<Names>>,
 }
 
 impl Replayed {
-    /// Returns the replay that passes through `states`, with `spelling` the names of its text.
-    pub(in crate::evolve) fn new(
-        states: Vec<Source>,
+    /// Returns the replay that passes through `states` and `models` applying `ops`, with
+    /// `spelling` the names of its text.
+    pub(in crate::evolve::model) fn new(
+        (states, models): (Vec<Source>, Vec<Model>),
+        ops: Vec<Op>,
         spelling: Option<Replaying<Names>>,
     ) -> Replayed {
-        Replayed { states, spelling }
+        Replayed {
+            states,
+            models,
+            ops,
+            spelling,
+        }
     }
 }
 
 /// The inverse of a migration of the log as a revert applies it: the steps of each run of its
 /// operators, the objects of the source after it, the relation variables the steps add back,
 /// and for each fill of the revert the key of the field an inverse took it for.
-pub(in crate::evolve) struct Inverted {
+pub(in crate::evolve::model) struct Inverted {
     steps: Vec<Undoing>,
     late: Late,
     linked: Vec<Expected>,
@@ -420,7 +435,7 @@ impl Inverted {
     /// Returns the steps of each run, the objects of the source after the reverted migration,
     /// the relation variables the steps restore, and the key of the field each fill was taken
     /// for.
-    pub(in crate::evolve) fn into_parts(
+    pub(in crate::evolve::model) fn into_parts(
         self,
     ) -> (Vec<Undoing>, Late, Vec<Expected>, Vec<Option<ObjectKey>>) {
         (self.steps, self.late, self.linked, self.filled)
@@ -432,7 +447,7 @@ impl Cx<'_> {
     /// `replay` giving the sources the migration's operators pass through.
     ///
     /// Fail as a revert is refused before its inverse applies.
-    pub(in crate::evolve) fn inverted_with(
+    pub(in crate::evolve::model) fn inverted_with(
         &self,
         migration: &str,
         fills: &[(ast::FieldPath, Fill)],
@@ -473,33 +488,36 @@ impl Cx<'_> {
                 "`revert {migration}` is refused while migration {later:04} depends on it: it names {object}"
             ));
         }
-        let Replayed { states, spelling } = replay(&logged)?;
+        let Replayed {
+            states,
+            models,
+            ops,
+            spelling,
+        } = replay(&logged)?;
         let mut steps = Vec::new();
-        let mut start = states[0].clone();
-        let mut group: Vec<Vec<Inverse>> = Vec::new();
+        let mut start = &states[0];
         let cell = std::cell::OnceCell::new();
         if let Some(names) = spelling {
             cell.set(names).ok();
         }
         let fills = Fills::new(fills);
-        for (i, op) in Listed::all(&logged.operators).enumerate() {
+        for (i, op) in logged.operators.iter().enumerate() {
             let (before, state) = (&states[i], &states[i + 1]);
-            let run = Run::new(&start, &logged, &cell, &fills);
-            group.push(self.inverse(&run.at(before, state, &op))?);
-            if state.built().is_err() && i + 1 < logged.operators.len() {
-                continue;
+            if i > 0 && before.built().is_ok() {
+                start = before;
             }
-            let mut step: Vec<Inverse> = group.drain(..).rev().flatten().collect();
+            let around = ((before, &models[i]), (state, &models[i + 1]));
+            let run = Run::new(&logged, &cell, &fills);
+            let mut step = self.inverse(&run.at(around, start, op, &ops[i]))?;
             // A replay applies the grants and revokes of the migration it applies again.
             if !step.iter().any(|s| matches!(s, Inverse::Replay { .. })) {
-                let (gone, kept) = grants_back(&start, state);
+                let (gone, kept) = grants_back(before, state);
                 if let Some(gone) = gone {
                     step.insert(0, gone);
                 }
                 step.extend(kept);
             }
-            steps.push((step, removed(&start, state)));
-            start = state.clone();
+            steps.push((step, removed(before, state)));
         }
         if self.accepting && !self.replaying {
             self.untaken(migration, &fills)?;
@@ -586,63 +604,6 @@ impl Cx<'_> {
         out.push_str(&named(Space::Field, src.field_key_id(m, t, c, f), f));
         out
     }
-
-    /// The step that puts the fields of a part of `path`'s type back in the order `before` declares
-    /// them, the operator inverted being `of`.
-    pub(super) fn reorder(
-        &self,
-        before: &Source,
-        path: &ast::FieldPath,
-        ctor: Option<String>,
-        of: String,
-    ) -> R<Inverse> {
-        let m = self.module_of(&path.ty);
-        let t = &path.ty.name.text;
-        let missing = || {
-            vec![Diag::new(
-                self.span,
-                "the log does not hold the reordered type",
-            )]
-        };
-        let ty = before
-            .ids
-            .get(&ObjectKey::named(
-                KeyKind::Type,
-                Owner::Module(m.clone()),
-                t,
-            ))
-            .copied()
-            .ok_or_else(missing)?;
-        let i = before.find("type", &m, t).ok_or_else(missing)?;
-        let Some(Decl::Type(td)) = before.parsed(i) else {
-            return Err(missing().into());
-        };
-        let record = matches!(td.body, ast::TypeBody::Record(_));
-        let part = if record { Some(t.clone()) } else { ctor };
-        let owner = before
-            .field_owner(&m, t, part.as_deref())
-            .ok_or_else(missing)?;
-        let order = decl_fields(&td)
-            .into_iter()
-            .filter(|(c, _)| c.map(str::to_string) == part)
-            .filter_map(|(_, f)| {
-                let key = ObjectKey::named(KeyKind::Field, owner.clone(), &f.name.text);
-                before.ids.get(&key).map(|&id| CatFieldId::from_raw(id))
-            })
-            .collect();
-        let ctor = match part {
-            Some(c) if !record => Some(CatCtorId::from_raw(
-                before.ctor_key_id(&m, t, &c).ok_or_else(missing)?,
-            )),
-            _ => None,
-        };
-        Ok(Inverse::Reorder {
-            ty: CatTypeId::from_raw(ty),
-            ctor,
-            order,
-            of,
-        })
-    }
 }
 
 /// Returns the keys field path `p` of a fill, of module `m`, can name among `ids`: the owner's
@@ -666,4 +627,44 @@ pub(super) fn fill_keys(
         .flatten()
         .map(|o| ObjectKey::named(KeyKind::Field, o, &p.field.text))
         .collect()
+}
+
+/// The kind of each object the source after a reverted migration holds, by the space of its id
+/// and the id.
+pub(in crate::evolve) type Late = BTreeMap<(Space, u64), KeyKind>;
+
+/// Returns the kind of each object `src` holds, by the space of its id and the id.
+pub(super) fn late(src: &Source) -> Late {
+    src.ids
+        .iter()
+        .map(|(k, &id)| ((k.kind().space(), id), k.kind()))
+        .collect()
+}
+
+/// Returns the name of each named object `src` holds, by the space of its id and the id.
+pub(super) fn spellings(src: &Source) -> BTreeMap<(Space, u64), &str> {
+    src.ids
+        .iter()
+        .filter_map(|(k, &id)| Some(((k.kind().space(), id), k.name()?)))
+        .collect()
+}
+
+/// Returns the word a refusal names an object of kind `kind` by.
+pub(in crate::evolve) fn word(kind: KeyKind) -> &'static str {
+    match kind {
+        KeyKind::Type => "type",
+        KeyKind::Ctor => "constructor",
+        KeyKind::Relation => "relation",
+        KeyKind::Field => "field",
+        KeyKind::Set => "set",
+        KeyKind::Function => "function",
+        KeyKind::Constraint => "constraint",
+        KeyKind::Computed => "computed field",
+        KeyKind::Key
+        | KeyKind::Unique
+        | KeyKind::Index
+        | KeyKind::IntervalIndex
+        | KeyKind::Implied => "index",
+        KeyKind::Generated | KeyKind::Default => "default",
+    }
 }

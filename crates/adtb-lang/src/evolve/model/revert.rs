@@ -1,14 +1,14 @@
 use super::field::{Applied, Maps};
-use super::op::{Fail, Refused, Res, broken, refuse, refuse_at};
+use super::op::{Fail, Refused, Res, StateKey, broken, refuse, refuse_at};
 use super::run::Run;
 use super::*;
 use crate::ast::{self, Fill, OperatorKind};
 use crate::canon::Names;
-use crate::evolve::revert::Replayed;
-use crate::evolve::revert::{
-    DeclOf, Inverse, Late as Gone, NamedId, Recreated, Spelled, dropped, holding, recreate, word,
+use crate::evolve::model::inverse::Replayed;
+use crate::evolve::model::inverse::{
+    DeclOf, Inverse, Late as Gone, Recreated, Term, dropped, holding, recreate, word,
 };
-use crate::evolve::{Clause, Cx, Failed, Logged, Resolved, StateOf, Written};
+use crate::evolve::{Clause, Cx, Failed, Logged, Resolved, Written};
 use crate::ids::KeyKind;
 use crate::parse::{Options, parse_migration};
 use crate::span::{Diag, Span};
@@ -149,7 +149,7 @@ pub(in crate::evolve) fn replay(logged: &Logged) -> crate::evolve::Replaying<Rep
 /// again, and the names of its text, each operand naming an object tied to its id; a refusal of
 /// one of them is at `span`.
 fn replayed(logged: &Logged, span: Span) -> Res<Replayed> {
-    let (states, names, _) = match replay(logged) {
+    let (states, names, got) = match replay(logged) {
         Ok(r) => r,
         Err(Failed::Broken(d)) => return Err(Fail::Broken(d.message)),
         Err(Failed::Refused(ds)) => {
@@ -159,7 +159,15 @@ fn replayed(logged: &Logged, span: Span) -> Res<Replayed> {
             return refuse_at(span, format!("the log does not replay: {why}"));
         }
     };
-    Ok(Replayed::new(states, Some(names.map_err(Failed::Refused))))
+    let models = std::iter::once(got.start().clone())
+        .chain(got.afters().iter().cloned())
+        .collect();
+    let ops = got.inputs().iter().flatten().cloned().collect();
+    Ok(Replayed::new(
+        (states, models),
+        ops,
+        Some(names.map_err(Failed::Refused)),
+    ))
 }
 
 /// Returns the refusal of the first of `ds`.
@@ -260,7 +268,7 @@ impl Model {
     fn undo_all(
         &mut self,
         run: &mut Run,
-        steps: Vec<crate::evolve::revert::Undoing>,
+        steps: Vec<inverse::Undoing>,
         gone: &Gone,
         undone: &mut Undone,
     ) -> Res<()> {
@@ -317,13 +325,13 @@ impl Model {
 
     /// Returns `text` with each name spelled as the model names its object now, refusing as the
     /// inverse of operator text `of` when a later migration dropped one.
-    pub(super) fn spell(&self, text: &Spelled, of: &str, gone: &Gone) -> Res<String> {
+    pub(super) fn spell(&self, text: &Term, of: &str, gone: &Gone) -> Res<String> {
         self.spell_copies(text, of, gone).map(|w| w.text)
     }
 
     /// Returns `text` spelled as [`Model::spell`] does, with the ranges of the revert's text it
     /// copies.
-    pub(super) fn spell_copies(&self, text: &Spelled, of: &str, gone: &Gone) -> Res<Written> {
+    pub(super) fn spell_copies(&self, text: &Term, of: &str, gone: &Gone) -> Res<Written> {
         let now = self.spellings();
         let now: BTreeMap<Obj, &str> = now.iter().map(|(&o, n)| (o, n.as_str())).collect();
         match text.spelled(&now, gone, of) {
@@ -348,17 +356,20 @@ impl Model {
                 let text = self.spell_copies(&text, &of, gone)?;
                 self.undo_ops(run, run.module(), text, How::Written, &[], undone)
             }
-            Inverse::Rename { object, to, of } => {
-                let schema = self.schema_now(run)?.into_schema();
-                let Some((module, name)) = object.spelled(&schema) else {
-                    return refuse(dropped(&of, object.word()));
+            Inverse::Rename {
+                object,
+                word,
+                to,
+                of,
+            } => {
+                let Some((module, name)) = self.spelled_obj(object) else {
+                    return refuse(dropped(&of, word));
                 };
-                let text = format!("rename {} {name} to {to}", object.word());
+                let text = format!("rename {word} {name} to {to}");
                 self.undo_ops(run, &module, text.into(), How::Written, &[], undone)
             }
             Inverse::DropSet { set, of } => {
-                let schema = self.schema_now(run)?.into_schema();
-                let Some((module, set)) = NamedId::Set(set).spelled(&schema) else {
+                let Some((module, set)) = self.spelled_obj((Space::Set, set)) else {
                     return refuse(dropped(&of, "set"));
                 };
                 self.undo_ops(
@@ -376,7 +387,7 @@ impl Model {
                 members,
                 of,
             } => self.add_set_back(run, relation, &name, members, &of, undone),
-            Inverse::Unadd { ctor, record, of } => self.unadd(run, ctor.raw(), record, &of),
+            Inverse::Unadd { ctor, record, of } => self.unadd(run, ctor, record, &of),
             Inverse::Readd {
                 ty,
                 ctor,
@@ -390,7 +401,7 @@ impl Model {
                 let text = self.spell(&text, &of, gone)?;
                 self.readd(
                     run,
-                    (ty.raw(), ctor.raw(), &name),
+                    (ty, ctor, &name),
                     &text,
                     (after, joins, arms),
                     &of,
@@ -449,7 +460,7 @@ impl Model {
             Inverse::PlaceCtors {
                 ty, order, placed, ..
             } => {
-                self.place_ctors(ty.raw(), &order, &placed);
+                self.place_ctors(ty, &order, &placed);
                 Ok(())
             }
             Inverse::Reorder {
@@ -457,15 +468,9 @@ impl Model {
                 ctor,
                 order,
                 of,
-            } => self.reorder(
-                ty.raw(),
-                ctor.map(crate::ids::CatCtorId::raw),
-                &order,
-                &of,
-                gone,
-            ),
+            } => self.reorder(ty, ctor, &order, &of, gone),
             Inverse::KeyClause { relation, text, of } => {
-                let r = relation.raw();
+                let r = relation;
                 if !self.relations.contains_key(&r) {
                     return refuse(dropped(&of, "relation"));
                 }
@@ -601,36 +606,77 @@ impl Model {
     fn add_set_back(
         &mut self,
         run: &mut Run,
-        relation: crate::ids::CatRelId,
+        relation: u64,
         name: &str,
-        members: Vec<crate::ids::CatCtorId>,
+        members: Vec<u64>,
         of: &str,
         undone: &mut Undone,
     ) -> Res<()> {
-        let schema = self.schema_now(run)?.into_schema();
-        let Some(r) = schema.ids().relation_of(relation) else {
+        let (Some(rel), Some(module)) = (
+            self.relations.get(&relation),
+            self.module_of((Space::Shared, relation)),
+        ) else {
             return refuse(dropped(of, "relation"));
         };
-        let rd = schema.relation(r);
+        let (rel, module) = (rel.name.clone(), module.to_string());
         let mut ctors = Vec::new();
         for c in members {
-            let Some(c) = schema.ids().ctor_of(c) else {
+            let Some(ctor) = self.ctors.get(&c) else {
                 return refuse(dropped(of, "constructor"));
             };
-            ctors.push(schema.ty(c.def()).ctor_def(c).name.clone());
+            ctors.push(ctor.name.clone());
         }
-        let module = schema.module(rd.module).name.clone();
-        let text = format!("add set {name} of {} = {}", rd.name, ctors.join(" | "));
+        let text = format!("add set {name} of {rel} = {}", ctors.join(" | "));
         self.undo_ops(run, &module, text.into(), How::Written, &[], undone)
+    }
+
+    /// Returns the module of object `obj` and its name as an operator naming it by its
+    /// qualified name writes it, `None` when the model does not hold it.
+    pub(super) fn spelled_obj(&self, obj: Obj) -> Option<(String, String)> {
+        let ty = |t: u64| -> Option<(String, String)> {
+            let m = self.module_of((Space::Shared, t))?.to_string();
+            let q = format!("{m}::{}", self.types.get(&t)?.name);
+            Some((m, q))
+        };
+        match obj {
+            (Space::Shared, x) if self.types.contains_key(&x) => ty(x),
+            (Space::Shared, x) if self.ctors.contains_key(&x) => {
+                let c = &self.ctors[&x];
+                let (m, t) = ty(c.ty)?;
+                Some((m, format!("{t}.{}", c.name)))
+            }
+            (Space::Shared, x) => {
+                let r = self.relations.get(&x)?;
+                let m = self.module_of(obj)?.to_string();
+                Some((m.clone(), format!("{m}::{}", r.name)))
+            }
+            (Space::Set, x) => {
+                let set = self.sets.get(&x)?;
+                let (m, r) = self.spelled_obj((Space::Shared, set.relation))?;
+                Some((m, format!("{} of {r}", set.name)))
+            }
+            (Space::Field, x) => {
+                let f = self.fields.get(&x)?;
+                let t = self.field_type(x)?;
+                let (m, q) = ty(t)?;
+                Some(match self.ctors.get(&f.owner) {
+                    Some(c) if !matches!(self.types[&t].body, TypeBody::Record { .. }) => {
+                        (m, format!("{q}.{}.{}", c.name, f.name))
+                    }
+                    _ => (m, format!("{q}.{}", f.name)),
+                })
+            }
+            _ => None,
+        }
     }
 
     /// Set each write state of `states` to what it states, refusing as the inverse of `of` when a
     /// later migration dropped its relation variable or constructor.
-    fn set_states(&mut self, states: Vec<(StateOf, Option<State>)>, of: &str) -> Res<()> {
+    fn set_states(&mut self, states: Vec<(StateKey, Option<State>)>, of: &str) -> Res<()> {
         for (s, _) in &states {
             let (rel, ctor) = match *s {
-                StateOf::Relation(r, c) => (Some(r.raw()), c.raw()),
-                StateOf::Value(c) => (None, c.raw()),
+                StateKey::Relation(r, c) => (Some(r), c),
+                StateKey::Value(c) => (None, c),
             };
             if rel
                 .is_some_and(|r| !self.relations.contains_key(&r) && !self.stores.contains_key(&r))
@@ -643,17 +689,17 @@ impl Model {
         }
         for (s, state) in states {
             match (s, state) {
-                (StateOf::Relation(r, c), Some(v)) => {
-                    self.states.insert((r.raw(), c.raw()), v);
+                (StateKey::Relation(r, c), Some(v)) => {
+                    self.states.insert((r, c), v);
                 }
-                (StateOf::Relation(r, c), None) => {
-                    self.states.remove(&(r.raw(), c.raw()));
+                (StateKey::Relation(r, c), None) => {
+                    self.states.remove(&(r, c));
                 }
-                (StateOf::Value(c), Some(v)) => {
-                    self.value_states.insert(c.raw(), v);
+                (StateKey::Value(c), Some(v)) => {
+                    self.value_states.insert(c, v);
                 }
-                (StateOf::Value(c), None) => {
-                    self.value_states.remove(&c.raw());
+                (StateKey::Value(c), None) => {
+                    self.value_states.remove(&c);
                 }
             }
         }
@@ -666,7 +712,7 @@ impl Model {
         &mut self,
         run: &mut Run,
         (module, kind, name): (&str, &str, &str),
-        text: &Spelled,
+        text: &Term,
         of: &str,
         gone: &Gone,
     ) -> Res<()> {
@@ -793,7 +839,7 @@ impl Model {
     fn replay(
         &mut self,
         run: &mut Run,
-        (logged, texts): (&Logged, &[Spelled]),
+        (logged, texts): (&Logged, &[Term]),
         again: Recreated,
         (of, gone): (&str, &Gone),
         undone: &mut Undone,
@@ -854,18 +900,13 @@ impl Model {
 
     /// Put each constructor of `placed` of type `ty`, in turn, after the nearest constructor
     /// before it in `order` the type holds, else first.
-    fn place_ctors(
-        &mut self,
-        ty: u64,
-        order: &[crate::ids::CatCtorId],
-        placed: &[crate::ids::CatCtorId],
-    ) {
+    fn place_ctors(&mut self, ty: u64, order: &[u64], placed: &[u64]) {
         let Some(TypeBody::Ctors(list)) = self.types.get_mut(&ty).map(|t| &mut t.body) else {
             return;
         };
         for x in placed {
             let (Some(at), Some(k)) = (
-                list.iter().position(|c| *c == x.raw()),
+                list.iter().position(|c| c == x),
                 order.iter().position(|c| c == x),
             ) else {
                 continue;
@@ -874,7 +915,7 @@ impl Model {
             let anchor = order[..k]
                 .iter()
                 .rev()
-                .find_map(|y| list.iter().position(|c| *c == y.raw()));
+                .find_map(|y| list.iter().position(|c| c == y));
             list.insert(anchor.map_or(0, |p| p + 1), c);
         }
     }
@@ -885,7 +926,7 @@ impl Model {
         &mut self,
         ty: u64,
         ctor: Option<u64>,
-        order: &[crate::ids::CatFieldId],
+        order: &[u64],
         of: &str,
         gone: &Gone,
     ) -> Res<()> {
@@ -905,9 +946,9 @@ impl Model {
             return Ok(());
         }
         let mut fields = Vec::new();
-        for f in order {
-            if held(Space::Field, f.raw(), KeyKind::Field)? {
-                fields.push(f.raw());
+        for &f in order {
+            if held(Space::Field, f, KeyKind::Field)? {
+                fields.push(f);
             }
         }
         if !self.types.contains_key(&ty) {

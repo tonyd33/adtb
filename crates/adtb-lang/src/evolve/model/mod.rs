@@ -15,6 +15,7 @@ mod clause;
 mod ctor;
 mod decl;
 mod field;
+mod inverse;
 mod lift;
 mod moved;
 mod naming;
@@ -34,7 +35,7 @@ mod undo;
 pub(super) use apply::Migrated;
 use decl::{cat_ctor, cat_field, cat_rel, cat_type};
 pub(super) use revert::{logged_file, replay};
-use term::Term;
+pub(in crate::evolve) use term::Term;
 
 /// A catalog object, by the space of its id and the id.
 pub(super) type Obj = (Space, u64);
@@ -106,7 +107,7 @@ pub(super) struct Model {
     logged: Vec<super::Logged>,
     /// While the operators being applied replay a logged migration as an inverse, the id each
     /// object the inverse created again takes, by the id it had.
-    replaying: Option<super::revert::Recreated>,
+    replaying: Option<inverse::Recreated>,
     /// The text each declaration takes within the step of the structural operator being applied
     /// as an inverse, set before that operator first builds.
     restating: Vec<(Item, String)>,

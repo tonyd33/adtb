@@ -90,20 +90,6 @@ impl Diag {
         }
     }
 
-    /// Returns the diagnostic `message` makes of this one's message at `span`, a poisoned one
-    /// staying poisoned.
-    pub(crate) fn restated(self, span: Span, message: impl FnOnce(String) -> String) -> Diag {
-        match self.kind {
-            DiagKind::Poisoned => Diag::poisoned(span),
-            kind @ DiagKind::PastLimits { .. } => Diag {
-                span,
-                message: message(self.message),
-                kind,
-            },
-            _ => Diag::new(span, message(self.message)),
-        }
-    }
-
     /// Returns the 1-based line and column of the start of the span.
     pub fn line_col(&self, src: &str) -> (usize, usize) {
         let upto = &src[..(self.span.start as usize).min(src.len())];

@@ -97,11 +97,7 @@
 [from_raw]
 "crates/adtb-lang/src/evolve/grant.rs" = 2
 "crates/adtb-lang/src/evolve/grant_text.rs" = 5
-"crates/adtb-lang/src/evolve/ids.rs" = 2
 "crates/adtb-lang/src/evolve/model/decl.rs" = 4
-"crates/adtb-lang/src/evolve/revert/by_id.rs" = 12
-"crates/adtb-lang/src/evolve/revert/mod.rs" = 3
-"crates/adtb-lang/src/evolve/revert/structural.rs" = 8
 "crates/adtb-lang/src/permission/grants.rs" = 2
 "crates/adtb-lang/src/translate/mod.rs" = 5
 "crates/adtb-store/src/key/entry.rs" = 1
