@@ -13,7 +13,8 @@ use crate::steps::Step;
 use crate::storage::Pid;
 
 use super::admit::Admitted;
-use super::eval::{Stmt, Violations, Violator, pairs, violate, violate_key};
+use super::eval::Stmt;
+use super::violation::{Violations, Violator, pairs, violate, violate_key};
 use super::{Broken, Error};
 
 /// Returns the write error of heap error `e`, met taking back a version's change.

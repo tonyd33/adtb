@@ -15,9 +15,10 @@ use crate::runtime::Runtime;
 use crate::storage::Pid;
 
 use super::admit::Admitted;
-use super::eval::{Stmt, Violations, Violator, pairs, refuse, violate, violate_key};
+use super::eval::Stmt;
 use super::reindex::Scan;
 use super::schema::Indexed;
+use super::violation::{Violations, Violator, pairs, refuse, violate, violate_key};
 use super::{Broken, Database, Error, Items, Local, Rows, Stop, Text, Txn};
 
 /// The database a restore fills.

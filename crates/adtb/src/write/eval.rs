@@ -6,10 +6,10 @@ use std::sync::atomic::Ordering;
 
 use adtb_file::Record;
 use adtb_lang::capability::RootKind;
-use adtb_lang::kernel::{Conflict, Kind, Terms, Tm, Valid, ValidTerms, Var};
+use adtb_lang::kernel::{Kind, Terms, Tm, Valid, ValidTerms, Var};
 use adtb_lang::schema::prelude::ctor;
-use adtb_lang::schema::{Committed, Generator, OnDelete, Schema, Stage};
-use adtb_lang::types::{DenialIdx, RelId, Ty, TypeId};
+use adtb_lang::schema::{Committed, Generator, Schema, Stage};
+use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::exec::types::ctors;
 use crate::exec::{self, Held, Val, from_stored_row, to_key};
@@ -21,6 +21,9 @@ use super::fresh::{self, Occurrences};
 use super::input::{self, Input, Local, is_temp, temp_key};
 use super::schema::{RefField, Rel};
 use super::{Broken, Database, Error, Outcome, Rejection, Rows, TermKind, Txn};
+
+use super::change::{add, normalise};
+use super::violation::{Violations, refuse, violate_key};
 
 pub type Env = BTreeMap<Var, Val>;
 
@@ -44,134 +47,6 @@ pub type Effects = BTreeSet<Eff>;
 
 /// Rows of a relation by key, each with its constructor, held in a statement's grant.
 pub type Referring = Held<BTreeMap<Val, (u32, Val)>>;
-
-/// The rows a statement's deletes remove.
-struct Deleted {
-    /// Each row a delete or replace removes.
-    minus_written: Held<BTreeSet<(RelId, Val)>>,
-    /// The key of each row that goes, cascades included.
-    gone: Held<BTreeSet<(RelId, Val)>>,
-    /// The row of each key a cascade removes.
-    pre_rows: Held<BTreeMap<(RelId, Val), Val>>,
-}
-
-/// What a statement's write violates, besides the key of a relation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Violator {
-    Denial(DenialIdx),
-    Unique(IndexId),
-    /// A reference field of a relation, by constructor, `None` for a header field, and position.
-    Reference(RelId, Option<u32>, usize),
-    /// The domain of a newtype.
-    Domain(TypeId),
-}
-
-/// What a refused statement violated.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Violated {
-    /// The key of a relation.
-    Key(RelId),
-    Other(Violator),
-}
-
-impl Rejection {
-    /// Returns what the statement violated, when it is refused for a violation.
-    pub fn violated(&self) -> Option<Violated> {
-        match self {
-            Rejection::Violated { violator, .. } => Some(Violated::Other(*violator)),
-            Rejection::KeyViolation { relation, .. } => Some(Violated::Key(*relation)),
-            _ => None,
-        }
-    }
-}
-
-/// The violations a statement found, each with the name its refusal prints.
-#[derive(Debug, Default)]
-pub struct Violations {
-    /// The keys rows of each relation share.
-    keys: BTreeMap<RelId, (String, BTreeSet<Val>)>,
-    /// The report of each other violation.
-    others: BTreeMap<Violator, (String, BTreeSet<Val>)>,
-}
-
-impl Violations {
-    pub fn new() -> Violations {
-        Violations::default()
-    }
-}
-
-pub fn violate_key(v: &mut Violations, name: &str, rel: RelId, key: Val) {
-    let (_, keys) = v
-        .keys
-        .entry(rel)
-        .or_insert_with(|| (name.to_string(), BTreeSet::new()));
-    keys.insert(key);
-}
-
-pub fn violate(v: &mut Violations, of: Violator, name: &str, rows: impl IntoIterator<Item = Val>) {
-    let rows: BTreeSet<Val> = rows.into_iter().collect();
-    if rows.is_empty() {
-        return;
-    }
-    let (_, report) = v
-        .others
-        .entry(of)
-        .or_insert_with(|| (name.to_string(), BTreeSet::new()));
-    report.extend(rows);
-}
-
-/// Returns the pairs of distinct rows of every group with more than one, as a unique's report.
-pub fn pairs<'a>(groups: impl IntoIterator<Item = &'a BTreeMap<Val, Val>>) -> BTreeSet<Val> {
-    let mut out = BTreeSet::new();
-    for g in groups {
-        for x in g.values() {
-            for y in g.values() {
-                if x != y {
-                    out.insert(Val::record(vec![x.clone(), y.clone()]));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Fail with the violation of least name in `viol`, if it holds any.
-pub fn refuse(viol: Violations) -> Result<(), Error> {
-    let key = viol
-        .keys
-        .into_iter()
-        .min_by(|(_, (a, _)), (_, (b, _))| a.cmp(b));
-    let other = viol
-        .others
-        .into_iter()
-        .min_by(|(_, (a, _)), (_, (b, _))| a.cmp(b));
-    let rejection = match (key, other) {
-        (None, None) => return Ok(()),
-        (Some((_, (k, _))), Some((violator, (o, report)))) if o < k => Rejection::Violated {
-            violator,
-            constraint: o,
-            report,
-        },
-        (Some((relation, (_, keys))), _) => Rejection::KeyViolation {
-            relation,
-            key: keys.into_iter().next().expect("a key violation has a key"),
-        },
-        (None, Some((violator, (constraint, report)))) => Rejection::Violated {
-            violator,
-            constraint,
-            report,
-        },
-    };
-    Err(Error::Rejected(rejection))
-}
-
-/// A record of a source that an insert with `rejects into` rejected.
-pub struct Rejected {
-    line: i64,
-    source: String,
-    raw: String,
-    reason: String,
-}
 
 /// The arena a term belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -486,6 +361,25 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         self.root
     }
 
+    pub(super) fn input(&self, v: &Var) -> Option<&Input> {
+        self.inputs.get(v)
+    }
+
+    /// Returns the records file scan `scan` read.
+    pub(super) fn scan_records(&self, scan: Var) -> Result<Vec<Record<Val>>, Error> {
+        let scans = self.scans.borrow();
+        Ok(scans.get(&scan).cloned().ok_or(Broken::ScanUnread)?)
+    }
+
+    pub(super) fn local(&self) -> &RefCell<Local> {
+        &self.local
+    }
+
+    /// Returns the `load` the statement drew, `None` until it draws one.
+    pub(super) fn drawn_load(&self) -> &Cell<Option<i64>> {
+        &self.load
+    }
+
     /// Returns `v`, a value of arena `a`, with every placeholder replaced by its drawn value.
     fn fill(&self, a: Arena, v: Val) -> Result<Val, Error> {
         let occurrences = match a {
@@ -524,7 +418,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         })
     }
 
-    fn set(&self, t: Tm, env: &Env) -> Result<BTreeSet<Val>, Error> {
+    pub(super) fn set(&self, t: Tm, env: &Env) -> Result<BTreeSet<Val>, Error> {
         match self.eval(Arena::Statement, t, env)? {
             Val::Set(s) => Ok(s.as_ref().clone()),
             other => Err(Broken::RowsNotSet(other).into()),
@@ -556,7 +450,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     }
 
     /// Evaluate write `t`, adding its effects to `out`.
-    fn write(&self, t: Tm, env: &Env, out: &mut Effects) -> Result<(), Error> {
+    pub(super) fn write(&self, t: Tm, env: &Env, out: &mut Effects) -> Result<(), Error> {
         match self.terms.kind(t).clone() {
             Kind::Skip => Ok(()),
             Kind::Insert(r, rows) => {
@@ -636,339 +530,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 let rows = self.records(rows, env, None)?;
                 self.upsert(t, rows, env, out)
             }
-            Kind::Rejects { into, insert } => {
-                let rows = match self.terms.kind(insert) {
-                    Kind::Insert(_, rows) | Kind::Upsert { rows, .. } => *rows,
-                    k => {
-                        return Err(Broken::RejectsWraps(TermKind(k.clone())).into());
-                    }
-                };
-                let mut rejected = Vec::new();
-                let rows = self.records(rows, env, Some(&mut rejected))?;
-                let bound = match self.terms.kind(insert) {
-                    Kind::Insert(r, _) => {
-                        out.extend(rows.iter().map(|v| Eff::Ins(*r, v.clone())));
-                        Val::set(rows)
-                    }
-                    _ => self.upsert(insert, rows, env, out)?,
-                };
-                if !rejected.is_empty() {
-                    let load = self.load(into)?;
-                    for j in rejected {
-                        out.insert(Eff::Ins(into, self.rejected_row(into, load, j)?));
-                    }
-                }
-                Ok(bound)
-            }
+            Kind::Rejects { into, insert } => self.rejects(into, insert, env, out),
             k => Err(Broken::NotABoundWrite(TermKind(k)).into()),
-        }
-    }
-
-    /// Returns the rows an insert's `rows` term computes. When `rows` ranges over one source
-    /// relation and its evaluation fails, each record is computed on its own, in the order of
-    /// the source's key: a record whose computation reaches `reject` goes to `rejected`, or
-    /// rejects the statement with `BadInput` naming it when there is none. Over a file scan,
-    /// each record is computed on its own in the order of the files, and a record that does not
-    /// convert is rejected as well.
-    fn records(
-        &self,
-        rows: Tm,
-        env: &Env,
-        mut rejected: Option<&mut Vec<Rejected>>,
-    ) -> Result<BTreeSet<Val>, Error> {
-        let source = match self.terms.kind(rows) {
-            Kind::For(x, src, body) => match self.terms.kind(*src) {
-                Kind::Rel(r, _) => Some((*x, *r, *src, *body)),
-                Kind::Var(v) => match self.inputs.get(v) {
-                    Some(Input::Temp { rel, .. } | Input::Volatile { rel, .. }) => {
-                        Some((*x, *rel, *src, *body))
-                    }
-                    Some(Input::File { .. }) => {
-                        return self.file_records(*v, (*x, *body), env, rejected);
-                    }
-                    None => None,
-                },
-                _ => None,
-            },
-            _ => None,
-        };
-        let Some((x, r0, src, body)) = source else {
-            return self.set(rows, env);
-        };
-        match self.set(rows, env) {
-            Err(
-                Error::Rejected(Rejection::BadInput { .. })
-                | Error::Exec(exec::Error::Rejected(_) | exec::Error::Fault(_)),
-            ) => {}
-            other => return other,
-        }
-        let mut keyed = Vec::new();
-        for p in self.set(src, env)? {
-            keyed.push((self.key_of(r0, &p)?, p));
-        }
-        keyed.sort_by(|a, b| a.0.cmp(&b.0));
-        let records: Vec<Val> = keyed.into_iter().map(|(_, p)| p).collect();
-        let source = self.schema.relation(r0).name.clone();
-        let mut out = BTreeSet::new();
-        for (i, p) in records.into_iter().enumerate() {
-            let line = i as i64 + 1;
-            match self.set(body, &bind(env, x, p.clone())) {
-                Ok(vs) => out.extend(vs),
-                Err(
-                    Error::Rejected(Rejection::BadInput { detail, .. })
-                    | Error::Exec(exec::Error::Rejected(detail)),
-                ) => match &mut rejected {
-                    Some(js) => {
-                        let ty = self.terms.var_info(x).ty.clone();
-                        js.push(Rejected {
-                            line,
-                            source: source.clone(),
-                            raw: exec::print(self.schema, &ty, &p)?,
-                            reason: detail,
-                        });
-                    }
-                    None => {
-                        return Err(Error::Rejected(Rejection::BadInput {
-                            source,
-                            line,
-                            detail,
-                        }));
-                    }
-                },
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(out)
-    }
-
-    /// Returns the rows `body` computes for each record of the file scan `scan`, bound to `x`. A
-    /// record that does not convert, or whose computation reaches `reject`, goes to `rejected`,
-    /// or rejects the statement with `BadInput` naming it when there is none.
-    fn file_records(
-        &self,
-        scan: Var,
-        (x, body): (Var, Tm),
-        env: &Env,
-        mut rejected: Option<&mut Vec<Rejected>>,
-    ) -> Result<BTreeSet<Val>, Error> {
-        let records = self
-            .scans
-            .borrow()
-            .get(&scan)
-            .cloned()
-            .ok_or(Broken::ScanUnread)?;
-        let mut out = BTreeSet::new();
-        for r in records {
-            let reason = match r.row {
-                Ok(p) => match self.set(body, &bind(env, x, p)) {
-                    Ok(vs) => {
-                        out.extend(vs);
-                        continue;
-                    }
-                    Err(
-                        Error::Rejected(Rejection::BadInput { detail, .. })
-                        | Error::Exec(exec::Error::Rejected(detail)),
-                    ) => detail,
-                    Err(e) => return Err(e),
-                },
-                Err(reason) => reason,
-            };
-            match &mut rejected {
-                Some(js) => js.push(Rejected {
-                    line: r.line,
-                    source: r.source,
-                    raw: r.raw,
-                    reason,
-                }),
-                None => {
-                    return Err(Error::Rejected(Rejection::BadInput {
-                        source: r.source,
-                        line: r.line,
-                        detail: reason,
-                    }));
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    /// Returns the `load` of the rows the statement inserts into `into`: one value per
-    /// statement, past every value issued before and every one `into` holds.
-    fn load(&self, into: RelId) -> Result<i64, Error> {
-        if let Some(l) = self.load.get() {
-            return Ok(l);
-        }
-        let at = self
-            .rejected_fields(into)?
-            .iter()
-            .position(|n| n == "load")
-            .expect("`RejectedRow` has a `load`");
-        let rows: Vec<Val> = if is_temp(self.schema, into) {
-            self.local.borrow().rows(into, None)?.into_iter().collect()
-        } else {
-            self.rows(into, None)?.into_iter().map(|(_, v)| v).collect()
-        };
-        let mut held = 0;
-        for v in rows {
-            if let Val::Int(l) = v.fields()?[at] {
-                held = held.max(l);
-            }
-        }
-        let l = self.db.next_load(held)?;
-        self.load.set(Some(l));
-        Ok(l)
-    }
-
-    /// Returns the names of the fields of a row of `into`, a relation of `RejectedRow`, in
-    /// declaration order.
-    fn rejected_fields(&self, into: RelId) -> Result<Vec<String>, Error> {
-        let elem = &self.schema.relation(into).elem;
-        let cs = ctors(self.schema, elem).ok_or(Broken::RejectedRowNotRecord)?;
-        Ok(cs[0].iter().map(|(n, _)| n.clone()).collect())
-    }
-
-    fn rejected_row(&self, into: RelId, load: i64, j: Rejected) -> Result<Val, Error> {
-        let fields = self
-            .rejected_fields(into)?
-            .iter()
-            .map(|n| match n.as_str() {
-                "load" => Val::Int(load),
-                "line" => Val::Int(j.line),
-                "source" => Val::text(&j.source),
-                "raw" => Val::text(&j.raw),
-                "reason" => Val::text(&j.reason),
-                other => panic!("`RejectedRow` has no field `{other}`"),
-            })
-            .collect();
-        Ok(Val::ctor(0, fields))
-    }
-
-    fn upsert(
-        &self,
-        t: Tm,
-        rows: BTreeSet<Val>,
-        env: &Env,
-        out: &mut Effects,
-    ) -> Result<Val, Error> {
-        let Kind::Upsert {
-            rel,
-            on,
-            old,
-            new,
-            otherwise,
-            single,
-            ..
-        } = self.terms.kind(t).clone()
-        else {
-            panic!("an upsert")
-        };
-        let mut bound = BTreeSet::new();
-        for n in rows {
-            let olds = self.conflicts(rel, on, &n)?;
-            if olds.is_empty() {
-                out.insert(Eff::Ins(rel, n.clone()));
-                bound.insert(n);
-                continue;
-            }
-            for o in olds {
-                if let Ty::Data {
-                    ctors: Some(visible),
-                    ..
-                } = &self.terms.var_info(old).ty
-                    && !visible.contains(&o.ctor_of()?)
-                {
-                    out.insert(Eff::Ins(rel, n.clone()));
-                    bound.insert(n.clone());
-                    continue;
-                }
-                let mut ew = Effects::new();
-                let inner = bind(&bind(env, old, o.clone()), new, n.clone());
-                self.write(otherwise, &inner, &mut ew)?;
-                let k = self.key_of(rel, &o)?;
-                let mut written: Vec<Val> = Vec::new();
-                for e in &ew {
-                    if let Eff::Rep(r, _, v) | Eff::Ins(r, v) = e
-                        && *r == rel
-                        && self.key_of(rel, v)? == k
-                    {
-                        written.push(v.clone());
-                    }
-                }
-                if written.is_empty() {
-                    bound.insert(o);
-                } else {
-                    bound.extend(written);
-                }
-                out.extend(ew);
-            }
-        }
-        if single {
-            Ok(bound
-                .into_iter()
-                .next()
-                .expect("a single-row upsert binds a row"))
-        } else {
-            Ok(Val::set(bound))
-        }
-    }
-
-    /// Returns the rows of `rel` in the snapshot whose values of `on` equal those of `n`.
-    fn conflicts(&self, rel: RelId, on: Conflict, n: &Val) -> Result<Vec<Val>, Error> {
-        match on {
-            Conflict::Key if is_temp(self.schema, rel) => {
-                let k = self.key_of(rel, n)?;
-                Ok(self
-                    .local
-                    .borrow()
-                    .by_key(rel, &k)
-                    .cloned()
-                    .into_iter()
-                    .collect())
-            }
-            Conflict::Key => {
-                let k = self.key_of(rel, n)?;
-                Ok(self
-                    .by_key(rel, &k)?
-                    .into_iter()
-                    .map(|(_, _, v)| v)
-                    .collect())
-            }
-            Conflict::Unique(i) => {
-                let r = self.rel(rel);
-                let u = r
-                    .uniques
-                    .iter()
-                    .find(|u| u.pos == i as usize)
-                    .ok_or(Broken::NoUnique(i))?;
-                let (_, ix) = r
-                    .indexes
-                    .iter()
-                    .find(|(id, _)| *id == u.index)
-                    .unwrap_or_else(|| panic!("a unique's index is one of its relation's"));
-                let c = n.ctor_of()?;
-                let types = self.store.key_types(u.index)?;
-                let row = self.stored(r.ctors[c as usize].heap, n)?;
-                let Some(key) = ix.keys.key(c, &row, &types)? else {
-                    return Ok(Vec::new());
-                };
-                let schema = self.db.bindings.indexes()[&u.index].index.schema();
-                let want = schema.encode(&key)?;
-                let scope = r.routes(u.scope.iter().copied());
-                let mut out = BTreeMap::new();
-                for n in self.probe(u.index, &key, &scope)? {
-                    let d = n.ctor;
-                    let Some((_, stored)) = self.store.fetch(r.ctors[d as usize].heap, &n)? else {
-                        continue;
-                    };
-                    let found = ix.keys.key(d, &stored, &types)?;
-                    let found = found.map(|k| schema.encode(&k)).transpose()?;
-                    if found.as_ref() == Some(&want) {
-                        let o = self.row(rel, d, &stored)?;
-                        out.insert(self.key_of(rel, &o)?, o);
-                    }
-                }
-                Ok(out.into_values().collect())
-            }
         }
     }
 
@@ -1061,11 +624,6 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         })
     }
 
-    /// Returns whether reference field `f` of `row` names a key in `gone`.
-    fn names_gone(f: &RefField, row: &Val, gone: &BTreeSet<(RelId, Val)>) -> Result<bool, Error> {
-        Ok(Self::names(f, row)?.is_some_and(|x| gone.contains(&(f.target, x))))
-    }
-
     /// Returns the relations with a reference field into one of `targets`, with those fields
     /// by constructor.
     pub fn referrers(&self, targets: &BTreeSet<RelId>) -> Vec<(RelId, Vec<Vec<&'a RefField>>)> {
@@ -1144,156 +702,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         Ok(out)
     }
 
-    /// Derive the delete actions of the written effects, form the statement's change set,
-    /// apply it, and check it at the statement boundary.
-    fn boundary(&self, written: Effects, result: Val) -> Result<Outcome, Error> {
-        let deleted = self.deleted(&written)?;
-        let (plus, minus) = self.change_set(written, &deleted)?;
-        self.settle(plus, minus, result)
-    }
-
-    /// Returns the rows the written effects delete, with every row a cascade deletes.
-    fn deleted(&self, written: &Effects) -> Result<Deleted, Error> {
-        let mut minus_written: Held<BTreeSet<(RelId, Val)>> = self.grant.held();
-        let mut kept_keys: Held<BTreeSet<(RelId, Val)>> = self.grant.held();
-        let mut removed: Held<BTreeSet<(RelId, Val)>> = self.grant.held();
-        for e in written {
-            match e {
-                Eff::Del(r, v) => {
-                    minus_written.insert((*r, v.clone()))?;
-                    removed.insert((*r, self.key_of(*r, v)?))?;
-                }
-                Eff::Rep(r, v, n) => {
-                    minus_written.insert((*r, v.clone()))?;
-                    kept_keys.insert((*r, self.key_of(*r, n)?))?;
-                }
-                Eff::Ins(r, n) => {
-                    kept_keys.insert((*r, self.key_of(*r, n)?))?;
-                }
-            }
-        }
-        let mut gone: Held<BTreeSet<(RelId, Val)>> = self.grant.held();
-        for k in removed {
-            if !kept_keys.contains(&k) {
-                gone.insert(k)?;
-            }
-        }
-        drop(kept_keys);
-        let mut pre_rows: Held<BTreeMap<(RelId, Val), Val>> = self.grant.held();
-        loop {
-            let targets: BTreeSet<RelId> = gone.iter().map(|(r, _)| *r).collect();
-            let mut more: Held<Vec<(RelId, Val)>> = self.grant.held();
-            for (r, fields) in self.referrers(&targets) {
-                if !fields
-                    .iter()
-                    .flatten()
-                    .any(|f| f.action == OnDelete::Cascade)
-                {
-                    continue;
-                }
-                for (_, (c, u)) in self.referring(r, &fields, &gone)? {
-                    let k = (r, self.key_of(r, &u)?);
-                    if minus_written.contains(&(r, u.clone())) || gone.contains(&k) {
-                        continue;
-                    }
-                    let mut hit = false;
-                    for f in &fields[c as usize] {
-                        hit |= f.action == OnDelete::Cascade && Self::names_gone(f, &u, &gone)?;
-                    }
-                    if hit {
-                        pre_rows.insert(k.clone(), u.clone())?;
-                        more.push(k)?;
-                    }
-                }
-            }
-            if more.is_empty() {
-                break;
-            }
-            for k in more {
-                gone.insert(k)?;
-            }
-        }
-        Ok(Deleted {
-            minus_written,
-            gone,
-            pre_rows,
-        })
-    }
-
-    /// Returns the rows the statement inserts and deletes: the written effects, the clears and
-    /// retags of the rows that refer to a deleted one, and the deleted rows.
-    fn change_set(&self, written: Effects, deleted: &Deleted) -> Result<(Rows, Rows), Error> {
-        let Deleted {
-            minus_written,
-            gone,
-            pre_rows,
-        } = deleted;
-        let mut all = written;
-        let targets: BTreeSet<RelId> = gone.iter().map(|(r, _)| *r).collect();
-        for (r, fields) in self.referrers(&targets) {
-            for (_, (c, u)) in self.referring(r, &fields, gone)? {
-                if minus_written.contains(&(r, u.clone()))
-                    || gone.contains(&(r, self.key_of(r, &u)?))
-                {
-                    continue;
-                }
-                let mut reach: Vec<&RefField> = Vec::new();
-                for f in fields[c as usize].iter().copied() {
-                    if Self::names_gone(f, &u, gone)? {
-                        reach.push(f);
-                    }
-                }
-                let clears: Vec<&RefField> = reach
-                    .iter()
-                    .copied()
-                    .filter(|f| f.action == OnDelete::Clear)
-                    .collect();
-                let retag = reach
-                    .iter()
-                    .any(|f| matches!(f.action, OnDelete::Retag(..)));
-                let new = if retag {
-                    let (var, body) = self.db.retags[&r];
-                    let env: Env = [(var, u.clone())].into();
-                    let v = self.eval(Arena::Program(RootKind::DeleteAction), body, &env)?;
-                    cleared(v, c, &clears)
-                } else if !clears.is_empty() {
-                    cleared(u.clone(), c, &clears)
-                } else {
-                    continue;
-                };
-                all.insert(Eff::Rep(r, u, new));
-            }
-        }
-        let mut plus = Rows::new();
-        let mut minus = Rows::new();
-        for e in &all {
-            match e {
-                Eff::Ins(r, v) | Eff::Rep(r, _, v) => {
-                    if !gone.contains(&(*r, self.key_of(*r, v)?)) {
-                        add(&mut plus, *r, v.clone())?;
-                    }
-                }
-                Eff::Del(..) => {}
-            }
-            if let Eff::Del(r, v) | Eff::Rep(r, v, _) = e {
-                add(&mut minus, *r, v.clone())?;
-            }
-        }
-        for (r, k) in gone.iter() {
-            let row = match pre_rows.get(&(*r, k.clone())) {
-                Some(u) => Some(u.clone()),
-                None => self.by_key(*r, k)?.map(|(_, _, u)| u),
-            };
-            if let Some(u) = row {
-                add(&mut minus, *r, u)?;
-            }
-        }
-        normalise(&mut plus, &mut minus);
-        Ok((plus, minus))
-    }
-
     /// Apply the change set and check it at the statement boundary.
-    fn settle(&self, plus: Rows, minus: Rows, result: Val) -> Result<Outcome, Error> {
+    pub(super) fn settle(&self, plus: Rows, minus: Rows, result: Val) -> Result<Outcome, Error> {
         self.check_open(&plus)?;
         let set = self.check_sizes(plus, minus)?;
         let mut viol = Violations::new();
@@ -1417,25 +827,6 @@ pub fn bind(env: &Env, x: Var, v: Val) -> Env {
     e
 }
 
-pub fn add(rows: &mut Rows, rel: RelId, v: Val) -> Result<(), Error> {
-    rows.entry((rel, v.ctor_of()?)).or_default().insert(v);
-    Ok(())
-}
-
-fn normalise(plus: &mut Rows, minus: &mut Rows) {
-    for (rc, p) in plus.iter_mut() {
-        if let Some(m) = minus.get_mut(rc) {
-            let both: Vec<Val> = p.intersection(m).cloned().collect();
-            for v in both {
-                p.remove(&v);
-                m.remove(&v);
-            }
-        }
-    }
-    plus.retain(|_, rows| !rows.is_empty());
-    minus.retain(|_, rows| !rows.is_empty());
-}
-
 impl<R: Runtime> Database<R> {
     /// Returns the plan of term `t` of `terms`, in a root of `kind`.
     pub(super) fn plan(
@@ -1474,18 +865,4 @@ impl<R: Runtime> Database<R> {
         program.shared.hosts = self.hosts.clone();
         Ok(program)
     }
-}
-
-/// Returns `v`, the new value of a row of constructor `from`, with each field of `clears`, the
-/// fields of `from`, set to `None` that `v` still has: every one when `v` is of `from`, else
-/// only the header fields.
-fn cleared(v: Val, from: u32, clears: &[&RefField]) -> Val {
-    let Val::Ctor(c, fs) = v else {
-        panic!("a row is a constructor value")
-    };
-    let mut fs = fs.to_vec();
-    for f in clears.iter().filter(|f| c == from || f.header) {
-        fs[f.at] = Val::none();
-    }
-    Val::ctor(c, fs)
 }

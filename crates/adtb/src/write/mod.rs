@@ -3,15 +3,19 @@
 mod admit;
 mod apply;
 mod broken;
+mod change;
 mod check;
 mod class;
 mod delta;
 mod engine_row;
+mod error;
 mod eval;
 mod explain;
+mod finish;
 mod fresh;
 mod grant;
 mod input;
+mod insert;
 mod items;
 mod keyed;
 mod mend;
@@ -27,6 +31,7 @@ mod session;
 mod stream;
 mod vacuums;
 mod verify;
+mod violation;
 mod writing;
 
 #[cfg(test)]
@@ -63,7 +68,7 @@ use crate::catalog::{IndexSpec, Structures};
 use crate::exec::{self, Budget, Scheduler, Val};
 use crate::key::CtorId;
 use crate::mvcc::{
-    Begun, Conflict, Hold, Limits, Safety, SerialId, Serializer, Snapshot, Taken, Transactions, Xid,
+    Begun, Hold, Limits, Safety, SerialId, Serializer, Snapshot, Taken, Transactions, Xid,
 };
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
@@ -71,7 +76,7 @@ use crate::ranks;
 use crate::runtime::{Instant, Runtime, ThreadId};
 #[cfg(any(test, feature = "testing"))]
 use crate::storage::Pid;
-use crate::storage::{MarkFailure, PageError, Pager, Position, Quarantine};
+use crate::storage::{Pager, Position};
 use crate::vacuum;
 
 pub use adtb_lang::schema::Stage;
@@ -82,7 +87,8 @@ pub use check::idle_deltas_checked;
 pub use check::refusals;
 pub use delta::{CheckPlan, Part, unchanged};
 pub(crate) use engine_row::EngineRow;
-pub use eval::{Violated, Violator};
+pub use error::{Error, Rejection};
+pub use finish::either;
 pub use input::Local;
 pub use items::Items;
 pub use past::Retained;
@@ -90,10 +96,10 @@ pub(crate) use past::position;
 pub use quarantine::{By, Mapped, Mapping};
 pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold};
 pub use rot::Rot;
-use session::SerialEnd;
 pub use stream::{Produced, Production};
 pub use vacuums::Due;
 pub use verify::{Found, VerifyScope};
+pub use violation::{Violated, Violator};
 pub(crate) use writing::{Writing, outside_writer};
 
 use schema::Rels;
@@ -102,195 +108,6 @@ pub use sequence::counter_page;
 
 #[cfg(test)]
 pub(crate) use sequence::full_counter_page;
-
-/// Why a statement was rejected.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Rejection {
-    /// `constraint` is the violated constraint's name; `report` the rows its query returns.
-    Violated {
-        violator: Violator,
-        constraint: String,
-        report: BTreeSet<Val>,
-    },
-    /// Two rows of `relation` hold `key`, the least such key.
-    KeyViolation {
-        relation: RelId,
-        key: Val,
-    },
-    KeyChanged {
-        relation: RelId,
-    },
-    /// `ctor` is qualified by its relation (`identities.Apple`) or by its sum (`Provider.Okta`).
-    NotOpen {
-        ctor: String,
-        stage: Stage,
-    },
-    UserError {
-        message: String,
-    },
-    /// An argument of a command is outside its parameter's domain, as `detail` states.
-    Invalid {
-        detail: String,
-    },
-    /// A record of the statement's source failed: record `line` of relation `source`, or `""`
-    /// and 0 when the source is not one relation.
-    BadInput {
-        source: String,
-        line: i64,
-        detail: String,
-    },
-    /// A new row of constructor `ctor` of `relation` stores in `size` bytes, over the heap's
-    /// `limit`.
-    RowTooLarge {
-        relation: RelId,
-        ctor: u32,
-        size: usize,
-        limit: usize,
-    },
-    KeyTooLarge {
-        relation: RelId,
-        ctor: u32,
-        index: String,
-        size: usize,
-        limit: usize,
-    },
-}
-
-/// Why a statement or a commit failed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Error {
-    Rejected(Rejection),
-    /// The call reads, or writes under, `objects`, which are quarantined, each with why its mark
-    /// holds only in memory if it does. `by` states what made the call fail.
-    Quarantined {
-        objects: BTreeMap<Quarantine, Option<MarkFailure>>,
-        by: By,
-    },
-    /// The transactions layer refuses the call.
-    Transactions(crate::mvcc::Error),
-    /// The open could not arm the read-in gate, so it refuses the call.
-    Unarmed(crate::storage::Unarmed),
-    Corrupt(Rot),
-    /// The role the statement runs for lacks a privilege, as this text states.
-    Denied(String),
-    SequenceExhausted,
-    Internal(Box<Broken>),
-    Exec(exec::Error),
-    /// The schema has a constraint without an index-bounded incremental check; each constraint
-    /// refused, with why.
-    Refused(Vec<(String, String)>),
-    /// The files a path names differ from those an earlier scan of it in the transaction read.
-    FileChanged(String),
-    /// The engine closed while the statement waited for a transaction.
-    Closed,
-    /// A statement run with [`Bounds::suspend`] must wait for transaction `on` to end, to write
-    /// a version of `heap`, or at a gate for `None`. A rerun of the statements passes `rerun` as
-    /// [`Bounds::rerun`].
-    Blocked {
-        on: Xid,
-        heap: Option<u32>,
-        rerun: Rerun,
-    },
-}
-
-impl From<PageError> for Error {
-    fn from(e: PageError) -> Error {
-        Error::Exec(exec::Error::Page(e))
-    }
-}
-
-impl From<crate::heap::OrphanEntry> for Error {
-    fn from(e: crate::heap::OrphanEntry) -> Error {
-        Error::Exec(e.into())
-    }
-}
-
-impl From<Conflict> for Error {
-    fn from(f: Conflict) -> Error {
-        Error::Exec(exec::Error::Serialization(f))
-    }
-}
-
-impl From<crate::heap::Error> for Error {
-    fn from(e: crate::heap::Error) -> Error {
-        match e {
-            crate::heap::Error::Page(p) => p.into(),
-            crate::heap::Error::Changed(c) => c.into(),
-            crate::heap::Error::TooLarge { len, limit } => {
-                Error::Internal(Box::new(Broken::Unadmitted { len, limit }))
-            }
-            crate::heap::Error::NoDirectory => Broken::NoDirectory.into(),
-            crate::heap::Error::Unencodable(e) => Broken::Unencodable(e).into(),
-        }
-    }
-}
-
-impl From<vacuum::Error> for Error {
-    fn from(e: vacuum::Error) -> Error {
-        match e {
-            vacuum::Error::Page(p) | vacuum::Error::Heap(crate::heap::Error::Page(p)) => p.into(),
-            vacuum::Error::Index(i) => Error::from(i),
-            vacuum::Error::Heap(e @ crate::heap::Error::Changed { .. }) => Error::from(e),
-            vacuum::Error::Heap(crate::heap::Error::NoDirectory) => Broken::NoDirectory.into(),
-            vacuum::Error::Heap(crate::heap::Error::Unencodable(e)) => {
-                Broken::Unencodable(e).into()
-            }
-            vacuum::Error::Heap(crate::heap::Error::TooLarge { len, limit }) => {
-                Broken::KeptTooLarge { len, limit }.into()
-            }
-            vacuum::Error::Stopped => Error::Exec(exec::Error::Cancelled),
-            vacuum::Error::Unkeyed(c) => Error::Exec(exec::Broken::UnkeyedRow(c.0).into()),
-        }
-    }
-}
-
-impl From<crate::btree::Error> for Error {
-    fn from(e: crate::btree::Error) -> Error {
-        match e {
-            crate::btree::Error::Page(p) => p.into(),
-            crate::btree::Error::Key(e) => e.into(),
-            other => Rot::Index(other).into(),
-        }
-    }
-}
-
-impl From<crate::key::EncodeError> for Error {
-    fn from(e: crate::key::EncodeError) -> Error {
-        Error::Exec(e.into())
-    }
-}
-
-impl From<crate::mvcc::Error> for Error {
-    fn from(e: crate::mvcc::Error) -> Error {
-        Error::Transactions(e)
-    }
-}
-
-impl From<crate::catalog::Error> for Error {
-    fn from(e: crate::catalog::Error) -> Error {
-        use crate::catalog::Error as C;
-        match e {
-            C::Page(p)
-            | C::Heap(crate::heap::Error::Page(p))
-            | C::Index(crate::btree::Error::Page(p)) => p.into(),
-            C::Index(e @ (crate::btree::Error::Malformed(_) | crate::btree::Error::Entry(..))) => {
-                Rot::Index(e).into()
-            }
-            C::Corrupt(r) => Rot::Catalog(r).into(),
-            C::Missing(what) => Rot::NoRoot(what).into(),
-            C::Txn(e) => Error::Transactions(e),
-            C::Spill(io) => Error::Exec(exec::Error::Spill(io)),
-            C::Conflict(c) | C::Heap(crate::heap::Error::Changed(c)) => c.into(),
-            other => Broken::CatalogError(other).into(),
-        }
-    }
-}
-
-impl From<exec::Error> for Error {
-    fn from(e: exec::Error) -> Error {
-        Error::Exec(e)
-    }
-}
 
 /// The rows of each constructor relation, by relation and constructor.
 pub type Rows = BTreeMap<(RelId, u32), BTreeSet<Val>>;
@@ -1234,40 +1051,6 @@ impl<R: Runtime> Database<R> {
             .draw(&self.pager, rel.0, floor)
     }
 
-    /// Commit `tx`. Returns its commit position once the log is durable past its commit and
-    /// every commit it read; for a read-only transaction, the position of the latest commit it
-    /// read, else of the log's durable end.
-    ///
-    /// Fail with `Quarantined` if a mark set before its commit record stops what `tx` wrote, by
-    /// the rule that stops a statement. On any failure, abandon `tx` as [`Database::abandon`]
-    /// does: fail with the commit's failure, or with the abort record's when it fails.
-    pub fn commit(&self, tx: Txn) -> Result<Position, Error> {
-        let (sid, upto) = (tx.sid, tx.taken.upto());
-        let written = tx.written.take();
-        let mut held = tx.end();
-        let begun = held.begun.take();
-        let committed = self.session.txns.commit_with(
-            &self.pager,
-            begun,
-            upto,
-            |ser| {
-                self.map_committing(ser.ordered());
-                self.admit_commit(ser, written)?;
-                ser.precommit(sid).map_err(Error::from)
-            },
-            |ser| (self.session).end_serial(ser, &mut held, SerialEnd::Committed),
-        );
-        match committed {
-            Ok(c) => {
-                let changed = held.changed.take();
-                drop(held);
-                self.session.count_dead(&changed, true);
-                Ok(self.pager.position(c.lsn()))
-            }
-            Err(e) => Err(either(self.abandon_held(held, || e, |r| r))),
-        }
-    }
-
     /// Returns how many transactions the serializer tracks.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn tracked(&self) -> usize {
@@ -1308,64 +1091,6 @@ impl<R: Runtime> Database<R> {
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn set_step_hook(&self, hook: crate::steps::StepHook) {
         self.session.steps.set(hook);
-    }
-
-    /// Abort `tx` and release what it holds.
-    ///
-    /// Fail when its abort record fails, as [`crate::mvcc::Transactions::abort`] fails. The commit
-    /// log then still says `tx`'s id is in progress, and this process counts it aborted.
-    pub fn abort(&self, tx: Txn) -> Result<(), Error> {
-        self.abort_held(tx.end())
-    }
-
-    fn abort_held(&self, held: Held) -> Result<(), Error> {
-        let changed = held.changed.take();
-        let aborted = held.close();
-        self.session.count_dead(&changed, false);
-        aborted?;
-        Ok(())
-    }
-
-    /// Abort `tx` after its call failed, or as the call releases it open, releasing what it
-    /// holds, and count its abort record if it fails. Returns the call's reply: `Ok` with
-    /// `cause()` once the record is written, else `Err` with the record's failure as `reply`
-    /// makes it.
-    pub fn abandon<E>(
-        &self,
-        tx: Txn,
-        cause: impl FnOnce() -> E,
-        reply: impl FnOnce(Error) -> E,
-    ) -> Result<E, E> {
-        self.abandon_held(tx.end(), cause, reply)
-    }
-
-    fn abandon_held<E>(
-        &self,
-        held: Held,
-        cause: impl FnOnce() -> E,
-        reply: impl FnOnce(Error) -> E,
-    ) -> Result<E, E> {
-        match self.abort_held(held) {
-            Ok(()) => Ok(cause()),
-            Err(e) => {
-                self.session.txns.count_unrecorded();
-                Err(reply(e))
-            }
-        }
-    }
-
-    /// Abandon `tx` after its call failed with `cause`, as [`Database::abandon`] does. Returns
-    /// the call's reply, `cause` or the abort record's failure.
-    pub fn abandoned(&self, tx: Txn, cause: Error) -> Error {
-        either(self.abandon(tx, || cause, |r| r))
-    }
-
-    /// Abort `tx` and return `done`, abandoning `tx` when `done` is a failure.
-    pub(crate) fn abort_returning<T>(&self, tx: Txn, done: Result<T, Error>) -> Result<T, Error> {
-        match done {
-            Ok(v) => self.abort(tx).map(|()| v),
-            Err(e) => Err(self.abandoned(tx, e)),
-        }
     }
 
     /// Returns the page of the database's generated counters, for [`Setup::sequences`] when
@@ -1422,11 +1147,6 @@ impl<R: Runtime> Database<R> {
         );
         Ok(call.on(self.pool.clone()))
     }
-}
-
-/// Returns the value either arm of `r` holds.
-pub fn either<E>(r: Result<E, E>) -> E {
-    r.unwrap_or_else(|e| e)
 }
 
 impl<R: Runtime> VacuumHold<'_, R> {

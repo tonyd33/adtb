@@ -13,8 +13,9 @@ use crate::plan::{self, Catalog};
 use crate::runtime::Runtime;
 
 use super::delta::{self, Delta, Input, Part};
-use super::eval::{Arena, Env, Stmt, Violations, Violator, violate};
+use super::eval::{Arena, Env, Stmt};
 use super::schema::RefField;
+use super::violation::{Violations, Violator, violate};
 use super::{Broken, Error, Rows};
 
 /// A constraint or check of the schema, as its incremental checks ready to run.
