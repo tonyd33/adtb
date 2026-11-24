@@ -28,6 +28,9 @@ pub(super) struct DirtyTable {
     /// The freed record logged of each page whose frame was dropped holding changes the file
     /// lacks, by its LSN.
     freeing: BTreeSet<(Lsn, Pid)>,
+    /// Pages whose frame was read in from a copy below its expected LSN while the allocation
+    /// bitmap called the page free, until a change logs a full image of it.
+    unchained: BTreeSet<Pid>,
 }
 
 #[derive(Debug)]
@@ -67,6 +70,7 @@ impl DirtyTable {
             written: BTreeSet::new(),
             wrote: Vec::new(),
             freeing: BTreeSet::new(),
+            unchained: BTreeSet::new(),
         }
     }
 
@@ -83,6 +87,28 @@ impl DirtyTable {
             Logged::Change
         } else {
             Logged::Image
+        }
+    }
+
+    /// Enter that the frame of `pid` was read in from a copy below its expected LSN while the
+    /// allocation bitmap called the page free.
+    pub(super) fn read_unchained(&mut self, pid: Pid) {
+        self.unchained.insert(pid);
+    }
+
+    /// Enter a change of `pid` in the hold of `_`, `replaced` when it logs an unchained image or
+    /// a restored copy's image.
+    ///
+    /// Panic on any other change of a page whose frame was read in unchained.
+    pub(super) fn changing(&mut self, _: &Appending, pid: Pid, replaced: bool) {
+        if replaced {
+            self.unchained.remove(&pid);
+        } else {
+            assert!(
+                !self.unchained.contains(&pid),
+                "page {} was read in behind the log while free, and its change starts no chain",
+                pid.0
+            );
         }
     }
 

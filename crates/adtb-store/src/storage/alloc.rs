@@ -397,6 +397,16 @@ impl<R: Runtime> Pager<R> {
         }
     }
 
+    /// Enter that the frame of `pid`, read in now from a copy below its expected LSN, is
+    /// unchained when the allocation bitmap calls the page free. Returns whether it does.
+    pub(super) fn admit_unchained(&self, pid: Pid) -> bool {
+        let free = self.bitmapped(pid) == Bitmapped::Free;
+        if free {
+            self.dirty_table().read_unchained(pid);
+        }
+        free
+    }
+
     /// Returns every page the allocation bitmap marks allocated, in order, leaving out the pages
     /// the pager owns itself: the file header copies, the bitmap's pages, the quarantine marks'
     /// page, the damage list's page and the page LSN map's pages.

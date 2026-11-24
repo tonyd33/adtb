@@ -174,3 +174,15 @@ pub fn verify(pid: Pid, page: &[u8]) -> Verdict {
         Verdict::Corrupt
     }
 }
+
+/// Panic unless every edit of `edits` writes inside the contents of a page of `size` bytes.
+pub(super) fn check_edits<'a>(edits: impl Iterator<Item = &'a super::record::Edit>, size: usize) {
+    for e in edits {
+        let at = e.offset as usize;
+        assert!(
+            at >= FIRST_EDITABLE && at + e.bytes.len() <= size,
+            "edit of {} bytes at {at} is outside the page's contents",
+            e.bytes.len()
+        );
+    }
+}

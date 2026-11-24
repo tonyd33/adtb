@@ -7,7 +7,7 @@ use adtb_sys::pages::{self, PageMemory, PageState};
 
 use crate::runtime::{AlignedBuf, FileId, IoError, Runtime, ThreadId};
 
-use super::alloc::{Allocation, Bitmapped, Hold, Reservation, diff};
+use super::alloc::{Allocation, Hold, Reservation, diff};
 use super::damage_log::Recorded;
 use super::driver::Driver;
 use super::error::{Damage, OpenError, Shape};
@@ -169,6 +169,11 @@ impl<R: Runtime> Append<'_, R> {
         let m = &mut *self.meta;
         let prev = page::lsn(g);
         let lsn = log.next_lsn();
+        m.table.changing(
+            &self.witness,
+            pid,
+            start || matches!(g.kind, Kind::Restored { .. }),
+        );
         g.held_mut().apply_change(&edits, lsn);
         let record = if start {
             g.kind = Kind::Latched;
@@ -1212,7 +1217,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the exclusive latch on `pid` with the page resident, or `None` if it was found
     /// damaged by another thread meanwhile and the caller should look again. A copy below its
-    /// expected LSN of a page the allocation bitmap calls free is read in unrefused.
+    /// expected LSN of a page the allocation bitmap calls free is read in unrefused and unchained.
     fn resident(&self, pid: Pid) -> Result<Option<Held<'_, R>>, PageError> {
         self.refused(pid)?;
         let mut g = self.hold(pid);
@@ -1226,7 +1231,7 @@ impl<R: Runtime> Pager<R> {
         self.make_room(pid);
         let (judged, read) = self.read_judged(pid).parts();
         let refused = match judged {
-            Judged::Behind(_) if self.bitmapped(pid) == Bitmapped::Free => None,
+            Judged::Behind(_) if self.admit_unchained(pid) => None,
             judged => judged.refused(),
         };
         let buf = match (refused, read) {
@@ -1392,15 +1397,7 @@ impl<R: Runtime> Pager<R> {
     ) -> Lsn {
         let allocated: Vec<Pid> = new.map(|n| n.allocated().collect()).unwrap_or_default();
         let freed = new.map_or(&[][..], Reservation::freed);
-        let size = self.page_size;
-        for e in edits.iter().flatten() {
-            let at = e.offset as usize;
-            assert!(
-                at >= FIRST_EDITABLE && at + e.bytes.len() <= size,
-                "edit of {} bytes at {at} is outside the page's contents",
-                e.bytes.len()
-            );
-        }
+        page::check_edits(edits.iter().flatten(), self.page_size);
         let mut append = self.append();
         let mut last = append.log.log.next_lsn();
         for (g, edits) in guards.iter_mut().zip(edits) {
