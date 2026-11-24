@@ -120,8 +120,7 @@ impl Model {
                 joined.push(Term::text("\n  | "));
                 joined.push(Term::arm(key, &run.text()[start..a.body.span.end as usize]));
                 if run.is_copying() {
-                    self.naming
-                        .arm(key, start..a.body.span.end as usize, p.item);
+                    self.naming.arm(key, start..a.body.span.end as usize);
                 }
                 self.arms.insert(key, p.item);
                 written[n] = Some(ArmM {

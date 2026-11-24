@@ -262,7 +262,6 @@ impl Source {
             }
         };
         let mut refusal = Refusal::new(operators, blame, unstepped.unwrap_or(first));
-        refusal.recheck_from = got.copied_from(text, &recheck);
         refusal.recheck = recheck;
         refusal.result = Some(Box::new(next));
         Err(Failed::Refused(refusal))

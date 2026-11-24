@@ -3775,29 +3775,6 @@ add relation members : Member key id generate sequence index (team)",
     assert_eq!(vec!["team"], indexed("members"));
 }
 
-#[test]
-fn a_recheck_error_in_copied_text_is_located_in_the_migration() {
-    let text = "module auth
-add constructor Identity.Corp { domain: Text, name: Text }
-  arm display_name: Corp c -> c.name
-  arm login_present: Corp c -> false
-drop field Identity.Corp.name";
-    let m = parse_migration(text, Options::default()).ok().unwrap();
-    let Err(Failed::Refused(r)) = running().migrate(&m, text) else {
-        panic!("the drop is refused");
-    };
-    let at = text.find("c.name").unwrap() + 2;
-    assert_eq!(1, r.recheck.len(), "{:?}", r.recheck);
-    assert_eq!(vec![Some(Span::new(at, at + "name".len()))], r.recheck_from);
-    let text = "module auth\ndrop field Identity.Google.gid";
-    let m = parse_migration(text, Options::default()).ok().unwrap();
-    let Err(Failed::Refused(r)) = running().migrate(&m, text) else {
-        panic!("the drop is refused");
-    };
-    assert!(!r.recheck.is_empty());
-    assert_eq!(vec![None; r.recheck.len()], r.recheck_from);
-}
-
 fn ctor_ref(s: &Schema, def: TypeId, c: u32) -> CtorRef {
     s.ty(def).ctor_at(c).expect("a constructor")
 }

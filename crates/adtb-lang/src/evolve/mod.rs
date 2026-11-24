@@ -225,9 +225,6 @@ pub struct Refusal {
     pub operators: Vec<Diag>,
     pub recheck: Vec<FileDiag>,
     blame: Vec<usize>,
-    /// For each of `recheck`, in order, the span of the migration's text an operator copied the
-    /// failing text from, when it copied it.
-    pub recheck_from: Vec<Option<Span>>,
     /// The result, whose files `recheck` points into.
     pub result: Option<Box<Source>>,
     blamed: usize,
@@ -241,7 +238,6 @@ impl Refusal {
             operators,
             recheck: Vec::new(),
             blame,
-            recheck_from: Vec::new(),
             result: None,
             blamed,
         }

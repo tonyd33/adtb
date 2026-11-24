@@ -395,11 +395,7 @@ pub fn prepare(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<Prepared,
                     refusal
                         .recheck
                         .iter()
-                        .zip(&refusal.recheck_from)
-                        .map(|(d, from)| match from {
-                            Some(span) => at(b, *span, &d.diag.message),
-                            None => render_in(result, &entries, Some(b), d),
-                        }),
+                        .map(|d| render_in(result, &entries, Some(b), d)),
                 );
                 return Err(errs);
             }

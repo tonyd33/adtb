@@ -475,8 +475,6 @@ Postconditions of `migrate`:
 - On success the result checks: `result.check()` succeeds. Otherwise
   `Refusal.recheck` names every schema object of the result that fails
   to build or check, and `Refusal.result` is that result.
-  `Refusal.recheck_from[i]` is the span of `text` that an operator
-  copied the text `recheck[i]` points at from, when it copied it.
 - The result's declarations are the operators' rewrite of the source's
   text. A declaration no operator touches keeps its text.
 - Every object keeps its catalog id across the migration, a renamed
@@ -579,8 +577,8 @@ with different fields, or, for a nest, covering some but not all of
 a source's fields, or while a merge or nest replaces sources that a
 `retag` grant's excepted pairs tell apart (a constructor outside them
 excepted with some of them but not all, in one direction), unless a later `grant` of the same migration
-gives the same role the same privilege on a target covering the
-product. The refusal names the sources and the product.
+gives the same role the same kind of privilege on a target covering
+the product. The refusal names the sources and the product.
 
 A `revoke` of a retag removes each held retag with the same targets as
 written, whatever pairs it excepts.

@@ -1971,7 +1971,6 @@ struct Seen {
     applied: usize,
     refused: usize,
     revert_steps: usize,
-    copied_rechecks: usize,
 }
 
 /// Returns `text` as its tokens joined by single spaces.
@@ -2072,18 +2071,6 @@ fn lawful(src: &Source, text: &str, seen: &mut Seen) -> Option<Source> {
                     "{text}\nrefusal outside every operator: {d:?}"
                 );
             }
-            if let Some(result) = &r.result {
-                for (d, from) in r.recheck.iter().zip(&r.recheck_from) {
-                    let Some(from) = from else { continue };
-                    seen.copied_rechecks += 1;
-                    let file = result.file_text(d.file);
-                    assert_eq!(
-                        token_form(&text[from.range()]),
-                        token_form(&file[d.diag.span.range()]),
-                        "{text}\nrecheck {d:?} points elsewhere than its copy"
-                    );
-                }
-            }
             None
         }
     }
@@ -2172,16 +2159,14 @@ fn the_migrations_of_the_cases_and_the_script_corpus_keep_their_laws() {
             seen.applied += s.applied;
             seen.refused += s.refused;
             seen.revert_steps += s.revert_steps;
-            seen.copied_rechecks += s.copied_rechecks;
         }
     });
     assert!(
-        seen.applied > 0 && seen.refused > 0 && seen.revert_steps > 0 && seen.copied_rechecks > 0,
-        "the search reaches each law: {} applied, {} refused, {} revert steps, {} copied rechecks",
+        seen.applied > 0 && seen.refused > 0 && seen.revert_steps > 0,
+        "the search reaches each law: {} applied, {} refused, {} revert steps",
         seen.applied,
         seen.refused,
         seen.revert_steps,
-        seen.copied_rechecks
     );
 }
 

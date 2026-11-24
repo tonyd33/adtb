@@ -1,7 +1,7 @@
 use super::field::Maps;
 use super::lift::Lifting;
 use super::op::{Fail, Op, Refused, Res, Resolving, broken, refuse};
-use super::run::{Built, Decls, Gave, Late, Run};
+use super::run::{Built, Gave, Late, Run};
 use super::*;
 use crate::ast::{MigrationFile, OperatorKind};
 use crate::canon::Names;
@@ -31,9 +31,6 @@ pub(in crate::evolve) struct Migrated {
     /// The names of the migration's text, when they were asked for, or the copies a later
     /// operator rewrote before they were named.
     names: Option<Result<Names, Vec<Diag>>>,
-    /// Each copy of the migration's text its applied operators made: the range it copies and
-    /// where it is.
-    copies: Vec<(std::ops::Range<usize>, naming::At)>,
     /// For each structural operator that cannot carry a grant no later grant operator states,
     /// every such grant's refusal.
     uncarried: BTreeMap<usize, Vec<Diag>>,
@@ -230,56 +227,6 @@ impl Migrated {
         }
         out
     }
-
-    /// Returns, for each of `diags`, diagnostics of the declarations the migration leaves, the
-    /// span of the migration's text `text` an operator copied the diagnosed text from, when it
-    /// copied it.
-    pub(in crate::evolve) fn copied_from(
-        &self,
-        text: &str,
-        diags: &[FileDiag],
-    ) -> Vec<Option<Span>> {
-        let parsed = self.model.parsed();
-        diags
-            .iter()
-            .map(|d| {
-                let span = d.diag.span;
-                let placed = self.copies.iter().find_map(|(from, at)| {
-                    let (file, at) = self.model.span_of(&parsed, *at)?;
-                    (file == d.file && at.start <= span.start && span.end <= at.end)
-                        .then(|| {
-                            naming::copied_span(
-                                parsed.text(file),
-                                at.range(),
-                                text,
-                                from.clone(),
-                                span,
-                            )
-                        })
-                        .flatten()
-                });
-                placed.or_else(|| {
-                    self.model
-                        .naming
-                        .arm_copies()
-                        .iter()
-                        .find_map(|(from, item)| {
-                            let file = FileId(self.model.decl_at(*item)? as u32);
-                            (file == d.file)
-                                .then(|| {
-                                    naming::searched_span(
-                                        parsed.text(file),
-                                        text,
-                                        from.clone(),
-                                        span,
-                                    )
-                                })
-                                .flatten()
-                        })
-                })
-            })
-            .collect()
-    }
 }
 
 impl Model {
@@ -308,7 +255,6 @@ impl Model {
         let mut steps = Vec::new();
         let mut afters = Vec::new();
         let mut rekeyed = Vec::new();
-        let mut copies = Vec::new();
         for (k, op) in m.operators.iter().enumerate() {
             let by = Adder::Operator(k);
             model.mark(by, Added::Applying);
@@ -343,7 +289,6 @@ impl Model {
                     }
                     next.keep(&model, kept);
                     next.rebind(&model);
-                    copies.extend(next.copies_of(&mut run, op, &r, &mut Vec::new()));
                     if naming {
                         next.name_copies(&mut run, op, &r);
                     }
@@ -431,7 +376,6 @@ impl Model {
             afters,
             checks,
             names,
-            copies,
             uncarried,
         })
     }
