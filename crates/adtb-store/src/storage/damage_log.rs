@@ -464,3 +464,119 @@ impl<R: Runtime> Pager<R> {
         g.update(|p| encode(p, r));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::error::Undecoded;
+    use crate::storage::page::FIRST_EDITABLE;
+
+    const STORAGE: &str = include_str!("../../../../docs/design/storage.md");
+    const PID: Pid = Pid(7);
+    const SECOND: Lsn = Lsn(9);
+
+    /// Returns the cells of each row of the first table in storage.md after `intro`.
+    fn table(intro: &str) -> Vec<Vec<&'static str>> {
+        let at = STORAGE.find(intro).expect("storage.md states the table");
+        STORAGE[at..]
+            .lines()
+            .skip_while(|l| !l.starts_with('|'))
+            .skip(2)
+            .take_while(|l| l.starts_with('|'))
+            .map(|l| {
+                let cells = l.trim_matches('|').split('|');
+                cells.map(|c| c.trim().trim_matches('`')).collect()
+            })
+            .collect()
+    }
+
+    fn shape(name: &str) -> Shape {
+        match name {
+            "Blank" => Shape::Blank,
+            "Kind" => Shape::Kind,
+            "Owner" => Shape::Owner,
+            "Frame" => Shape::Frame,
+            "Format" => Shape::Format,
+            "Row(Tag)" => Shape::Row(Undecoded::Tag),
+            "Row(Cut)" => Shape::Row(Undecoded::Cut),
+            "Row(Trailing)" => Shape::Row(Undecoded::Trailing),
+            "Row(Text)" => Shape::Row(Undecoded::Text),
+            "Row(Pointer)" => Shape::Row(Undecoded::Pointer),
+            "Row(Domain)" => Shape::Row(Undecoded::Domain),
+            "Stray" => Shape::Stray,
+            _ => panic!("storage.md names no shape {name}"),
+        }
+    }
+
+    /// Returns what a list of one entry of the damage storage.md names `name` holds, its first
+    /// LSN `first`, `None` when it reads as damaged.
+    fn listed(name: &str, first: Lsn, shapes: &BTreeMap<u64, Shape>) -> Option<Recorded> {
+        let page = |damage| Recorded {
+            pages: BTreeMap::from([(PID, damage)]),
+            ..Recorded::default()
+        };
+        Some(match name {
+            "Checksum" => page(Damage::Checksum),
+            "Stale" => page(Damage::Stale {
+                expected: first,
+                found: SECOND,
+            }),
+            "LogUnproven" => page(Damage::LogUnproven { at: first }),
+            "Settled" => page(Damage::Settled {
+                expected: first,
+                found: SECOND,
+            }),
+            "Shape" => page(Damage::Shape(*shapes.get(&first.0)?)),
+            _ if name.starts_with("a stale log block") => Recorded {
+                log: BTreeSet::from([LogFinding {
+                    lsn: first,
+                    problem: LogProblem::Stale,
+                }]),
+                ..Recorded::default()
+            },
+            _ => panic!("storage.md names no damage {name}"),
+        })
+    }
+
+    /// Returns a list page holding one entry of `kind` naming `PID`.
+    fn list(kind: u8, first: Lsn) -> Vec<u8> {
+        let mut page = vec![0; 4096];
+        let header = page::header_edit(FORMAT, PageKind::DamageList, 0, 0);
+        page[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(&header);
+        page[COUNT..COUNT + 4].copy_from_slice(&1u32.to_le_bytes());
+        let head = u64::from(kind) << KIND_SHIFT | PID.0;
+        for (i, word) in [head, first.0, SECOND.0].into_iter().enumerate() {
+            let at = ENTRIES + 8 * i;
+            page[at..at + 8].copy_from_slice(&word.to_le_bytes());
+        }
+        page
+    }
+
+    #[test]
+    fn every_kind_byte_decodes_as_storage_md_states_or_reads_the_list_as_damaged() {
+        let kinds = table("The kinds of an entry, and of a damage record in the log:");
+        let shapes: BTreeMap<u64, Shape> = table("The codes of the shapes:")
+            .iter()
+            .map(|row| (row[0].parse().expect("a shape code"), shape(row[1])))
+            .collect();
+        assert_eq!(shapes.len(), 12, "storage.md lists every shape");
+        let mut met = BTreeSet::new();
+        for kind in 0..=u8::MAX {
+            let row = kinds.iter().find(|row| row[0] == kind.to_string());
+            for first in (0..=u64::from(u8::MAX)).chain([u64::MAX]).map(Lsn) {
+                let expected = row.and_then(|row| listed(row[1], first, &shapes));
+                assert_eq!(
+                    decode(&list(kind, first)),
+                    expected,
+                    "kind {kind}, {first:?}"
+                );
+                if expected.is_some() {
+                    met.insert(kind);
+                }
+            }
+        }
+        let stated: BTreeSet<u8> = kinds.iter().map(|row| row[0].parse().unwrap()).collect();
+        assert_eq!(met, stated, "each kind storage.md states decodes");
+        assert_eq!(stated.len(), 6, "storage.md lists every kind");
+    }
+}

@@ -842,6 +842,34 @@ the next open replays it. The records live in memory, one per page. On a file
 quarantined whole a checkpoint folds only the records the log holds
 (§8).
 
+The kinds of an entry, and of a damage record in the log:
+
+| Kind | Damage | First LSN | Second LSN |
+| --- | --- | --- | --- |
+| 1 | `Checksum` | 0 | 0 |
+| 2 | `Stale` | expected | found |
+| 3 | `LogUnproven` | where the log is damaged | 0 |
+| 4 | `Settled` | expected | found |
+| 5 | `Shape` | the shape's code, below | 0 |
+| 16 | a stale log block past the end of the log (§7), in the list only, its page id 0 | the block's LSN | 0 |
+
+The codes of the shapes:
+
+| Code | Shape |
+| --- | --- |
+| 0 | `Blank` |
+| 1 | `Kind` |
+| 2 | `Owner` |
+| 3 | `Frame` |
+| 4 | `Format` |
+| 5 | `Row(Tag)` |
+| 6 | `Row(Cut)` |
+| 7 | `Row(Trailing)` |
+| 8 | `Row(Text)` |
+| 9 | `Row(Pointer)` |
+| 10 | `Stray` |
+| 11 | `Row(Domain)` |
+
 Rulings: buffer/checkpoint/fuzzy
 
 ## 7. Recovery
