@@ -195,10 +195,7 @@ impl Model {
         edits.extend(probe.reselect_rows(built, t, (sources, made), "the routing", whole)?);
         edits.extend(probe.arm_writes(run, built, t, (sources, &[]), given)?.0);
         probe.edit_decls(edits)?;
-        let compiled = match probe.schema(&run.ahead(&probe)).map(check::check_schema) {
-            Ok(Ok(c)) => c,
-            Ok(Err(ds)) | Err(ds) => return refuse_first(&ds, str::to_string),
-        };
+        let compiled = probe.checked_without_dependents(run)?;
         let schema = compiled.schema();
         let def = def_in(schema, t);
         let module = schema
@@ -241,6 +238,35 @@ impl Model {
             },
             text,
         })
+    }
+
+    /// Returns the schema the model builds now and its program, without each function,
+    /// aggregate, constraint and check that does not check, refusing the operator with the
+    /// first failure of any other declaration.
+    fn checked_without_dependents(mut self, run: &mut Run) -> Res<check::Compiled<Schema>> {
+        loop {
+            let ds = match self.schema(&run.ahead(&self)).map(check::check_schema) {
+                Ok(Ok(c)) => return Ok(c),
+                Ok(Err(ds)) | Err(ds) => ds,
+            };
+            let failing: Vec<Item> = ds
+                .iter()
+                .filter_map(|d| self.decls.get(d.file.0 as usize))
+                .map(|d| d.item)
+                .filter(|i| {
+                    matches!(
+                        i,
+                        Item::Fn(_) | Item::Aggregate(_) | Item::Constraint(_) | Item::Check(_)
+                    )
+                })
+                .collect();
+            if failing.is_empty() {
+                return refuse_first(&ds, str::to_string);
+            }
+            for item in failing {
+                self.remove(item);
+            }
+        }
     }
 
     /// Put the products `made` in place of the constructors `sources` of type `t` in the

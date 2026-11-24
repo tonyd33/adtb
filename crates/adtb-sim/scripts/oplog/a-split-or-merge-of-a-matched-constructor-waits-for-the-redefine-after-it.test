@@ -1,0 +1,72 @@
+seed 5
+
+migrate
+  module m
+  add module m
+  add type T { id: I64 } = A { z: Text, w: Text } | B { z: Text }
+  add relation ts : T key id unique (z) in (A | B)
+  define fn f (t: T) -> I64 = match t | A _ -> 1 | B _ -> 2
+
+run
+  insert ts.A { id: 1, z: "a", w: "b" }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "split constructor T.A into A1 { z: Text, w: Text } | A2 { w: Text, y: Text }", detail: "`A` is not a constructor of T" } } }
+  module m
+  split constructor T.A into A1 { z: Text, w: Text } | A2 { w: Text, y: Text }
+    by match
+      | A { z, w: "b" } -> A1 { z: z, w: "b" }
+      | A { z, w } -> A2 { w: w, y: z }
+    unique (z) in (A1 | B)
+
+migrate
+  module m
+  split constructor T.A into A1 { z: Text, w: Text } | A2 { w: Text, y: Text }
+    by match
+      | A { z, w: "b" } -> A1 { z: z, w: "b" }
+      | A { z, w } -> A2 { w: w, y: z }
+    unique (z) in (A1 | B)
+  redefine fn f (t: T) -> I64 = match t | A1 _ -> 1 | A2 _ -> 3 | B _ -> 2
+
+reopen
+
+run
+  insert ts.A1 { id: 3, z: "q", w: "b" }
+
+error Violated { constraint: "m::ts.unique(z) in (A1 | B)", report: 2 rows, redacted: 0 }
+  insert ts.B { id: 4, z: "q" }
+
+query rowsort
+  from t in ts select { n: t.id, f: f(t) }
+----
+{ n: 1, f: 1 }
+{ n: 3, f: 1 }
+
+migrate
+  module m
+  revert 0002
+
+reopen
+
+query rowsort
+  from t in ts select { n: t.id, f: f(t) }
+----
+{ n: 1, f: 1 }
+{ n: 3, f: 1 }
+
+migrate
+  module m
+  add type K = A | B
+  drop unique (z) in ts.(A | B)
+  merge constructor T.(A | B) into M { k: K, z: Text }
+    by match
+      | A a -> M { k: A, z: a.z }
+      | B b -> M { k: B, z: b.z }
+  redefine fn f (t: T) -> I64 = match t | M _ -> 4
+
+reopen
+
+query rowsort
+  from t in ts select { n: t.id, f: f(t) }
+----
+{ n: 1, f: 4 }
+{ n: 3, f: 4 }
