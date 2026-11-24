@@ -271,19 +271,15 @@ fn storage(detail: String) -> (Told, String) {
 }
 
 /// Returns the failure the caller of `entry` is told when the read of `path` at `at`, a page of
-/// kind `kind`, fails, and its text. An open past an unreadable damage list page holds the
-/// database for that open: a call on it is refused.
+/// kind `kind`, fails, and its text. An open past an unreadable damage list page reads pages it
+/// cannot check: a call on it, arming once the page reads, is refused until the next open.
 fn expected(entry: Entry, path: &str, at: u64, kind: Option<PageKind>) -> (Told, String) {
     let page = at / PAGE as u64;
     let unreadable = format!("page {page} is unreadable");
     match entry {
-        Entry::Open if kind == Some(PageKind::DamageList) => {
-            let what = "the database".to_owned();
-            let told = Told::Refused(Error::Fatal {
-                reason: FatalReason::Quarantined { what },
-            });
-            (told, "fatal: the database is quarantined".to_owned())
-        }
+        Entry::Open if kind == Some(PageKind::DamageList) => storage(
+            "this open read pages it could not check, so the database must be reopened".to_owned(),
+        ),
         Entry::Open => (
             Told::Open(std::io::ErrorKind::Other, unreadable.clone()),
             unreadable,
