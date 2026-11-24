@@ -1321,10 +1321,12 @@ recovery kept, decoding only the page and LSN of each record, past a
 gap as well. A block missing or a batch whose records do not decode
 before that end, or a map page out of shape, quarantines the whole
 database for that open and writes no mark for it. A read the device
-fails instead, of the log directory, a segment, a block of the retained
-log before that end or a map page, leaves the gate off and the open
-unarmed (§8), and marks nothing. While the gate is off no page read in
-is checked against an expected LSN. While the database is held
+fails instead, of the log directory, a segment or a block of the retained
+log before that end, leaves the gate off and the open unarmed (§8), and
+marks nothing. A map page the device fails to read leaves the open
+unarmed and marks nothing, but the gate holds the expected LSNs of the
+retained log, unproven. While the gate is off or unproven no page read
+in is checked against an expected LSN. While the database is held
 quarantined this way or the open is unarmed, `verify` and scrub check
 every page against the expected LSNs the open could read, a record
 before a gap as a least one, and the marks page is never written: a
