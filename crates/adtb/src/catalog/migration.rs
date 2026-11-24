@@ -170,17 +170,11 @@ impl Catalog {
         let (next, compiled, recorded) = match self.source.record(&file, text, new) {
             Ok(migrated) => migrated,
             Err(f) => {
-                let blamed = match &f {
-                    evolve::Failed::Refused(r) => r.unstepped().or(r.blamed()),
-                    evolve::Failed::Broken(_) => None,
+                let evolve::Failed::Refused(r) = &f else {
+                    return Err(refusal(f, Error::Refused));
                 };
-                return Err(match blamed {
-                    Some(k) => {
-                        let operator = operator_text(text, &file.operators[k]);
-                        refusal(f, |why| Error::RefusedBy { operator, why })
-                    }
-                    None => refusal(f, Error::Refused),
-                });
+                let operator = operator_text(text, &file.operators[r.blamed()]);
+                return Err(refusal(f, |why| Error::RefusedBy { operator, why }));
             }
         };
         if next.grants.iter().any(|g| g.row.is_none()) && self.sequences().is_none() {

@@ -220,7 +220,7 @@ impl From<&str> for Written {
 
 /// Why a migration is refused: the operators that do not apply, at their spans in the migration's text,
 /// and the schema objects of the result that do not check, in the files of the result.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Refusal {
     pub operators: Vec<Diag>,
     pub recheck: Vec<FileDiag>,
@@ -230,13 +230,21 @@ pub struct Refusal {
     pub recheck_from: Vec<Option<Span>>,
     /// The result, whose files `recheck` points into.
     pub result: Option<Box<Source>>,
-    unstepped: Option<usize>,
+    blamed: usize,
 }
 
 impl Refusal {
-    /// Returns the index of the operator whose steps over the rows fail, when one does.
-    pub fn unstepped(&self) -> Option<usize> {
-        self.unstepped
+    /// Returns the refusal naming operator `blamed`, blaming each of `operators` on the operator
+    /// `blame` gives it, in order, with no failing recheck.
+    fn new(operators: Vec<Diag>, blame: Vec<usize>, blamed: usize) -> Refusal {
+        Refusal {
+            operators,
+            recheck: Vec::new(),
+            blame,
+            recheck_from: Vec::new(),
+            result: None,
+            blamed,
+        }
     }
 
     /// Returns, for each of `operators` then each of `recheck`, in order, the index of the
@@ -245,9 +253,10 @@ impl Refusal {
         &self.blame
     }
 
-    /// Returns the index of the operator the first failure is blamed on, when it lists one.
-    pub fn blamed(&self) -> Option<usize> {
-        self.blame.first().copied()
+    /// Returns the index of the operator the refusal names: the one whose steps over the rows
+    /// fail, else the one the first failure is blamed on.
+    pub fn blamed(&self) -> usize {
+        self.blamed
     }
 }
 

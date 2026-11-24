@@ -232,30 +232,38 @@ impl Source {
             .flatten()
             .filter(|d| d.diag.kind != DiagKind::Poisoned)
             .collect();
-        let (blame, rechecked) = got.ledger(&refusals, &ds);
-        let mut refusal = Refusal {
-            operators: refusals.into_iter().map(|(_, d)| d).collect(),
-            blame,
-            ..Refusal::default()
-        };
+        let (mut blame, rechecked) = got.ledger(&refusals, &ds);
+        let mut operators: Vec<Diag> = refusals.into_iter().map(|(_, d)| d).collect();
+        let mut unstepped = None;
         if let Some((k, why)) = failing {
-            refusal.unstepped = Some(k);
-            refusal.operators.push(why);
-            refusal.blame.push(k);
+            unstepped = Some(k);
+            operators.push(why);
+            blame.push(k);
         }
+        let mut recheck = Vec::new();
         for (d, by) in ds.iter().zip(rechecked) {
             if let Some(k) = by {
-                refusal.recheck.push(d.clone());
-                refusal.blame.push(k);
+                recheck.push(d.clone());
+                blame.push(k);
             }
         }
-        refusal.recheck_from = got.copied_from(text, &refusal.recheck);
-        if refusal.operators.is_empty() && refusal.recheck.is_empty() {
-            let last = m.operators.len().saturating_sub(1);
-            let at = m.operators.last().map_or(Span::default(), |op| op.span);
-            refusal.operators.push(got.unchecked(at));
-            refusal.blame.push(last);
-        }
+        let first = match blame.first() {
+            Some(&k) => k,
+            None => {
+                let Some(last) = m.operators.last() else {
+                    return Err(Failed::Broken(Diag::new(
+                        Span::default(),
+                        "a migration of no operators does not check",
+                    )));
+                };
+                operators.push(got.unchecked(last.span));
+                blame.push(m.operators.len() - 1);
+                m.operators.len() - 1
+            }
+        };
+        let mut refusal = Refusal::new(operators, blame, unstepped.unwrap_or(first));
+        refusal.recheck_from = got.copied_from(text, &recheck);
+        refusal.recheck = recheck;
         refusal.result = Some(Box::new(next));
         Err(Failed::Refused(refusal))
     }

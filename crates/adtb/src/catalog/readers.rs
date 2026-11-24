@@ -703,14 +703,13 @@ impl Catalog {
         let source = base
             .migrate_keeping(&skipping(file, &skipped), text, &kept)
             .map_err(|r| {
-                let blamed = match &r {
-                    evolve::Failed::Refused(r) => r.unstepped().or(r.blamed()),
-                    evolve::Failed::Broken(_) => None,
+                let evolve::Failed::Refused(refused) = &r else {
+                    return super::refusal(r, Error::Refused);
                 };
-                let at = (0..file.operators.len())
+                let kept: Vec<usize> = (0..file.operators.len())
                     .filter(|i| !skipped.contains(i))
-                    .nth(blamed.unwrap_or_default())
-                    .unwrap_or_default();
+                    .collect();
+                let at = kept[refused.blamed()];
                 let owners = owners(&r, &readers.pending);
                 super::refusal(r, |why| {
                     let line = |(i, w): (usize, &String)| match owners.get(i).cloned().flatten() {

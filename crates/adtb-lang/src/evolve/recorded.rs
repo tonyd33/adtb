@@ -57,17 +57,14 @@ impl Source {
     pub fn record_steps(&self, m: &MigrationFile, text: &str) -> Result<Vec<OpSteps>, Failed> {
         let mut got = model::migrated(self, m, text, &[], false, false).map_err(Failed::Broken)?;
         let (blame, operators): (Vec<usize>, Vec<Diag>) = got.refusals(m).into_iter().unzip();
-        if blame.is_empty() {
+        let Some(&first) = blame.first() else {
             return Ok(got.op_steps(m));
-        }
+        };
         let mut result = got.source();
         result.settled();
-        Err(Failed::Refused(Refusal {
-            operators,
-            blame,
-            result: Some(Box::new(result)),
-            ..Refusal::default()
-        }))
+        let mut refusal = Refusal::new(operators, blame, first);
+        refusal.result = Some(Box::new(result));
+        Err(Failed::Refused(refusal))
     }
 
     /// Returns this source with `ops`, operators of module `module` whose text is `text`, applied
