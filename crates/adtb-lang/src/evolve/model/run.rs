@@ -540,7 +540,11 @@ impl Model {
 
     /// Returns the catalog ids of `schema`, built from `files` whose texts are `texts`: each
     /// object a declaration of the model holds the model's id, and every other object of a user
-    /// module the next id of its space `next` gives, in creation order.
+    /// module the next id of its space `next` gives, in creation order. An object takes a next id
+    /// at the first build that has it: an object of a declaration an `add` operator builds or
+    /// holds, and an object no operator makes, which is an index a reference field implies, a
+    /// field of a stored view, or a default a default clause makes for a field a constructor
+    /// gained.
     fn assigned(
         &self,
         schema: &Schema,
@@ -692,7 +696,8 @@ impl Model {
     }
 
     /// Give each default each default clause makes, and each index a reference field implies,
-    /// the id `schema` gives it.
+    /// the id `schema` gives it. These are the clause objects no operator makes, which take
+    /// their ids at the first build that has them.
     fn adopt(&mut self, schema: &Schema) {
         let ids = schema.ids();
         for i in 0..self.decls.len() {

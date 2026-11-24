@@ -307,6 +307,22 @@ impl Migration {
         Ok(out)
     }
 
+    /// Returns the first operator that replaces a constructor a tag of `rows`, the rows before
+    /// the migration, names, by no one constructor, with each refusal line the engine may give
+    /// it; `None` when no operator does, or when an operator before it moves rows the model does
+    /// not follow.
+    pub fn tag_refusal(&self, rows: &Rows) -> Option<(&Op, BTreeSet<String>)> {
+        let mut held = rows.clone();
+        for o in &self.ops {
+            let lines = o.effect.tagged(&held);
+            if !lines.is_empty() {
+                return Some((o, lines));
+            }
+            o.effect.apply(&mut held).ok()?;
+        }
+        None
+    }
+
     /// Returns the relation and constructors the rows of constructors `ctors` of relation `rel`
     /// go to, by the model of each operator's effect. Fails on an operator the model does not
     /// follow.
@@ -611,7 +627,7 @@ fn fill(ty: &Ty) -> Option<String> {
         Ty::Int | Ty::Text | Ty::Bool | Ty::OptInt | Ty::OptRef(..) | Ty::Sum(_) | Ty::Tag(..) => {
             Some(literal(ty, false))
         }
-        Ty::Ref(..) => None,
+        Ty::Ref(..) | Ty::TagOf(_) => None,
     }
 }
 

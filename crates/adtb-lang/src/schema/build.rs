@@ -405,7 +405,7 @@ impl Builder<'_> {
                         reached(a, out);
                     }
                 }
-                Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => reached(t, out),
+                Ty::Set(t) | Ty::NonEmpty(t) => reached(t, out),
                 _ => {}
             }
         }

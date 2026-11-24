@@ -25,6 +25,34 @@ impl Rows {
             .ok_or_else(|| format!("the model holds no relation `{rel}`"))
     }
 
+    /// Returns each tag a row holds: the relation holding the row, and the relation and
+    /// constructor the tag names.
+    pub(super) fn tags(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        self.0.iter().flat_map(|(holder, rows)| {
+            rows.iter()
+                .flat_map(|(_, fs)| fs.values().filter_map(tag_of))
+                .map(move |(r, c)| (holder.as_str(), r, c))
+        })
+    }
+
+    /// Replace each tag a row holds that `f` gives a relation and constructor for by the tag of
+    /// them.
+    fn retag(&mut self, f: impl Fn(&str, &str) -> Option<(String, String)>) {
+        for rows in self.0.values_mut() {
+            *rows = std::mem::take(rows)
+                .into_iter()
+                .map(|(c, mut fs)| {
+                    for v in fs.values_mut() {
+                        if let Some((r, k)) = tag_of(v).and_then(|(r, k)| f(r, k)) {
+                            *v = tag(&r, &k);
+                        }
+                    }
+                    (c, fs)
+                })
+                .collect();
+        }
+    }
+
     /// Replace each row of relation `rel` by what `f` makes of it.
     fn map(&mut self, rel: &str, mut f: impl FnMut(Row) -> Row) -> Result<(), String> {
         let rows = self.rel(rel)?;
@@ -55,6 +83,8 @@ pub(super) enum Effect {
     /// it holds `true`, the second otherwise, the flag dropped; without one, the one product.
     Split {
         rel: String,
+        /// The name of the relation's type.
+        ty: String,
         ctor: String,
         flag: Option<String>,
         products: Vec<String>,
@@ -63,6 +93,8 @@ pub(super) enum Effect {
     /// source's position among `sources`.
     Merge {
         rel: String,
+        /// The name of the relation's type.
+        ty: String,
         sources: Vec<String>,
         product: String,
         field: String,
@@ -71,6 +103,8 @@ pub(super) enum Effect {
     /// without `field`.
     Unnest {
         rel: String,
+        /// The name of the relation's type.
+        ty: String,
         ctor: String,
         field: String,
         ctors: Vec<String>,
@@ -104,6 +138,8 @@ pub(super) enum Effect {
     /// Rows of `ctor` are dropped.
     RemoveCtor {
         rel: String,
+        /// The name of the relation's type.
+        ty: String,
         ctor: String,
     },
     /// The model does not follow the operator's rows.
@@ -143,7 +179,9 @@ impl Effect {
                 ctors,
                 ..
             } => replace(r, std::slice::from_ref(ctor), ctors),
-            Effect::RemoveCtor { rel: r, ctor } => replace(r, std::slice::from_ref(ctor), &[]),
+            Effect::RemoveCtor { rel: r, ctor, .. } => {
+                replace(r, std::slice::from_ref(ctor), &[]);
+            }
             Effect::Unknown(why) => return Err(why.clone()),
             _ => {}
         }
@@ -166,6 +204,44 @@ impl Effect {
         }
     }
 
+    /// Returns each refusal line the engine may give the operator for a tag `rows` hold that
+    /// names a constructor it replaces by no one constructor; empty when the rows hold none.
+    pub(super) fn tagged(&self, rows: &Rows) -> BTreeSet<String> {
+        let (rel, ty, gone, why) = match self {
+            Effect::Split {
+                rel,
+                ty,
+                ctor,
+                products,
+                ..
+            } if products.len() > 1 => (
+                rel,
+                ty,
+                std::slice::from_ref(ctor),
+                "whose values the routing sends to no one product",
+            ),
+            Effect::Merge {
+                rel, ty, sources, ..
+            } => (
+                rel,
+                ty,
+                sources.as_slice(),
+                "which the operator replaces by no one constructor",
+            ),
+            Effect::Unnest { rel, ty, ctor, .. } | Effect::RemoveCtor { rel, ty, ctor } => (
+                rel,
+                ty,
+                std::slice::from_ref(ctor),
+                "which the operator replaces by no one constructor",
+            ),
+            _ => return BTreeSet::new(),
+        };
+        rows.tags()
+            .filter(|(_, r, c)| *r == rel && gone.iter().any(|g| g == c))
+            .map(|(holder, _, c)| format!("{holder}: a stored tag names `{ty}.{c}`, {why}"))
+            .collect()
+    }
+
     /// Apply the effect to `rows`. Fails on an effect the model does not follow.
     pub(super) fn apply(&self, rows: &mut Rows) -> Result<(), String> {
         match self {
@@ -179,11 +255,13 @@ impl Effect {
             Effect::RenameRel(from, to) => {
                 let held = rows.0.remove(from).unwrap_or_default();
                 rows.0.insert(to.clone(), held);
+                rows.retag(|r, c| (r == from).then(|| (to.clone(), c.to_owned())));
             }
             Effect::RenameCtor { rel, from, to } => {
                 rows.map(rel, |(c, fs)| (if c == *from { to.clone() } else { c }, fs))?;
+                rows.retag(|r, c| (r == rel && c == from).then(|| (r.to_owned(), to.clone())));
             }
-            Effect::RemoveCtor { rel, ctor } => {
+            Effect::RemoveCtor { rel, ctor, .. } => {
                 rows.rel(rel)?.retain(|(c, _)| c != ctor);
             }
             Effect::RenameField {
@@ -204,24 +282,33 @@ impl Effect {
                 ctor,
                 flag,
                 products,
-            } => rows.map(rel, |(c, mut fs)| {
-                if c != *ctor {
-                    return (c, fs);
+                ..
+            } => {
+                if let [product] = products.as_slice() {
+                    rows.retag(|r, c| {
+                        (r == rel && c == ctor).then(|| (r.to_owned(), product.clone()))
+                    });
                 }
-                let to = match flag {
-                    Some(b) => {
-                        let set = fs.remove(b) == Some(Value::bool(true));
-                        &products[usize::from(!set)]
+                rows.map(rel, |(c, mut fs)| {
+                    if c != *ctor {
+                        return (c, fs);
                     }
-                    None => &products[0],
-                };
-                (to.clone(), fs)
-            })?,
+                    let to = match flag {
+                        Some(b) => {
+                            let set = fs.remove(b) == Some(Value::bool(true));
+                            &products[usize::from(!set)]
+                        }
+                        None => &products[0],
+                    };
+                    (to.clone(), fs)
+                })?;
+            }
             Effect::Merge {
                 rel,
                 sources,
                 product,
                 field,
+                ..
             } => rows.map(rel, |(c, mut fs)| {
                 match sources.iter().position(|s| *s == c) {
                     Some(k) => {
@@ -236,6 +323,7 @@ impl Effect {
                 ctor,
                 field,
                 ctors,
+                ..
             } => rows.map(rel, |(c, mut fs)| {
                 if c != *ctor {
                     return (c, fs);
@@ -294,6 +382,11 @@ pub(super) enum Literal {
     /// The first constructor of a sum of nullary constructors.
     First,
     None,
+    /// The tag of constructor `ctor` of the sum of relation `rel`.
+    Tag {
+        rel: String,
+        ctor: String,
+    },
 }
 
 impl Literal {
@@ -304,6 +397,7 @@ impl Literal {
             Literal::Bool(b) => Value::bool(*b),
             Literal::First => Value::Ctor(0, Vec::new()),
             Literal::None => Value::none(),
+            Literal::Tag { rel, ctor } => tag(rel, ctor),
         }
     }
 }
@@ -319,7 +413,43 @@ pub(super) fn literal_value(ty: &Ty, other: bool) -> Literal {
         (Ty::Sum(_) | Ty::Tag(..), _) => Literal::First,
         (Ty::OptInt | Ty::OptRef(..), _) => Literal::None,
         (Ty::Ref(..), _) => unreachable!("a literal gives no reference"),
+        (Ty::TagOf(_), _) => unreachable!("a literal of a tag names its relation's constructor"),
     }
+}
+
+/// Returns the value the model holds for the tag of constructor `ctor` of the sum of relation
+/// `rel`: the constructor by name, where a stored row holds it by its position.
+pub(super) fn tag(rel: &str, ctor: &str) -> Value {
+    Value::Record(vec![
+        ("ctor".into(), Value::Text(ctor.into())),
+        ("rel".into(), Value::Text(rel.into())),
+    ])
+}
+
+/// Returns the relation and constructor of a tag `tag` gives.
+fn tag_of(v: &Value) -> Option<(&str, &str)> {
+    match v {
+        Value::Record(fs) => match fs.as_slice() {
+            [(c, Value::Text(ctor)), (r, Value::Text(rel))] if c == "ctor" && r == "rel" => {
+                Some((rel, ctor))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Returns each field of constructor `c` of `r` holding a tag, header first, with the relation
+/// whose sum it tags.
+fn tag_fields(r: &Rel, c: usize) -> Vec<(String, usize)> {
+    r.header
+        .iter()
+        .chain(&r.ctors[c].fields)
+        .filter_map(|f| match f.ty {
+            Ty::TagOf(j) => Some((f.name.clone(), j)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Returns the names of the fields of constructor `c` of `r`, header first, each in
@@ -350,7 +480,17 @@ impl Case {
                         r.name
                     ));
                 };
-                held.insert((ctor.name.clone(), fs.iter().cloned().collect()));
+                let mut fs: BTreeMap<String, Value> = fs.iter().cloned().collect();
+                for (name, j) in tag_fields(r, *c as usize) {
+                    let target = &self.schema.rels[j];
+                    if let Some(v) = fs.get_mut(&name)
+                        && let Value::Ctor(k, _) = v
+                        && let Some(t) = target.ctors.get(*k as usize)
+                    {
+                        *v = tag(&target.name, &t.name);
+                    }
+                }
+                held.insert((ctor.name.clone(), fs));
             }
             out.0.insert(r.name.clone(), held);
         }
@@ -376,6 +516,19 @@ impl Case {
                         "a row of `{}.{ctor}` holds fields {held:?}, not {names:?}",
                         r.name
                     ));
+                }
+                let mut fs = fs.clone();
+                for (name, j) in tag_fields(r, c) {
+                    let target = &self.schema.rels[j];
+                    let Some((_, k)) = fs.get(&name).and_then(tag_of) else {
+                        continue;
+                    };
+                    let k = target
+                        .ctors
+                        .iter()
+                        .position(|d| d.name == k)
+                        .ok_or_else(|| format!("`{}` has no constructor `{k}`", target.name))?;
+                    fs.insert(name, Value::Ctor(k as u32, Vec::new()));
                 }
                 let fields = names.iter().map(|n| (n.clone(), fs[n].clone())).collect();
                 values.push((c as u32, Value::Ctor(c as u32, fields)));

@@ -15,7 +15,6 @@ use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::btree::Index;
 use crate::exec::{self, conv, from_stored_row};
-use crate::heap::FieldType;
 use crate::key::{CtorId, Value};
 use crate::mvcc::{Scope, Transactions};
 use crate::plan::HeapId;
@@ -464,14 +463,6 @@ impl Catalog {
             if !reached {
                 continue;
             }
-            let types: Vec<Vec<FieldType>> = fields
-                .iter()
-                .map(|fs| {
-                    fs.iter()
-                        .map(|(_, t)| layout::field_type(schema, t))
-                        .collect()
-                })
-                .collect();
             let rows: Vec<(u32, Vec<Value>)> = match data.get(&rid) {
                 Some(ctors) => ctors
                     .iter()
@@ -486,10 +477,10 @@ impl Catalog {
                 },
             };
             let held = rows.iter().any(|(k, row)| {
-                types[*k as usize]
+                fields[*k as usize]
                     .iter()
                     .zip(row)
-                    .any(|(t, v)| holds_ctor(t, v, id))
+                    .any(|((_, t), v)| holds_ctor(schema, t, v, id))
             });
             if held {
                 why.push(format!(
@@ -890,20 +881,25 @@ fn shown_key(schema: &Schema, types: &[Ty], key: &[Value]) -> Result<String, Err
     })
 }
 
-/// Returns whether `v`, stored as `t`, holds a value of the constructor stored as `id`.
-fn holds_ctor(t: &FieldType, v: &Value, id: CtorId) -> bool {
-    match (t, v) {
-        (FieldType::Sum(cs), Value::Sum { ctor, fields }) => {
-            cs.get(*ctor as usize).is_some_and(|c| {
-                c.id == id
-                    || c.fields
-                        .iter()
-                        .zip(fields)
-                        .any(|(t, v)| holds_ctor(t, v, id))
-            })
+/// Returns whether `v`, a stored value of type `t`, holds a value of the constructor stored as
+/// `id`. A stored tag names a constructor and holds no value of it.
+fn holds_ctor(schema: &Schema, t: &Ty, v: &Value, id: CtorId) -> bool {
+    let within = |fs: &[(String, Ty)], vs: &[Value]| {
+        fs.iter()
+            .zip(vs)
+            .any(|((_, t), v)| holds_ctor(schema, t, v, id))
+    };
+    match (layout::repr(schema, t), v) {
+        (Ty::Tag(_), _) => false,
+        (Ty::Key { rel, .. }, v) => holds_ctor(schema, &layout::key_value_ty(schema, rel), v, id),
+        (Ty::Record(fs), Value::Record(vs)) => within(&fs, vs),
+        (t, Value::Record(vs)) if layout::is_record(schema, &t) => {
+            within(&layout::ctors(schema, &t)[0].1, vs)
         }
-        (FieldType::Record(ts), Value::Record(vs)) => {
-            ts.iter().zip(vs).any(|(t, v)| holds_ctor(t, v, id))
+        (t @ (Ty::Data { .. } | Ty::Sum { .. }), Value::Sum { ctor, fields }) => {
+            layout::ctors(schema, &t)
+                .get(*ctor as usize)
+                .is_some_and(|(c, fs)| *c == id || within(fs, fields))
         }
         _ => false,
     }

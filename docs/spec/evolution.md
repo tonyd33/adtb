@@ -612,7 +612,8 @@ before it:
 2. every constructor relation of it is empty;
 3. no reference type names a constructor set that contains it, other
    than the whole sum;
-4. no named set would become empty.
+4. no named set would become empty;
+5. no stored value of `Tag Identity` names it.
 
 For a constructor of a sum used as a field type, conditions 1 and 2
 read: the constructor is deprecated in its type by an earlier
@@ -706,6 +707,10 @@ at the new version. The routing is typed with every reference to the
 split constructor retyped: a field it carries whole keeps its value,
 which now references one of the products.
 Constraints are carried (§6.2) and grants re-scoped (§6.5).
+
+A stored value of `Tag Identity` naming the split constructor becomes
+the tag of the product when the routing has exactly one product. When
+it has more, the split is refused while any such value is stored.
 
 ```adt fragment
 -- from a version at which
@@ -807,7 +812,8 @@ Every named set containing all merged constructors contains the new
 one; a named set containing some but not all of them is refused, and
 so is a reference type naming such a set. A reference type naming
 exactly the merged set (`Key identities.(Google | Apple)`) is retyped
-to `Key identities.Social`. Grants follow §6.5.
+to `Key identities.Social`. Grants follow §6.5. A merge is refused
+while a stored value of `Tag Identity` names a merged constructor.
 
 A merge is exact when its `by match` is invertible by the condition of
 §4.6: each arm binds every field of its source constructor or fixes it
@@ -846,7 +852,8 @@ takes `arm` clauses as a merge does (§4.7), one for every schema
 function, computed field and match-scoped constraint whose match names
 the nested constructors, and is refused at the recheck without them. A
 reference type naming a set that contains some but not all nested
-constructors is refused.
+constructors is refused. A nest is refused while a stored value of
+`Tag Identity` names a nested constructor.
 
 `unnest constructor Identity.Social` is the inverse: the value-level
 constructors of the field become relation-level constructors with new
@@ -859,7 +866,9 @@ over the field is refused. A default on a field of the
 unnested constructor moves to each product holding that field, and is
 refused when none does. An unnest takes `arm` clauses as a split does (§4.6), one per new
 constructor for every dependent whose match names the unnested
-constructor, and is refused at the recheck without them.
+constructor, and is refused at the recheck without them. An unnest is
+refused while a stored value of `Tag Identity` names the unnested
+constructor.
 
 ### 4.9 Fields
 

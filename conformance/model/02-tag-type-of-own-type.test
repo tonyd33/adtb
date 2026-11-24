@@ -1,0 +1,14 @@
+# A field of type Tag T holds a constructor of T, not a value of T, so a type may hold its own tag.
+schema
+  module test
+  type Step { id: Key steps } = Start | Next { after: Tag Step }
+  relation steps : Step key id generate sequence
+run
+  insert steps.Start { id: steps.key(1) }
+  insert steps.Next { id: steps.key(2), after: Start }
+  insert steps.Next { id: steps.key(3), after: Next }
+query rowsort
+  from s in steps.Next select { id: key s, after: s.after }
+----
+{ after: Next, id: steps.key(3) }
+{ after: Start, id: steps.key(2) }

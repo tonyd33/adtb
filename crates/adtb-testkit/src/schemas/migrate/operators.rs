@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::super::{Action, Clause, Constraint, Ctor, Field, Rel, Scope, Stage, Ty, literal};
-use super::rows::{Effect, literal_value};
+use super::rows::{Effect, Literal, literal_value};
 use super::{AGGREGATE, Func, Kind, Model, Op, ROLE, Reach, broken, data, emptying, fill, op};
 use crate::Rng;
 
@@ -45,16 +45,21 @@ impl Model {
         if broke {
             return Some(vec![broken(kind, text)]);
         }
+        let mut out: Vec<Op> = Vec::new();
+        if kind == Kind::Deprecate {
+            out.extend(self.tag_of(rng, i, &[c], self.removable(i, c)));
+        }
         self.s.rels[i].states[c] = match kind {
             Kind::Enable => Stage::Enabled,
             Kind::Disable => Stage::Declared,
             _ => Stage::Deprecated(self.version),
         };
-        Some(vec![if kind == Kind::Disable {
+        out.push(if kind == Kind::Disable {
             data(kind, text)
         } else {
             op(kind, text)
-        }])
+        });
+        Some(out)
     }
 
     /// Returns whether a `remove` of constructor `c` of relation `i`, deprecated by an earlier
@@ -285,8 +290,10 @@ impl Model {
         if broke {
             return Some(vec![broken(Kind::Split, text)]);
         }
+        out.extend(self.tag_of(rng, i, &[c], products > 1));
         let effect = Effect::Split {
             rel: self.rel(i).name.clone(),
+            ty: self.rel(i).ty.clone(),
             ctor: src.name.clone(),
             flag: (products > 1).then(|| src.fields[products - 2].name.clone()),
             products: names,
@@ -394,8 +401,11 @@ impl Model {
             out.extend([add_type, broken(kind, text)]);
             return Some(out);
         }
+        out.push(add_type);
+        out.extend(self.tag_of(rng, i, &[c, d], false));
         let effect = Effect::Merge {
             rel: self.rel(i).name.clone(),
+            ty: self.rel(i).ty.clone(),
             sources: vec![cn, dn],
             product: product.clone(),
             field: field.clone(),
@@ -422,7 +432,7 @@ impl Model {
             vec![state],
         );
         let merged = op(kind, text).with(effect).reaching(reach);
-        out.extend([add_type, if apart { merged.inexact() } else { merged }]);
+        out.push(if apart { merged.inexact() } else { merged });
         Some(out)
     }
 
@@ -452,8 +462,10 @@ impl Model {
         let Ty::Tag(_, cs) = self.rel(i).ctors[c].fields[0].ty.clone() else {
             unreachable!("an unnested constructor holds a sum");
         };
+        out.extend(self.tag_of(rng, i, &[c], false));
         let effect = Effect::Unnest {
             rel: self.rel(i).name.clone(),
+            ty: self.rel(i).ty.clone(),
             ctor: self.rel(i).ctors[c].name.clone(),
             field: self.rel(i).ctors[c].fields[0].name.clone(),
             ctors: cs.clone(),
@@ -522,22 +534,74 @@ impl Model {
             return None;
         }
         let name = self.field_name(i);
-        let ty = rng.pick(&[Ty::Int, Ty::Text, Ty::Bool, Ty::OptInt]).clone();
-        let other = rng.below(2) == 0;
+        let tagged: Vec<usize> = (0..self.s.rels.len())
+            .filter(|&j| j != i && self.rel(j).sum && !self.rel(j).enabled().is_empty())
+            .collect();
+        let (ty, fill, value) = match rng.pick_some(&tagged) {
+            Some(&j) if rng.below(3) == 0 => {
+                let r = self.rel(j);
+                let ctor = r.ctors[*rng.pick(&r.enabled())].name.clone();
+                let value = Literal::Tag {
+                    rel: r.name.clone(),
+                    ctor: ctor.clone(),
+                };
+                (Ty::TagOf(j), ctor, value)
+            }
+            _ => {
+                let ty = rng.pick(&[Ty::Int, Ty::Text, Ty::Bool, Ty::OptInt]).clone();
+                let other = rng.below(2) == 0;
+                let fill = literal(&ty, other);
+                let value = literal_value(&ty, other);
+                (ty, fill, value)
+            }
+        };
         let text = format!(
-            "add field {}: {} fill {}",
+            "add field {}: {} fill {fill}",
             self.field_path(i, Some(c), &name),
             self.s.ty_name(&ty),
-            literal(&ty, other)
         );
         let effect = Effect::AddField {
             rel: self.rel(i).name.clone(),
             ctor: Some(self.rel(i).ctors[c].name.clone()),
             field: name.clone(),
-            value: literal_value(&ty, other),
+            value,
         };
         self.s.rels[i].ctors[c].fields.push(Field::new(&name, ty));
         Some(vec![op(Kind::AddField, text).with(effect)])
+    }
+
+    /// Returns, always when `always` and otherwise on half its draws, an `add field` to an
+    /// enabled constructor of another relation of a field of type `Tag` of relation `i`'s sum,
+    /// filled with the tag of one of constructors `cs` of it.
+    fn tag_of(&mut self, rng: &mut Rng, i: usize, cs: &[usize], always: bool) -> Option<Op> {
+        if !self.rel(i).sum || (!always && rng.below(2) == 0) {
+            return None;
+        }
+        let holders: Vec<(usize, usize)> = (0..self.s.rels.len())
+            .filter(|&h| h != i)
+            .flat_map(|h| self.rel(h).enabled().into_iter().map(move |d| (h, d)))
+            .filter(|&(h, d)| !self.retag_target(h, d))
+            .collect();
+        let &(h, d) = rng.pick_some(&holders)?;
+        let ctor = self.rel(i).ctors[*rng.pick(cs)].name.clone();
+        let name = self.field_name(h);
+        let ty = Ty::TagOf(i);
+        let text = format!(
+            "add field {}: {} fill {ctor}",
+            self.field_path(h, Some(d), &name),
+            self.s.ty_name(&ty),
+        );
+        let effect = Effect::AddField {
+            rel: self.rel(h).name.clone(),
+            ctor: Some(self.rel(h).ctors[d].name.clone()),
+            field: name.clone(),
+            value: Literal::Tag {
+                rel: self.rel(i).name.clone(),
+                ctor,
+            },
+        };
+        self.s.rels[h].ctors[d].fields.push(Field::new(&name, ty));
+        Some(op(Kind::AddField, text).with(effect))
     }
 
     /// Returns whether field `f` of constructor `c` of relation `i` may go without breaking

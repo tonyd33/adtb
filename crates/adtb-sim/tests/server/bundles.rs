@@ -1998,11 +1998,13 @@ fn a_removal_is_refused_while_a_stored_field_of_each_shape_holds_the_constructor
                 4,
             );
             assert_eq!(format!("remove constructor {held}.{name}"), operator);
-            assert_eq!(
-                format!("a field of hs holds a value of {held}.{name}; it cannot be removed"),
-                detail.lines().next().expect("a reason"),
-                "{insert}"
-            );
+            let want = match *field {
+                "tag" | "rtag" => format!(
+                    "hs: a stored tag names `{held}.{name}`, which the operator replaces by no one constructor"
+                ),
+                _ => format!("a field of hs holds a value of {held}.{name}; it cannot be removed"),
+            };
+            assert_eq!(want, detail.lines().next().expect("a reason"), "{insert}");
         });
     }
     let (deprecate, remove) = (stored_deprecate(a.c), stored_remove(a.c));

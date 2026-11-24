@@ -208,6 +208,12 @@ impl<'s> Draw<'s> {
             Ty::OptInt => Self::opt_int(rng),
             Ty::Sum(k) => Self::sum(rng, *k),
             Ty::Tag(_, cs) => rng.pick(cs).clone(),
+            Ty::TagOf(j) => {
+                let r = &self.s.rels[*j];
+                r.ctors[*rng.pick_some(&r.enabled()).unwrap_or(&0)]
+                    .name
+                    .clone()
+            }
             Ty::Ref(j, _) => self.key(rng, *j),
             Ty::OptRef(j, _) => match rng.below(4) {
                 0 => "None".into(),

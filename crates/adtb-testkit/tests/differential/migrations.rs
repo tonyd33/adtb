@@ -65,6 +65,8 @@ struct Reached {
     drawn: BTreeMap<Kind, usize>,
     committed: BTreeMap<Kind, usize>,
     refused: BTreeMap<Kind, usize>,
+    /// Each kind refused for a constructor it replaces that a stored tag names.
+    tagged: BTreeMap<Kind, usize>,
     shapes: BTreeMap<Reach, usize>,
 }
 
@@ -74,6 +76,7 @@ impl Reached {
             (&mut self.drawn, other.drawn),
             (&mut self.committed, other.committed),
             (&mut self.refused, other.refused),
+            (&mut self.tagged, other.tagged),
         ] {
             for (k, n) in from {
                 *to.entry(k).or_default() += n;
@@ -108,10 +111,25 @@ impl Reached {
                     .filter(|r| !self.shapes.contains_key(r))
                     .map(|r| format!("{r:?} committed")),
             )
+            .chain(
+                TAGGED
+                    .into_iter()
+                    .filter(|k| !self.tagged.contains_key(k))
+                    .map(|k| format!("{k:?} refused for a stored tag")),
+            )
             .collect();
         assert_eq!(missed, Vec::<String>::new(), "kinds under their floor of 1");
     }
 }
+
+/// The kinds that replace a constructor by no one constructor, refused when a stored tag names it.
+const TAGGED: [Kind; 5] = [
+    Kind::Split,
+    Kind::Merge,
+    Kind::Nest,
+    Kind::Unnest,
+    Kind::RemoveConstructor,
+];
 
 /// Whether the engine applies a migration holding a `script`. It refuses every one.
 const SCRIPT_COMMITS: bool = false;
@@ -135,6 +153,8 @@ fn found(sig: impl Into<String>, text: impl Into<String>) -> Finding {
 enum Ended {
     Committed,
     Refused,
+    /// Refused for a constructor an operator of this kind replaces that a stored tag names.
+    Tagged(Kind),
 }
 
 /// A database a case's migrations run against, and what the judge knows of it.
@@ -721,6 +741,27 @@ fn engine_refusal(m: &Migration, operator: &str, detail: &str) -> Option<Finding
     })
 }
 
+/// Returns why a refusal of `op`, which replaces a constructor a stored tag names, with
+/// `operator` and `detail`, does not name `op` or gives a line outside `lines`.
+fn tag_refusal(
+    op: &schemas::Op,
+    lines: &BTreeSet<String>,
+    operator: &str,
+    detail: &str,
+) -> Option<Finding> {
+    let named = op.text().lines().any(|l| l.trim() == operator);
+    let stated = detail.lines().count() > 0 && detail.lines().all(|l| lines.contains(l));
+    (!named || !stated).then(|| {
+        found(
+            "the engine refuses an operator replacing a constructor a stored tag names otherwise",
+            format!(
+                "`{operator}`: {detail}\nwants one of {lines:?}\n{}",
+                op.text()
+            ),
+        )
+    })
+}
+
 impl Run {
     fn new(seed: u64) -> Result<Run, Finding> {
         let case = schemas::case(seed, STATEMENTS);
@@ -813,10 +854,23 @@ impl Run {
             let sweep = swept(db, &migrated);
             (shape, got, sweep, catalog(db), stored_hash(db, log.len()))
         });
+        let tagged = m
+            .broken()
+            .is_none()
+            .then(|| m.tag_refusal(&self.rows))
+            .flatten();
         let (shape, got, sweep, cat, hash) = match applied {
+            Ok(_) if let Some((op, _)) = tagged => {
+                return Err(found(
+                    "the engine applies an operator replacing a constructor a stored tag names",
+                    op.text().to_owned(),
+                ));
+            }
             Ok(x) => x,
             Err(OpenError::MigrationRefused { version: v, reason }) if v == version => {
-                return self.refused(m, reason);
+                let kind = tagged.as_ref().map(|(op, _)| op.kind());
+                let ended = self.refused(m, reason, tagged)?;
+                return Ok(kind.map_or(ended, Ended::Tagged));
             }
             Err(e) => return Err(found("the migration fails, not refused", format!("{e:?}"))),
         };
@@ -925,7 +979,12 @@ impl Run {
     /// Judge a refusal of `m`: the reason the broken operator's
     /// precondition states, then a reopen with `verify` clean, and the catalog, version hash,
     /// rows and swept page count as before it.
-    fn refused(&mut self, m: &Migration, reason: Error) -> Result<Ended, Finding> {
+    fn refused(
+        &mut self,
+        m: &Migration,
+        reason: Error,
+        tagged: Option<(&schemas::Op, BTreeSet<String>)>,
+    ) -> Result<Ended, Finding> {
         let Error::Rejected {
             reason: RejectReason::SchemaRefused { operator, detail },
         } = &reason
@@ -935,7 +994,11 @@ impl Run {
                 format!("{reason:?}"),
             ));
         };
-        if let Some(f) = engine_refusal(m, operator, detail) {
+        let wrong = match tagged {
+            Some((op, lines)) => tag_refusal(op, &lines, operator, detail),
+            None => engine_refusal(m, operator, detail),
+        };
+        if let Some(f) = wrong {
             return Err(f);
         }
         let log = self.log.clone();
@@ -1154,12 +1217,15 @@ fn run(seed: u64, reached: &mut Reached, last: u64, instead: Option<&Migration>)
             }
             match run.step(&m, k) {
                 Ok(ended) => {
+                    if let Ended::Tagged(kind) = ended {
+                        *reached.tagged.entry(kind).or_default() += 1;
+                    }
                     for o in m.ops() {
                         *reached.drawn.entry(o.kind()).or_default() += 1;
                         let to = match (ended, o.broken()) {
                             (Ended::Committed, _) => &mut reached.committed,
-                            (Ended::Refused, true) => &mut reached.refused,
-                            (Ended::Refused, false) => continue,
+                            (Ended::Refused | Ended::Tagged(_), true) => &mut reached.refused,
+                            (Ended::Refused | Ended::Tagged(_), false) => continue,
                         };
                         *to.entry(o.kind()).or_default() += 1;
                         if let (Ended::Committed, Some(r)) = (ended, o.reach()) {

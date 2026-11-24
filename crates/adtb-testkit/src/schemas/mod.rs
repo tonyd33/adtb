@@ -87,6 +87,8 @@ enum Ty {
     OptRef(usize, Scope),
     /// A value-level sum of nullary constructors a migration adds: its name and constructors.
     Tag(String, Vec<String>),
+    /// `Tag T` of the sum of relation `j`, which an `add field` adds to another relation.
+    TagOf(usize),
 }
 
 impl Ty {
@@ -99,7 +101,7 @@ impl Ty {
 
     /// Returns whether a retag payload can give a value of this type as a literal.
     fn literal(&self) -> bool {
-        !matches!(self, Ty::Ref(..))
+        !matches!(self, Ty::Ref(..) | Ty::TagOf(_))
     }
 
     /// Returns whether the type is a reference to a constructor set narrower than its relation,
@@ -593,6 +595,7 @@ impl Schema {
             Ty::Ref(j, s) => self.key_ty(*j, s),
             Ty::OptRef(j, s) => format!("Option ({})", self.key_ty(*j, s)),
             Ty::Tag(name, _) => name.clone(),
+            Ty::TagOf(j) => format!("Tag {}", self.rels[*j].ty),
         }
     }
 
@@ -829,6 +832,7 @@ fn literal(ty: &Ty, other: bool) -> String {
         (Ty::OptInt | Ty::OptRef(..), _) => "None".into(),
         (Ty::Tag(_, cs), _) => cs[0].clone(),
         (Ty::Ref(..), _) => unreachable!("a payload gives no reference"),
+        (Ty::TagOf(_), _) => unreachable!("a payload gives no tag of a relation's sum"),
     }
 }
 

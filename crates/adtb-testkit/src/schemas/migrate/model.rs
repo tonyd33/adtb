@@ -42,6 +42,16 @@ impl Model {
             .any(|(i, _, f)| *i != j && f.ty.target().is_some_and(|(t, _)| t == j))
     }
 
+    /// Returns whether a field's type is `Tag T` of the sum of relation `j`.
+    pub(super) fn tagged(&self, j: usize) -> bool {
+        self.s.rels.iter().any(|r| {
+            r.header
+                .iter()
+                .chain(r.ctors.iter().flat_map(|c| &c.fields))
+                .any(|f| f.ty == Ty::TagOf(j))
+        })
+    }
+
     /// Returns whether a reference type names a constructor set of relation `i` holding `c`
     /// other than the whole relation.
     pub(super) fn selected(&self, i: usize, c: usize) -> bool {
@@ -319,7 +329,7 @@ impl Model {
                 .iter_mut()
                 .chain(r.ctors.iter_mut().flat_map(|c| &mut c.fields))
             {
-                if let Ty::Ref(t, _) | Ty::OptRef(t, _) = &mut f.ty {
+                if let Ty::Ref(t, _) | Ty::OptRef(t, _) | Ty::TagOf(t) = &mut f.ty {
                     lower(t);
                 }
             }
@@ -558,6 +568,7 @@ impl Model {
                             *i == *j && f.ty.target() == Some((*j, &Scope::Named))
                         });
                         !self.referenced(*j)
+                            && !self.tagged(*j)
                             && (super::super::SEARCH_DROP_OF_SELF_SELECTED_SET || !selects_own_set)
                             && r.checks.is_empty()
                             && !self.s.constraints.iter().any(|k| k.rel == *j)
@@ -752,6 +763,7 @@ impl Model {
                 let defaulted = self.rel(i).defaults.iter().any(|(d, _, _)| *d == c);
                 let effect = Effect::RemoveCtor {
                     rel: self.rel(i).name.clone(),
+                    ty: self.rel(i).ty.clone(),
                     ctor: self.rel(i).ctors[c].name.clone(),
                 };
                 self.replace(i, &[c], Vec::new(), Vec::new());
