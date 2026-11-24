@@ -17,17 +17,26 @@ use crate::storage::Pager;
 
 use super::{Error, Held, Session, Txn, vacuums};
 
+/// How a transaction's entry in the serializer ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SerialEnd {
+    Committed,
+    /// Aborted by a call that ends it.
+    Closed,
+    /// Aborted as it drops.
+    Dropped,
+}
+
 pub(super) trait Release: Send + Sync {
-    /// Release what `held` has left, aborting its id when it still runs. Returns the abort
-    /// record's failure. A drop on a panicking thread records no abort, and a drop on a
-    /// panicking thread or after the pager closes logs no safe snapshot marker.
-    fn release(&self, held: &mut Held, dropped: bool) -> Result<(), mvcc::Error>;
+    /// Release what `held` has left, recording its id's abort when it still runs. Returns the
+    /// abort record's failure.
+    fn close(&self, held: &mut Held) -> Result<(), mvcc::Error>;
+
+    /// Release what `held` has left as it drops, its id's abort left to its `Begun`'s drop.
+    fn release(&self, held: &mut Held);
 
     /// Count a transaction ended by being dropped.
     fn count_drop(&self);
-
-    /// Count an abort record that failed.
-    fn count_unrecorded(&self);
 }
 
 impl<R: Runtime> Session<R> {
@@ -115,6 +124,28 @@ impl<R: Runtime> Session<R> {
         self.txns.waits()
     }
 
+    /// End what `held` holds of the serializer under its lock `ser`, in order: its entry by
+    /// `end`, the safe snapshot markers due unless `end` is a drop on a panicking thread or after
+    /// the pager closed, its reader's snapshot in the readers, then its hold.
+    pub(super) fn end_serial(&self, ser: &mut Serializer, held: &mut Held, end: SerialEnd) {
+        if let Some(sid) = held.serial.take() {
+            if end == SerialEnd::Committed {
+                ser.committed(sid);
+            } else {
+                ser.aborted(sid);
+            }
+            let quiet =
+                end == SerialEnd::Dropped && (std::thread::panicking() || self.pager.is_closed());
+            if !quiet {
+                self.log_safe(ser);
+            }
+        }
+        if let Some(sid) = held.reader.take() {
+            self.readers.lock(&self.rt).remove(&sid);
+        }
+        drop(held.hold.take());
+    }
+
     /// Log a safe snapshot marker for every read-only transaction `ser` has found safe.
     pub(super) fn log_safe(&self, ser: &mut Serializer) {
         let readers = self.readers.lock(&self.rt);
@@ -156,45 +187,45 @@ impl<R: Runtime> Session<R> {
     }
 }
 
-impl<R: Runtime> Release for Session<R> {
-    fn release(&self, held: &mut Held, dropped: bool) -> Result<(), mvcc::Error> {
-        let unwinding = dropped && std::thread::panicking();
+impl<R: Runtime> Session<R> {
+    /// Release what `held` has left, ending its id, when it still runs, by `abort` under the
+    /// serializer's lock before its entry ends by `end`. Returns what `abort` returned.
+    fn end_held<T>(
+        &self,
+        held: &mut Held,
+        end: SerialEnd,
+        abort: impl FnOnce(Begun) -> T,
+    ) -> Option<T> {
         let committed = held.serial.is_none();
-        let mut recorded = Ok(());
+        let mut aborted = None;
         if held.begun.is_some()
             || held.serial.is_some()
             || held.reader.is_some()
             || held.hold.is_some()
         {
             let mut ser = self.ser.lock(&self.rt);
-            match held.begun.take() {
-                Some(b) if !unwinding => {
-                    recorded = self.txns.abort(&self.pager, b).map(drop);
-                }
-                begun => drop(begun),
-            }
-            if let Some(sid) = held.serial.take() {
-                ser.aborted(sid);
-                if !dropped || (!unwinding && !self.pager.is_closed()) {
-                    self.log_safe(&mut ser);
-                }
-            }
-            if let Some(sid) = held.reader.take() {
-                self.readers.lock(&self.rt).remove(&sid);
-            }
-            drop(held.hold.take());
+            aborted = held.begun.take().map(abort);
+            self.end_serial(&mut ser, held, end);
         }
         self.count_dead(&held.changed.take(), committed);
-        recorded
+        aborted
+    }
+}
+
+impl<R: Runtime> Release for Session<R> {
+    fn close(&self, held: &mut Held) -> Result<(), mvcc::Error> {
+        let abort = |b| self.txns.abort(&self.pager, b).map(drop);
+        self.end_held(held, SerialEnd::Closed, abort)
+            .unwrap_or(Ok(()))
+    }
+
+    fn release(&self, held: &mut Held) {
+        self.end_held(held, SerialEnd::Dropped, drop);
     }
 
     fn count_drop(&self) {
         #[cfg(any(test, feature = "testing"))]
         self.dropped.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn count_unrecorded(&self) {
-        self.txns.count_unrecorded();
     }
 }
 
@@ -235,7 +266,7 @@ impl Held {
     /// Returns the abort record's failure, uncounted.
     pub(super) fn close(mut self) -> Result<(), mvcc::Error> {
         let session = self.session.clone();
-        session.release(&mut self, false)
+        session.close(&mut self)
     }
 }
 
@@ -245,8 +276,6 @@ impl Drop for Held {
         if !self.ending && !self.failed.get() {
             session.count_drop();
         }
-        if session.release(self, true).is_err() {
-            session.count_unrecorded();
-        }
+        session.release(self);
     }
 }

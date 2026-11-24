@@ -59,8 +59,10 @@ fn a_drop_while_panicking_or_once_closed_releases_records_nothing_and_counts() {
         let w = db.begin().expect("a writer begins");
         let x = w.xid().expect("a writer has an id");
         let r = db.begin_read(false).expect("a reader begins");
+        let logged = db.pager().appended();
         drop_panicking(w);
         drop_panicking(r);
+        assert_eq!(logged, db.pager().appended());
         assert_eq!(nothing(), holding(db));
         assert_eq!(Ok(Status::InProgress), db.txns().recorded(db.pager(), x));
         assert_eq!(1, db.txns().unrecorded_aborts());

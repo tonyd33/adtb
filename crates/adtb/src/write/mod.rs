@@ -87,6 +87,7 @@ pub(crate) use past::position;
 pub use quarantine::{By, Mapped, Mapping};
 pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold};
 pub use rot::Rot;
+use session::SerialEnd;
 pub use stream::{Produced, Production};
 pub use vacuums::Due;
 pub use verify::{Found, VerifyScope};
@@ -1226,7 +1227,6 @@ impl<R: Runtime> Database<R> {
         let written = tx.written.take();
         let mut held = tx.end();
         let begun = held.begun.take();
-        let (serial, reader, hold) = (&mut held.serial, &mut held.reader, &mut held.hold);
         let committed = self.session.txns.commit_with(
             &self.pager,
             begun,
@@ -1236,16 +1236,7 @@ impl<R: Runtime> Database<R> {
                 self.admit_commit(ser, written)?;
                 ser.precommit(sid).map_err(Error::from)
             },
-            |ser| {
-                if let Some(sid) = serial.take() {
-                    ser.committed(sid);
-                }
-                self.session.log_safe(ser);
-                if let Some(sid) = reader.take() {
-                    self.session.readers.lock(&self.rt).remove(&sid);
-                }
-                drop(hold.take());
-            },
+            |ser| (self.session).end_serial(ser, &mut held, SerialEnd::Committed),
         );
         match committed {
             Ok(c) => {
