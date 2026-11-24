@@ -95,9 +95,8 @@ impl<R: Runtime> Owned for PageExclusive<'_, R> {
     }
 }
 
-/// A copy of a page with the owner the page's header named when it was copied.
-///
-/// Invariant: no change to the copy rewrites the owner its header names.
+/// A copy of a page with the owner the page's header named when it was copied, which its bytes
+/// name when it yields them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PageCopy {
     owner: u32,
@@ -110,8 +109,6 @@ impl PageCopy {
     }
 
     /// Returns `bytes` as the new contents of `page`.
-    ///
-    /// Precondition: `bytes` names the owner `page` names.
     pub fn over(page: &impl Owned, bytes: Vec<u8>) -> PageCopy {
         PageCopy {
             owner: page.owner(),
@@ -120,8 +117,6 @@ impl PageCopy {
     }
 
     /// Returns `bytes` as the contents of `pid`, which `new` reserves.
-    ///
-    /// Precondition: `bytes` names the owner `new` formats `pid` with.
     pub fn reserved<R: Runtime>(new: &Reservation<'_, R>, pid: Pid, bytes: Vec<u8>) -> PageCopy {
         PageCopy {
             owner: new.owner(pid),
@@ -130,8 +125,6 @@ impl PageCopy {
     }
 
     /// Replace the copy's contents by `bytes`.
-    ///
-    /// Precondition: `bytes` names the owner the copy names.
     pub fn replace(&mut self, bytes: Vec<u8>) {
         self.bytes = bytes;
     }
@@ -141,7 +134,8 @@ impl PageCopy {
         PageCopy { owner, bytes }
     }
 
-    pub fn into_bytes(self) -> Vec<u8> {
+    pub fn into_bytes(mut self) -> Vec<u8> {
+        storage::set_owner(&mut self.bytes, self.owner);
         self.bytes
     }
 }

@@ -9,7 +9,7 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
 use crate::btree;
-use crate::heap::{Heap, Oversize, RowLimits};
+use crate::heap::{self, Heap, Oversize, RowLimits};
 use crate::key::{KeySchema, Value};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
@@ -64,6 +64,7 @@ pub fn admit_roots(
                 "the roots row holding {} is stored in {len} bytes, over the row limit of {limit}",
                 row.what()
             )),
+            Err(Oversize::Unencodable(e)) => return Err(Error::Heap(heap::Error::Unencodable(e))),
         }
     }
     if why.is_empty() {
@@ -178,6 +179,7 @@ pub fn admit<R: Runtime>(
                 ));
                 continue;
             }
+            Err(Oversize::Unencodable(e)) => return Err(Error::Heap(heap::Error::Unencodable(e))),
         };
         let rows = data
             .get(&rid)
@@ -193,6 +195,9 @@ pub fn admit<R: Runtime>(
             Some(Oversize::Value { len, limit }) => why.push(format!(
                 "{name} gets a row with a field stored in {len} bytes, over the value limit of {limit}"
             )),
+            Some(Oversize::Unencodable(e)) => {
+                return Err(Error::Heap(heap::Error::Unencodable(e)));
+            }
             None => {}
         }
     }

@@ -83,6 +83,7 @@ pub use order::ordered_for_test;
 pub use order::{Opening, Ordered, Orders};
 pub use page::{
     FIRST_EDITABLE, HEADER_LEN, PageKind, flags, format, header_edit, kind, kind_fault, lsn, owner,
+    set_owner,
 };
 #[cfg(any(test, feature = "testing"))]
 pub use page::{flip_owner, seal};

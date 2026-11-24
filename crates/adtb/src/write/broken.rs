@@ -86,6 +86,13 @@ pub enum Broken {
     },
     /// A heap the write path writes has no directory.
     NoDirectory,
+    /// A heap was handed a row its layout cannot encode.
+    Unencodable(crate::heap::Unencodable),
+    /// A version vacuum moves to its history heap is `len` bytes, past the `limit` of that heap.
+    KeptTooLarge {
+        len: usize,
+        limit: usize,
+    },
 }
 
 /// A term's kind, equal to another when the kinds are equal, a float constant by its bits.
@@ -231,6 +238,11 @@ impl fmt::Display for Broken {
             Broken::RejectedRowNotRecord => f.write_str("`RejectedRow` is a declared record"),
             Broken::NoUnique(i) => write!(f, "an upsert names unique {i} of its relation"),
             Broken::NoDirectory => f.write_str("a heap the write path writes has a directory"),
+            Broken::Unencodable(e) => write!(f, "a heap is handed rows of its layout, found {e}"),
+            Broken::KeptTooLarge { len, limit } => write!(
+                f,
+                "a version vacuum moves fits its history heap, found {len} bytes over the limit of {limit}"
+            ),
             Broken::ReferenceUnindexed { relation, field } => write!(
                 f,
                 "a reference field has an index: {relation}.{field} has none"

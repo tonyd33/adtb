@@ -132,8 +132,8 @@ fn domain_cases() -> Vec<Case> {
         Case {
             kind: "date past the last day",
             row: vec![scalar(Scalar::Date)],
-            value: vec![Value::Date(0x0A0B_0C0D)],
-            marker: 0x0A0B_0C0Di32.to_le_bytes().to_vec(),
+            value: vec![Value::Date(0x0506_0708)],
+            marker: 0x0506_0708i32.to_le_bytes().to_vec(),
             edit: |page, m| page[m.at..m.at + 4].copy_from_slice(&i32::MAX.to_le_bytes()),
             marked: On::Row,
             blamed: On::Row,

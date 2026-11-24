@@ -94,7 +94,9 @@ impl Broken {
             | Broken::DeploymentRefused
             | Broken::NoDenial(_)
             | Broken::Unadmitted { .. }
-            | Broken::NoDirectory => Class::Checker,
+            | Broken::NoDirectory
+            | Broken::Unencodable(_)
+            | Broken::KeptTooLarge { .. } => Class::Checker,
         }
     }
 }

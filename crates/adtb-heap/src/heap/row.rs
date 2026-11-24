@@ -211,11 +211,36 @@ fn sum_fixed(ctors: &[CtorType]) -> Option<(Fixed, usize)> {
     ))
 }
 
-fn mismatch(t: &FieldType, v: &Value) -> ! {
-    panic!("value {v:?} is not of field type {t:?}")
+/// A row a layout cannot encode.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unencodable {
+    /// The row has `found` fields where the layout has `expected`.
+    Arity { expected: usize, found: usize },
+    /// A value, printed, is not of its field's type, printed, or lies out of its domain.
+    Value { value: String, field: String },
 }
 
-fn put_scalar(s: Scalar, v: &Value, out: &mut [u8]) {
+impl std::fmt::Display for Unencodable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unencodable::Arity { expected, found } => {
+                write!(f, "a row of {found} fields where its layout has {expected}")
+            }
+            Unencodable::Value { value, field } => {
+                write!(f, "value {value} is not of field type {field}")
+            }
+        }
+    }
+}
+
+fn mismatch(t: &FieldType, v: &Value) -> Unencodable {
+    Unencodable::Value {
+        value: format!("{v:?}"),
+        field: format!("{t:?}"),
+    }
+}
+
+fn put_scalar(s: Scalar, v: &Value, out: &mut [u8]) -> Result<(), Unencodable> {
     match (s, v) {
         (Scalar::I8, Value::I8(x)) => out.copy_from_slice(&x.to_le_bytes()),
         (Scalar::I16, Value::I16(x)) => out.copy_from_slice(&x.to_le_bytes()),
@@ -234,7 +259,12 @@ fn put_scalar(s: Scalar, v: &Value, out: &mut [u8]) {
             out[..4].copy_from_slice(&months.to_le_bytes());
             out[4..].copy_from_slice(&days.to_le_bytes());
         }
-        _ => mismatch(&FieldType::Scalar(s), v),
+        _ => return Err(mismatch(&FieldType::Scalar(s), v)),
+    }
+    if v.in_domain() {
+        Ok(())
+    } else {
+        Err(mismatch(&FieldType::Scalar(s), v))
     }
 }
 
@@ -275,17 +305,27 @@ fn get_scalar(s: Scalar, b: &[u8]) -> Result<Value, Undecoded> {
     Ok(v)
 }
 
-fn sum_parts<'v>(t: &FieldType, ctors: &[CtorType], v: &'v Value) -> (usize, &'v [Value]) {
+fn sum_parts<'v>(
+    t: &FieldType,
+    ctors: &[CtorType],
+    v: &'v Value,
+) -> Result<(usize, &'v [Value]), Unencodable> {
     match v {
-        Value::Sum { ctor, fields } if (*ctor as usize) < ctors.len() => (*ctor as usize, fields),
-        _ => mismatch(t, v),
+        Value::Sum { ctor, fields }
+            if ctors
+                .get(*ctor as usize)
+                .is_some_and(|c| c.fields.len() == fields.len()) =>
+        {
+            Ok((*ctor as usize, fields))
+        }
+        _ => Err(mismatch(t, v)),
     }
 }
 
-fn record_parts<'v>(t: &FieldType, n: usize, v: &'v Value) -> &'v [Value] {
+fn record_parts<'v>(t: &FieldType, n: usize, v: &'v Value) -> Result<&'v [Value], Unencodable> {
     match v {
-        Value::Record(vs) if vs.len() == n => vs,
-        _ => mismatch(t, v),
+        Value::Record(vs) if vs.len() == n => Ok(vs),
+        _ => Err(mismatch(t, v)),
     }
 }
 
@@ -297,12 +337,13 @@ fn ctor_index(ctors: &[CtorType], id: u64) -> Result<u32, Undecoded> {
     Ok(i as u32)
 }
 
-fn put_record_fixed(fields: &[FieldType], vs: &[Value], out: &mut [u8]) {
+fn put_record_fixed(fields: &[FieldType], vs: &[Value], out: &mut [u8]) -> Result<(), Unencodable> {
     let (_, offsets) = record_fixed(fields).expect("a fixed record");
     for ((t, v), at) in fields.iter().zip(vs).zip(offsets) {
         let size = fixed_of(t).unwrap().size;
-        put_fixed(t, v, &mut out[at..at + size]);
+        put_fixed(t, v, &mut out[at..at + size])?;
     }
+    Ok(())
 }
 
 fn get_record_fixed(fields: &[FieldType], b: &[u8]) -> Result<Vec<Value>, Undecoded> {
@@ -327,15 +368,15 @@ fn get_tag(width: usize, b: &[u8]) -> Result<u32, Undecoded> {
     Ok(u32::from_le_bytes(word))
 }
 
-fn put_fixed(t: &FieldType, v: &Value, out: &mut [u8]) {
+fn put_fixed(t: &FieldType, v: &Value, out: &mut [u8]) -> Result<(), Unencodable> {
     match t {
         FieldType::Scalar(s) => put_scalar(*s, v, out),
-        FieldType::Record(fs) => put_record_fixed(fs, record_parts(t, fs.len(), v), out),
+        FieldType::Record(fs) => put_record_fixed(fs, record_parts(t, fs.len(), v)?, out),
         FieldType::Sum(cs) => {
-            let (ctor, fields) = sum_parts(t, cs, v);
+            let (ctor, fields) = sum_parts(t, cs, v)?;
             let (_, at) = sum_fixed(cs).expect("a fixed sum");
             put_tag(tag_width(cs), cs[ctor].id.0, out);
-            put_record_fixed(&cs[ctor].fields, fields, &mut out[at..]);
+            put_record_fixed(&cs[ctor].fields, fields, &mut out[at..])
         }
     }
 }
@@ -438,7 +479,12 @@ impl<'a> Reader<'a> {
 
 /// Append a variable-width scalar; with `prefixed` false its last run of bytes takes the rest of
 /// the field, unprefixed.
-fn put_var_scalar(s: Scalar, v: &Value, out: &mut Vec<u8>, prefixed: bool) {
+fn put_var_scalar(
+    s: Scalar,
+    v: &Value,
+    out: &mut Vec<u8>,
+    prefixed: bool,
+) -> Result<(), Unencodable> {
     let run = |bytes: &[u8], out: &mut Vec<u8>| {
         if prefixed {
             put_uvarint(bytes.len() as u64, out);
@@ -452,8 +498,9 @@ fn put_var_scalar(s: Scalar, v: &Value, out: &mut Vec<u8>, prefixed: bool) {
             out.extend_from_slice(&local.to_le_bytes());
             run(zone.as_bytes(), out);
         }
-        _ => mismatch(&FieldType::Scalar(s), v),
+        _ => return Err(mismatch(&FieldType::Scalar(s), v)),
     }
+    Ok(())
 }
 
 fn run<'a>(r: &mut Reader<'a>, prefixed: bool) -> Result<&'a [u8], Undecoded> {
@@ -482,40 +529,35 @@ fn get_var_scalar(s: Scalar, r: &mut Reader, prefixed: bool) -> Result<Value, Un
 
 /// Append `v` in the variable-width encoding: fields in declaration order, fixed-width scalars
 /// little-endian, other scalars length-prefixed, a sum's tag as an unsigned LEB128 varint.
-fn put_packed(t: &FieldType, v: &Value, out: &mut Vec<u8>) {
+fn put_packed(t: &FieldType, v: &Value, out: &mut Vec<u8>) -> Result<(), Unencodable> {
     match t {
         FieldType::Scalar(s) => match scalar_fixed(*s) {
             Some(f) => {
                 let at = out.len();
                 out.resize(at + f.size, 0);
-                put_scalar(*s, v, &mut out[at..]);
+                put_scalar(*s, v, &mut out[at..])
             }
             None => put_var_scalar(*s, v, out, true),
         },
-        FieldType::Record(fs) => {
-            for (t, v) in fs.iter().zip(record_parts(t, fs.len(), v)) {
-                put_packed(t, v, out);
-            }
-        }
+        FieldType::Record(fs) => put_payload(fs, record_parts(t, fs.len(), v)?, out),
         FieldType::Sum(cs) => {
-            let (ctor, fields) = sum_parts(t, cs, v);
+            let (ctor, fields) = sum_parts(t, cs, v)?;
             if cs.len() > 1 {
                 put_uvarint(u64::from(cs[ctor].id.0), out);
             }
-            put_payload(&cs[ctor].fields, fields, out);
+            put_payload(&cs[ctor].fields, fields, out)
         }
     }
 }
 
-fn put_payload(fields: &[FieldType], vs: &[Value], out: &mut Vec<u8>) {
-    assert_eq!(
-        fields.len(),
-        vs.len(),
-        "payload has the wrong number of fields"
-    );
+/// Append `vs`.
+///
+/// Precondition: `vs` has as many values as `fields` has types.
+fn put_payload(fields: &[FieldType], vs: &[Value], out: &mut Vec<u8>) -> Result<(), Unencodable> {
     for (t, v) in fields.iter().zip(vs) {
-        put_packed(t, v, out);
+        put_packed(t, v, out)?;
     }
+    Ok(())
 }
 
 fn get_packed(t: &FieldType, r: &mut Reader) -> Result<Value, Undecoded> {
@@ -575,6 +617,10 @@ pub struct Layout {
 }
 
 impl Layout {
+    pub(crate) fn fields(&self) -> &[FieldType] {
+        &self.fields
+    }
+
     pub fn new(fields: Vec<FieldType>) -> Layout {
         let mut shapes = Vec::new();
         let mut placed = Vec::new();
@@ -658,36 +704,36 @@ impl Layout {
         self.bitmap_at() + self.vars.div_ceil(8)
     }
 
-    /// Returns the fixed part of `row` and its variable-width fields, all inline.
-    ///
-    /// Panics:
-    /// - `row` is not a row of the layout's field types.
-    pub fn encode(&self, row: &[Value]) -> (Vec<u8>, Vec<Vec<u8>>) {
-        assert_eq!(
-            self.fields.len(),
-            row.len(),
-            "row has the wrong number of fields"
-        );
+    /// Returns the fixed part of `row` and its variable-width fields, all inline. Refuse a row
+    /// of another number of fields than the layout's, or holding a value not of its field's type
+    /// or out of its domain.
+    pub fn encode(&self, row: &[Value]) -> Result<(Vec<u8>, Vec<Vec<u8>>), Unencodable> {
+        if self.fields.len() != row.len() {
+            return Err(Unencodable::Arity {
+                expected: self.fields.len(),
+                found: row.len(),
+            });
+        }
         let mut fixed = vec![0; self.fixed_len];
         let mut vars = vec![Vec::new(); self.vars];
         for ((t, v), place) in self.fields.iter().zip(row).zip(&self.places) {
             match *place {
-                Place::Fixed { at, size } => put_fixed(t, v, &mut fixed[at..at + size]),
+                Place::Fixed { at, size } => put_fixed(t, v, &mut fixed[at..at + size])?,
                 Place::Split { at, var, .. } => {
                     let FieldType::Sum(cs) = t else {
                         unreachable!()
                     };
-                    let (ctor, fields) = sum_parts(t, cs, v);
+                    let (ctor, fields) = sum_parts(t, cs, v)?;
                     put_tag(tag_width(cs), cs[ctor].id.0, &mut fixed[at..]);
-                    put_payload(&cs[ctor].fields, fields, &mut vars[var]);
+                    put_payload(&cs[ctor].fields, fields, &mut vars[var])?;
                 }
                 Place::Var { var } => match t {
-                    FieldType::Scalar(s) => put_var_scalar(*s, v, &mut vars[var], false),
-                    _ => put_packed(t, v, &mut vars[var]),
+                    FieldType::Scalar(s) => put_var_scalar(*s, v, &mut vars[var], false)?,
+                    _ => put_packed(t, v, &mut vars[var])?,
                 },
             }
         }
-        (fixed, vars)
+        Ok((fixed, vars))
     }
 
     /// Returns the length of a body holding `vars`.

@@ -509,7 +509,7 @@ pub(crate) fn reread(
     (to, s, now): (&Schema, RelId, u32),
     row: &[Value],
 ) -> Vec<Value> {
-    let (fixed, vars) = Layout::new(row_type(from, r, was)).encode(row);
+    let (fixed, vars) = Layout::new(row_type(from, r, was)).encode(row).unwrap();
     Layout::new(row_type(to, s, now))
         .decode(&fixed, &vars)
         .unwrap()

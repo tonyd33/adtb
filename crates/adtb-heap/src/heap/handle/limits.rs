@@ -3,7 +3,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::super::page::{Arrangement, align8};
-use super::super::row::{FieldType, Layout, POINTER_LEN, value_limit};
+use super::super::row::{FieldType, Layout, POINTER_LEN, Unencodable, value_limit};
 use super::super::version::HEADER_LEN;
 use super::super::{Error, fixed, slotted};
 
@@ -29,13 +29,20 @@ pub(super) fn arrangement_of(layout: &Layout, page_size: usize) -> Result<Arrang
 }
 
 /// The limit a row passes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Oversize {
     /// A field's whole value is stored in `len` bytes, past the value limit `limit`.
-    Value { len: usize, limit: usize },
+    Value {
+        len: usize,
+        limit: usize,
+    },
     /// The row's smallest version, every value it can move out of line moved, is `len` bytes,
     /// past the `limit` a page holds.
-    Row { len: usize, limit: usize },
+    Row {
+        len: usize,
+        limit: usize,
+    },
+    Unencodable(Unencodable),
 }
 
 impl From<Oversize> for Error {
@@ -44,6 +51,7 @@ impl From<Oversize> for Error {
             Oversize::Value { len, limit } | Oversize::Row { len, limit } => {
                 Error::TooLarge { len, limit }
             }
+            Oversize::Unencodable(e) => Error::Unencodable(e),
         }
     }
 }
@@ -93,7 +101,7 @@ pub(super) fn oversize(
     value_limit: u64,
     row: &[Value],
 ) -> Result<(), Oversize> {
-    let (_, vars) = layout.encode(row);
+    let (_, vars) = layout.encode(row).map_err(Oversize::Unencodable)?;
     let mut lengths = layout.field_lengths(&vars);
     if let Some(len) = lengths.find(|&len| len as u64 > value_limit) {
         return Err(Oversize::Value {

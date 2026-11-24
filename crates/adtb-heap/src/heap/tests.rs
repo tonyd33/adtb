@@ -5,7 +5,7 @@ use crate::testing::writers;
 
 use super::dir::{category, need_category};
 use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, PageCopy, Slot};
-use super::row::{CtorType, FieldType, Layout, Pointer, Stored};
+use super::row::{CtorType, FieldType, Layout, Pointer, Stored, Unencodable};
 use super::version::{Flags, Header, tid_bits, tid_from_bits};
 use super::vm;
 use super::{chain, prune};
@@ -255,7 +255,7 @@ fn fixed_fields_are_placed_by_decreasing_alignment() {
         Value::I16(0x0102),
         Value::Decimal(12345),
     ];
-    let (fixed, vars) = layout.encode(&row);
+    let (fixed, vars) = layout.encode(&row).unwrap();
     assert!(vars.is_empty());
     assert_eq!(27, fixed.len());
     assert_eq!(12345i128.to_le_bytes(), fixed[0..16]);
@@ -290,17 +290,21 @@ fn a_small_fixed_sum_stores_its_tag_then_its_largest_payload() {
     let layout = Layout::new(vec![status_type()]);
     assert!(layout.is_fixed());
     assert_eq!(16, layout.fixed_width());
-    let (fixed, _) = layout.encode(&[Value::Sum {
-        ctor: 2,
-        fields: vec![Value::Instant(99)],
-    }]);
+    let (fixed, _) = layout
+        .encode(&[Value::Sum {
+            ctor: 2,
+            fields: vec![Value::Instant(99)],
+        }])
+        .unwrap();
     assert_eq!(1102u16.to_le_bytes(), fixed[0..2]);
     assert_eq!([0; 6], fixed[2..8]);
     assert_eq!(99i64.to_le_bytes(), fixed[8..16]);
-    let (fixed, _) = layout.encode(&[Value::Sum {
-        ctor: 0,
-        fields: vec![],
-    }]);
+    let (fixed, _) = layout
+        .encode(&[Value::Sum {
+            ctor: 0,
+            fields: vec![],
+        }])
+        .unwrap();
     assert_eq!(1100u16.to_le_bytes(), fixed[0..2]);
 }
 
@@ -337,10 +341,12 @@ fn a_sum_too_large_for_the_fixed_part_keeps_only_its_tag_there() {
     ]);
     let layout = Layout::new(vec![big]);
     assert!(!layout.is_fixed());
-    let (fixed, vars) = layout.encode(&[Value::Sum {
-        ctor: 1,
-        fields: vec![],
-    }]);
+    let (fixed, vars) = layout
+        .encode(&[Value::Sum {
+            ctor: 1,
+            fields: vec![],
+        }])
+        .unwrap();
     assert_eq!(1025u16.to_le_bytes(), fixed[..]);
     assert_eq!(vec![Vec::<u8>::new()], vars);
 }
@@ -366,7 +372,7 @@ fn a_sum_with_a_variable_payload_keeps_its_tag_fixed() {
             fields: vec![Value::Text("héllo".into()), Value::I32(7)],
         },
     ];
-    let (fixed, vars) = layout.encode(&row);
+    let (fixed, vars) = layout.encode(&row).unwrap();
     assert_eq!(1024u16.to_le_bytes(), fixed[0..2]);
     assert_eq!(0xff, fixed[2]);
     let mut payload = vec![6];
@@ -490,12 +496,65 @@ fn every_field_type_round_trips() {
     let layout = Layout::new(every_type());
     for n in 0..20 {
         let row = every_value(n);
-        let (fixed, vars) = layout.encode(&row);
+        let (fixed, vars) = layout.encode(&row).unwrap();
         let body = layout.assemble(&fixed, &inline(vars.clone()));
         assert_eq!(layout.body_len(&inline(vars.clone())), body.len());
         let (f, stored) = layout.split(&body).unwrap();
         assert_eq!(inline(vars.clone()), stored);
         assert_eq!(row, layout.decode(f, &vars).unwrap(), "row {n}");
+    }
+}
+
+/// Over every field type: a value of another variant, a sum of a constructor it lacks or with a
+/// payload one field long, a record one field short, and a fixed-width scalar the read side
+/// refuses out of its domain are each refused naming the value and its field's type, and a row
+/// one field short or long is refused by its arity.
+#[test]
+fn a_row_not_of_its_layout_is_refused() {
+    let types = every_type();
+    let layout = Layout::new(types.clone());
+    let valid = every_value(0);
+    let mut refused = 0;
+    for (i, t) in types.iter().enumerate() {
+        let mut wrong = vec![match t {
+            FieldType::Record(_) => Value::I8(0),
+            _ => Value::Record(vec![]),
+        }];
+        match t {
+            FieldType::Sum(cs) => {
+                wrong.push(Value::Sum {
+                    ctor: cs.len() as u32,
+                    fields: vec![],
+                });
+                let fields = vec![Value::I8(0); cs[0].fields.len() + 1];
+                wrong.push(Value::Sum { ctor: 0, fields });
+            }
+            FieldType::Record(fs) => wrong.push(Value::Record(vec![Value::I8(0); fs.len() - 1])),
+            FieldType::Scalar(Scalar::Date) => wrong.push(Value::Date(i32::MAX)),
+            FieldType::Scalar(Scalar::Time) => wrong.push(Value::Time(-1)),
+            FieldType::Scalar(Scalar::Decimal(_)) => wrong.push(Value::Decimal(i128::MAX)),
+            FieldType::Scalar(_) => {}
+        }
+        for v in wrong {
+            let mut row = valid.clone();
+            row[i] = v.clone();
+            let expected = Unencodable::Value {
+                value: format!("{v:?}"),
+                field: format!("{t:?}"),
+            };
+            assert_eq!(Err(expected), layout.encode(&row).map(drop), "field {i}");
+            refused += 1;
+        }
+    }
+    assert_eq!(types.len() + 2 * 2 + 2 + 3, refused);
+    for found in [types.len() - 1, types.len() + 1] {
+        let mut row = valid.clone();
+        row.resize(found, Value::I8(0));
+        let expected = Unencodable::Arity {
+            expected: types.len(),
+            found,
+        };
+        assert_eq!(Err(expected), layout.encode(&row).map(drop));
     }
 }
 
@@ -513,7 +572,7 @@ fn out_of_line_fields_are_marked_and_keep_their_neighbours() {
         Value::Bytes(vec![9; 3000]),
         Value::Text("z".into()),
     ];
-    let (fixed, vars) = layout.encode(&row);
+    let (fixed, vars) = layout.encode(&row).unwrap();
     let p = Pointer {
         len: 3000,
         first: Tid::new(77, 3).unwrap(),

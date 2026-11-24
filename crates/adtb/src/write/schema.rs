@@ -39,6 +39,7 @@ pub struct Ctor {
     pub refs: Vec<RefField>,
     /// The position of each key field, in name order.
     pub key_at: Vec<usize>,
+    indexed: Vec<usize>,
 }
 
 /// An index of the catalog over a relation variable.
@@ -85,6 +86,12 @@ pub type Rels = BTreeMap<RelId, Rel>;
 impl Rel {
     pub fn all_ctors(&self) -> Vec<u32> {
         (0..self.ctors.len() as u32).collect()
+    }
+
+    /// Returns the position of each field of a row of constructor `c` that an index of the
+    /// relation reads, which an update leaves unchanged for its version to be heap-only.
+    pub fn heap_only_fields(&self, c: u32) -> &[usize] {
+        &self.ctors[c as usize].indexed
     }
 
     /// Returns the heap of each constructor position of `ctors`, by position.
@@ -144,7 +151,7 @@ pub fn rels(
         let cs = ctors(schema, &r.elem).expect("a relation's element type is a sum");
         let def = schema.ty(r.elem_def);
         let key = key_names(schema, *rel);
-        let ctor_list = cs
+        let mut ctor_list = cs
             .iter()
             .enumerate()
             .map(|(c, fields)| {
@@ -159,6 +166,7 @@ pub fn rels(
                         .iter()
                         .map(|n| pos(n).expect("every constructor has the key fields"))
                         .collect(),
+                    indexed: Vec::new(),
                 }
             })
             .collect::<Vec<_>>();
@@ -224,6 +232,12 @@ pub fn rels(
                 unique,
             };
             indexes.push((d.id, indexed));
+        }
+        for (c, ctor) in ctor_list.iter_mut().enumerate() {
+            ctor.indexed = indexes
+                .iter()
+                .flat_map(|(_, ix)| ix.keys.reads(c as u32))
+                .collect();
         }
         let key_desc = desc
             .indexes

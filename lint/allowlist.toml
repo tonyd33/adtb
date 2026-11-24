@@ -68,7 +68,7 @@
 "crates/adtb-heap/src/heap/page.rs" = 4
 "crates/adtb-heap/src/heap/prune.rs" = 3
 "crates/adtb-heap/src/heap/rooted.rs" = 2
-"crates/adtb-heap/src/heap/row.rs" = 17
+"crates/adtb-heap/src/heap/row.rs" = 14
 "crates/adtb-heap/src/heap/slotted.rs" = 3
 "crates/adtb-heap/src/heap/stage.rs" = 3
 "crates/adtb-heap/src/heap/version.rs" = 3

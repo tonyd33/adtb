@@ -115,6 +115,10 @@ pub(super) fn owner_of(page: &[u8]) -> u32 {
     u32::from_le_bytes(page[OWNER..OWNER + 4].try_into().unwrap())
 }
 
+pub fn set_owner(page: &mut [u8], owner: u32) {
+    page[OWNER..OWNER + 4].copy_from_slice(&owner.to_le_bytes());
+}
+
 /// Flip a bit of the page's owner, which a second flip undoes.
 #[cfg(any(test, feature = "testing"))]
 pub fn flip_owner(page: &mut [u8]) {

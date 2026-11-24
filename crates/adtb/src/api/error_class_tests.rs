@@ -556,11 +556,27 @@ fn call_broken_rows() -> Vec<Row> {
             c,
             "a heap the write path writes has a directory",
         ),
+        broken_row(
+            B::Unencodable(crate::heap::Unencodable::Arity {
+                expected: 2,
+                found: 3,
+            }),
+            c,
+            "a heap is handed rows of its layout, found a row of 3 fields where its layout has 2",
+        ),
+        broken_row(
+            B::KeptTooLarge {
+                len: 9000,
+                limit: 8000,
+            },
+            c,
+            "a version vacuum moves fits its history heap, found 9000 bytes over the limit of 8000",
+        ),
     ]
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 76;
+const SLOTS: usize = 78;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -650,6 +666,8 @@ fn slot(e: &write::Error) -> usize {
             B::Compile(_) => 72,
             B::IdleDeltaReports(_) => 73,
             B::NoDirectory => 75,
+            B::Unencodable(_) => 76,
+            B::KeptTooLarge { .. } => 77,
         },
     }
 }

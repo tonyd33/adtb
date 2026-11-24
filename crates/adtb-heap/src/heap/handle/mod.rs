@@ -400,6 +400,11 @@ impl Heap {
         self.formats.last().unwrap()
     }
 
+    /// Returns the field types of the heap's newest row format.
+    pub fn row_type(&self) -> Vec<FieldType> {
+        self.current().layout.fields().to_vec()
+    }
+
     /// Returns every page of the heap, in directory order.
     pub fn pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
         self.space.pages(pager)
@@ -550,7 +555,7 @@ impl Heap {
         reuse: &[Pointer],
     ) -> Result<(Vec<u8>, Vec<Pointer>), Error> {
         let f = self.current();
-        let (fixed_part, vars) = f.layout.encode(row);
+        let (fixed_part, vars) = f.layout.encode(row).map_err(Error::Unencodable)?;
         let mut known: Vec<Option<Option<Vec<u8>>>> = vec![None; reuse.len()];
         let mut stored = Vec::with_capacity(vars.len());
         for bytes in vars {

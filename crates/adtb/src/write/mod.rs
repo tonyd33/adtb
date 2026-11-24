@@ -217,6 +217,7 @@ impl From<crate::heap::Error> for Error {
                 Error::Internal(Box::new(Broken::Unadmitted { len, limit }))
             }
             crate::heap::Error::NoDirectory => Broken::NoDirectory.into(),
+            crate::heap::Error::Unencodable(e) => Broken::Unencodable(e).into(),
         }
     }
 }
@@ -228,10 +229,12 @@ impl From<vacuum::Error> for Error {
             vacuum::Error::Index(i) => Error::from(i),
             vacuum::Error::Heap(e @ crate::heap::Error::Changed { .. }) => Error::from(e),
             vacuum::Error::Heap(crate::heap::Error::NoDirectory) => Broken::NoDirectory.into(),
-            vacuum::Error::Heap(crate::heap::Error::TooLarge { len, limit }) => panic!(
-                "a version vacuum moves fits its history heap, as it fit its current heap: \
-                 {len} bytes over the limit of {limit}"
-            ),
+            vacuum::Error::Heap(crate::heap::Error::Unencodable(e)) => {
+                Broken::Unencodable(e).into()
+            }
+            vacuum::Error::Heap(crate::heap::Error::TooLarge { len, limit }) => {
+                Broken::KeptTooLarge { len, limit }.into()
+            }
             vacuum::Error::Stopped => Error::Exec(exec::Error::Cancelled),
             vacuum::Error::Unkeyed(c) => Error::Exec(exec::Broken::UnkeyedRow(c.0).into()),
         }

@@ -24,7 +24,7 @@ use super::root::Root;
 use super::roots::RootsRow;
 use super::rot::Rot;
 use super::structures::{Listed, index_holder, relation_holder};
-use super::{Catalog, Error, IndexKeys, IndexSpec, Migrating, ROOTS, row_type};
+use super::{Catalog, Error, IndexKeys, IndexSpec, Migrating, ROOTS};
 
 /// The transaction of each migration and the roots version recording it, by the version it made,
 /// and the version whose migration named each heap by heap id.
@@ -125,7 +125,7 @@ impl Kept {
                     "history heap of {name} constructor {c}"
                 )));
             };
-            let heap = Heap::open(pager, id, at, row_type(schema, r, c), large)?;
+            let heap = Heap::open(pager, id, at, heaps[&(r, c)].row_type(), large)?;
             out.heaps
                 .insert((r, c), (Arc::new(heap), heaps[&(r, c)].id().0));
         }
@@ -171,7 +171,7 @@ impl Kept {
                     .insert((r, c), (self.heap_of(b.old, rid, cid), of));
                 continue;
             }
-            let heap = b.m.create_heap(row_type(b.next, r, c), self.large)?;
+            let heap = b.m.create_heap(current.row_type(), self.large)?;
             named.push(heap_row(rid, cid, &heap));
             out.heaps.insert((r, c), (heap, of));
         }
@@ -297,10 +297,10 @@ impl Catalog {
             .kept
             .heaps
             .iter()
-            .map(|(&(r, c), (past, of))| {
+            .map(|(&(r, _), (past, of))| {
                 let id = HeapId(u64::from(*of));
                 let stored = StoredHeap {
-                    row: row_type(schema, r, c),
+                    row: past.row_type(),
                     heap: past.clone(),
                     sum: super::sum_of(&pasts, r),
                 };

@@ -4,7 +4,7 @@ use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
 use crate::exec::{Val, to_stored};
-use crate::heap::{self, Flags, Heap, Refused, Slots, Superseded, WriteTarget};
+use crate::heap::{self, Flags, Heap, Refused, Slots, Superseded, Unencodable, WriteTarget};
 use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Logged, Probe, Reader, Write, Xid};
 use crate::plan::{HeapId, IndexId};
@@ -12,9 +12,9 @@ use crate::runtime::Runtime;
 use crate::steps::Step;
 use crate::storage::Pid;
 
-use super::Error;
 use super::admit::Admitted;
 use super::eval::{Stmt, Violations, Violator, pairs, violate, violate_key};
+use super::{Broken, Error};
 
 /// Returns the write error of heap error `e`, met taking back a version's change.
 fn undo_failure(e: heap::Error) -> Error {
@@ -55,12 +55,21 @@ impl<R: Runtime> Stmt<'_, R> {
             .reader(&self.db.pager, self.tx.hold(), Some(me))
     }
 
-    /// Returns `row` as `heap` stores it.
+    /// Returns `row` as `heap` stores it. Fail as internal when `row` has another number of
+    /// fields than the heap's rows.
     pub(super) fn stored(&self, heap: HeapId, row: &Val) -> Result<Vec<Value>, Error> {
-        Ok(self.db.bindings.heaps()[&heap]
-            .row
+        let types = &self.db.bindings.heaps()[&heap].row;
+        let fields = row.fields()?;
+        if fields.len() != types.len() {
+            let arity = Unencodable::Arity {
+                expected: types.len(),
+                found: fields.len(),
+            };
+            return Err(Broken::Unencodable(arity).into());
+        }
+        Ok(types
             .iter()
-            .zip(row.fields()?)
+            .zip(fields)
             .map(|(t, v)| to_stored(t, v))
             .collect::<Result<_, _>>()?)
     }
@@ -214,16 +223,18 @@ impl<R: Runtime> Stmt<'_, R> {
                     (Some(old @ (c, _)), Some((d, n))) if c == d => {
                         let (c, tid) = target(old)?;
                         let heap = r.ctors[c as usize].heap;
-                        let indexed: Vec<usize> = r
-                            .indexes
-                            .iter()
-                            .flat_map(|(_, ix)| ix.keys.reads(c))
-                            .collect();
                         let row = self.stored(heap, n)?;
                         let h = self.heap(heap);
                         let mut judge = self.db.session.txns.judge_now(pager, h.id().0);
                         let (up, old) = h
-                            .update_pruning(pager, tid, xid, &row, &indexed, &mut judge)
+                            .update_pruning(
+                                pager,
+                                tid,
+                                xid,
+                                &row,
+                                r.heap_only_fields(c),
+                                &mut judge,
+                            )
                             .record(&mut self.undo.borrow_mut(), heap, heap)?;
                         self.superseded(old)?;
                         self.inserted_into(heap)?;

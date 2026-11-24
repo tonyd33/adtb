@@ -54,7 +54,7 @@ pub use row::Layout;
 #[cfg(any(test, feature = "testing"))]
 pub use row::Pointer;
 pub use row::put_uvarint;
-pub use row::{CtorType, FieldType};
+pub use row::{CtorType, FieldType, Unencodable};
 #[cfg(any(test, feature = "testing"))]
 pub use scribble::{Edit, scribble};
 #[cfg(any(test, feature = "testing"))]
@@ -82,6 +82,7 @@ pub enum Error {
     },
     /// The heap or store was opened at page 0, with no directory to take a page.
     NoDirectory,
+    Unencodable(Unencodable),
 }
 
 impl From<PageError> for Error {
@@ -102,6 +103,7 @@ impl std::fmt::Display for Error {
                 "a version of {len} bytes is longer than the {limit} a page holds"
             ),
             Error::NoDirectory => f.write_str("the heap has no directory"),
+            Error::Unencodable(e) => write!(f, "{e}"),
         }
     }
 }
