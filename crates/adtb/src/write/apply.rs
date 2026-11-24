@@ -74,6 +74,9 @@ impl Footprint for Written<'_> {
 /// with the unique's name.
 type Groups = Held<BTreeMap<(RelId, IndexId, Vec<u8>), (String, BTreeMap<Val, Val>)>>;
 
+/// The rows a statement deletes, by relation and key, with their constructors.
+type Olds<'s> = Held<BTreeMap<(RelId, Val), (u32, &'s Val)>>;
+
 /// A version the statement wrote that needs entries in the indexes over its constructor.
 struct Written<'s> {
     rel: RelId,
@@ -217,102 +220,24 @@ impl<R: Runtime> Stmt<'_, R> {
     /// Postconditions: the statement's reads see every row `set` inserts, two rows of one key
     /// included, and none it deletes.
     pub fn apply(&self, set: &Admitted, viol: &mut Violations) -> Result<(), Error> {
-        type Pair<'s> = (Option<(u32, &'s Val)>, Vec<(u32, &'s Val)>);
         let (plus, minus) = (set.plus(), set.minus());
-        let mut ops: Held<BTreeMap<(RelId, Val), Pair>> = self.rows_in().held();
-        for ((r, c), v) in minus {
-            ops.alter((*r, self.key_of(*r, v)?), |p| p.0 = Some((*c, v)))?;
-        }
-        for ((r, c), v) in plus {
-            ops.alter((*r, self.key_of(*r, v)?), |p| p.1.push((*c, v)))?;
-        }
-        if ops.is_empty() {
+        if plus.is_empty() && minus.is_empty() {
             return Ok(());
         }
-        self.wait_for_rebuilds(ops.keys().map(|(r, _)| *r))?;
+        let mut olds: Olds = self.rows_in().held();
+        for ((r, c), v) in minus {
+            olds.insert((*r, self.key_of(*r, v)?), (*c, v))?;
+        }
+        self.wait_for_rebuilds(plus.iter().chain(minus).map(|((r, _), _)| *r))?;
         let xid = self.tx.writer()?;
-        let pager = &self.db.pager;
         let mut written: Held<Vec<Written>> = self.rows_in().held();
-        for ((rel, key), (old, news)) in ops.iter() {
-            let r = self.rel(*rel);
-            if old.is_none() && news.is_empty() {
-                continue;
-            }
-            let target = |(c, row): &(u32, &Val)| self.writable(*rel, key, *c, row);
-            let mut write = || -> Result<(), Error> {
-                match (old, news.first()) {
-                    (None, None) => {}
-                    (Some(old), None) => {
-                        let (c, tid) = target(old)?;
-                        let heap = r.ctors[c as usize].heap;
-                        let mut undo = self.undo.borrow_mut();
-                        let room = undo.room(1)?;
-                        let old =
-                            (self.heap(heap).delete(pager, tid, xid)).record(room, heap, heap)?;
-                        drop(undo);
-                        self.superseded(old)?;
-                    }
-                    (Some(old @ (c, _)), Some((d, n))) if c == d => {
-                        let (c, tid) = target(old)?;
-                        let heap = r.ctors[c as usize].heap;
-                        let row = self.stored(heap, n)?;
-                        let h = self.heap(heap);
-                        let mut judge = self.db.session.txns.judge_now(pager, h.id().0);
-                        let mut undo = self.undo.borrow_mut();
-                        let room = undo.room(2)?;
-                        let (up, old) = h
-                            .update_pruning(
-                                pager,
-                                tid,
-                                xid,
-                                &row,
-                                r.heap_only_fields(c),
-                                &mut judge,
-                            )
-                            .record(room, heap, heap)?;
-                        drop(undo);
-                        self.superseded(old)?;
-                        self.inserted_into(heap)?;
-                        if !up.heap_only {
-                            written.push(Written {
-                                rel: *rel,
-                                ctor: c,
-                                tid: up.tid,
-                                row: n,
-                            })?;
-                        }
-                    }
-                    (Some(old), Some((d, n))) => {
-                        let (c, tid) = target(old)?;
-                        let to = r.ctors[*d as usize].heap;
-                        let row = self.stored(to, n)?;
-                        let from = r.ctors[c as usize].heap;
-                        let into = self.heap(to);
-                        let mut judge = self.db.session.txns.judge_now(pager, into.id().0);
-                        let mut undo = self.undo.borrow_mut();
-                        let room = undo.room(2)?;
-                        let (at, old) = self
-                            .heap(from)
-                            .retag_pruning(pager, tid, xid, into, &row, &mut judge)
-                            .record(room, from, to)?;
-                        drop(undo);
-                        self.superseded(old)?;
-                        self.inserted_into(to)?;
-                        written.push(Written {
-                            rel: *rel,
-                            ctor: *d,
-                            tid: at,
-                            row: n,
-                        })?;
-                    }
-                    (None, Some((d, n))) => written.push(self.insert(*rel, *d, n, xid)?)?,
-                }
-                Ok(())
-            };
-            write()?;
-            for (d, n) in news.iter().skip(1) {
-                written.push(self.insert(*rel, *d, n, xid)?)?;
-            }
+        for ((rel, d), n) in plus {
+            let key = self.key_of(*rel, n)?;
+            let old = olds.remove(&(*rel, key.clone()));
+            self.write_key(*rel, &key, old, Some((*d, n)), xid, &mut written)?;
+        }
+        for ((rel, key), old) in olds {
+            self.write_key(rel, &key, Some(old), None, xid, &mut written)?;
         }
         for ((r, _), v) in plus {
             let rel = self.rel(*r);
@@ -329,6 +254,82 @@ impl<R: Runtime> Stmt<'_, R> {
         }
         for ((_, ix, _), (name, group)) in groups.iter() {
             violate(viol, Violator::Unique(*ix), name, pairs([group]))?;
+        }
+        Ok(())
+    }
+
+    /// Write the row of key `key` of `rel` that the statement deletes, inserts or replaces,
+    /// adding each version that needs index entries to `written`.
+    fn write_key<'s>(
+        &self,
+        rel: RelId,
+        key: &Val,
+        old: Option<(u32, &Val)>,
+        new: Option<(u32, &'s Val)>,
+        xid: Xid,
+        written: &mut Held<Vec<Written<'s>>>,
+    ) -> Result<(), Error> {
+        let r = self.rel(rel);
+        let pager = &self.db.pager;
+        let target = |(c, row): &(u32, &Val)| self.writable(rel, key, *c, row);
+        match (&old, &new) {
+            (None, None) => {}
+            (Some(old), None) => {
+                let (c, tid) = target(old)?;
+                let heap = r.ctors[c as usize].heap;
+                let mut undo = self.undo.borrow_mut();
+                let room = undo.room(1)?;
+                let old = (self.heap(heap).delete(pager, tid, xid)).record(room, heap, heap)?;
+                drop(undo);
+                self.superseded(old)?;
+            }
+            (Some(old @ (c, _)), Some((d, n))) if c == d => {
+                let (c, tid) = target(old)?;
+                let heap = r.ctors[c as usize].heap;
+                let row = self.stored(heap, n)?;
+                let h = self.heap(heap);
+                let mut judge = self.db.session.txns.judge_now(pager, h.id().0);
+                let mut undo = self.undo.borrow_mut();
+                let room = undo.room(2)?;
+                let (up, old) = h
+                    .update_pruning(pager, tid, xid, &row, r.heap_only_fields(c), &mut judge)
+                    .record(room, heap, heap)?;
+                drop(undo);
+                self.superseded(old)?;
+                self.inserted_into(heap)?;
+                if !up.heap_only {
+                    written.push(Written {
+                        rel,
+                        ctor: c,
+                        tid: up.tid,
+                        row: n,
+                    })?;
+                }
+            }
+            (Some(old), Some((d, n))) => {
+                let (c, tid) = target(old)?;
+                let to = r.ctors[*d as usize].heap;
+                let row = self.stored(to, n)?;
+                let from = r.ctors[c as usize].heap;
+                let into = self.heap(to);
+                let mut judge = self.db.session.txns.judge_now(pager, into.id().0);
+                let mut undo = self.undo.borrow_mut();
+                let room = undo.room(2)?;
+                let (at, old) = self
+                    .heap(from)
+                    .retag_pruning(pager, tid, xid, into, &row, &mut judge)
+                    .record(room, from, to)?;
+                drop(undo);
+                self.superseded(old)?;
+                self.inserted_into(to)?;
+                written.push(Written {
+                    rel,
+                    ctor: *d,
+                    tid: at,
+                    row: n,
+                })?;
+            }
+            (None, Some((d, n))) => written.push(self.insert(rel, *d, n, xid)?)?,
         }
         Ok(())
     }

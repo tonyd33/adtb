@@ -8,7 +8,7 @@ use adtb_lang::schema::{Committed, Schema, TypeDefKind};
 use adtb_lang::types::{DenialIdx, RelId, Ty, TypeId};
 
 use crate::exec::types::ctors;
-use crate::exec::{self, Held, Val};
+use crate::exec::{self, Held, Shared, Val};
 use crate::plan::{self, Catalog};
 use crate::runtime::Runtime;
 
@@ -193,7 +193,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 continue;
             }
             for (delta, program) in &d.deltas {
-                let params: Vec<(Var, Held<Val>)> = delta
+                let params: Vec<(Var, Shared)> = delta
                     .inputs
                     .iter()
                     .map(|i| Ok((i.var, self.input_rows(i, set)?)))
@@ -240,23 +240,14 @@ impl<R: Runtime> Stmt<'_, R> {
         Ok(())
     }
 
-    /// Returns the rows of change set `set` that `input` names, held in the statement's rows'
-    /// grant.
-    fn input_rows(&self, input: &Input, set: &ChangeSet) -> Result<Held<Val>, Error> {
-        let mut out: Held<BTreeSet<Val>> = self.rows_in().held();
-        for c in &input.ctors {
-            if input.part != Part::Deleted {
-                for v in ChangeSet::of(set.plus(), input.rel, *c) {
-                    out.insert(v.clone())?;
-                }
-            }
-            if input.part != Part::Inserted {
-                for v in ChangeSet::of(set.minus(), input.rel, *c) {
-                    out.insert(v.clone())?;
-                }
-            }
-        }
-        Ok(out.into_value()?)
+    /// Returns the rows of change set `set` that `input` names, sharing the change set's charge.
+    fn input_rows(&self, input: &Input, set: &ChangeSet) -> Result<Shared, Error> {
+        let plus = (input.part != Part::Deleted).then_some(set.plus());
+        let minus = (input.part != Part::Inserted).then_some(set.minus());
+        let rows = input.ctors.iter().flat_map(|c| {
+            (plus.into_iter().chain(minus)).flat_map(move |r| ChangeSet::of(r, input.rel, *c))
+        });
+        Ok(self.rows_in().share(rows.cloned())?)
     }
 
     /// Check the references and newtype domains of every row `set` inserts.

@@ -1439,7 +1439,7 @@ add constraint named =
   select u
 ";
         let db = Database::open_in(rt, NAME, &Log::new([log]), &options).unwrap();
-        let name = "n".repeat(1000);
+        let name = "n".repeat(2000);
         for i in 0..20 {
             run_text(
                 &db,

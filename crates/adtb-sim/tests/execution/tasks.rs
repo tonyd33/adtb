@@ -169,8 +169,8 @@ fn open_under<R: Runtime>(rt: &R, rows: usize, workers: usize, memory: Option<u6
     )
     .unwrap();
     text(&db, "insert counters { value: 0 }");
-    for lo in (0..rows).step_by(FILL) {
-        text(&db, &fill(lo, rows.min(lo + FILL)));
+    if rows > 0 {
+        text(&db, &fill(rows));
     }
     let owner = db.role_authority().session("owner").unwrap();
     seen.rows.store(0, Ordering::Release);
@@ -182,13 +182,10 @@ fn open_under<R: Runtime>(rt: &R, rows: usize, workers: usize, memory: Option<u6
     }
 }
 
-/// The most items one write of [`open_under`] inserts, few enough to fit each grant it is given.
-const FILL: usize = 250;
-
-/// Returns the write that inserts the items numbered `lo..hi`, as products of digits.
-fn fill(lo: usize, hi: usize) -> String {
+/// Returns the write that inserts the items numbered `0..rows`, as products of digits.
+fn fill(rows: usize) -> String {
     let digits = "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]";
-    let places = hi.to_string().len();
+    let places = rows.to_string().len();
     let vars: Vec<String> = (0..places).map(|p| format!("d{p}")).collect();
     let from = vars
         .iter()
@@ -201,7 +198,7 @@ fn fill(lo: usize, hi: usize) -> String {
         .map(|(p, v)| format!("{v} * {}", 10usize.pow(p as u32)))
         .collect::<Vec<_>>()
         .join(" + ");
-    format!("insert items from (from {from} where {n} >= {lo} and {n} < {hi} select {{ n: {n} }})")
+    format!("insert items from (from {from} where {n} < {rows} select {{ n: {n} }})")
 }
 
 fn text<R: Runtime>(db: &Database<R>, t: &str) -> Vec<Vec<Value>> {
@@ -1442,7 +1439,7 @@ fn a_concurrent_close_returns_once_the_file_is_released() {
     let opts = options(&rt, &seen, &gate, 1);
     let log = Log::new([SCHEMA]);
     let db = Database::open(&path, &log, &opts).unwrap();
-    text(&db, &fill(0, 10));
+    text(&db, &fill(10));
     let owner = db.role_authority().session("owner").unwrap();
     let hold = db
         .role_authority()

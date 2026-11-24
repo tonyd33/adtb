@@ -34,7 +34,7 @@ pub use class::Class;
 pub use host::admit;
 pub use host::{HostBody, HostError, Hosts};
 pub use ir::{Bound, Program, compile};
-pub use memory::{Arena, Budget, Footprint, Grant, Held, Released, Requested, Ticket};
+pub use memory::{Arena, Budget, Footprint, Grant, Held, Released, Requested, Shared, Ticket};
 pub use prim::print;
 #[cfg(any(test, feature = "testing"))]
 pub use reads::Reads;

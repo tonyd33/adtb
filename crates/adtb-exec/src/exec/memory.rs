@@ -484,6 +484,46 @@ impl Grant {
     }
 }
 
+impl Grant {
+    /// Returns the set of `vals`, each charged only its own size.
+    ///
+    /// Preconditions: each of `vals` shares its memory with a value held in this grant while the
+    /// set lives.
+    pub fn share(
+        self: &Arc<Grant>,
+        vals: impl IntoIterator<Item = super::Val>,
+    ) -> Result<Shared, Error> {
+        let mut arena = self.arena();
+        let mut set = BTreeSet::new();
+        for v in vals {
+            arena.grow(size_of::<super::Val>() + 2 * size_of::<usize>())?;
+            if !set.insert(v) {
+                arena.release(size_of::<super::Val>() + 2 * size_of::<usize>());
+            }
+        }
+        Ok(Shared {
+            set: super::Val::set(set),
+            _arena: arena,
+        })
+    }
+}
+
+/// A set of values that share their memory with values held elsewhere in the grant, charged
+/// only their own sizes.
+#[derive(Debug)]
+pub struct Shared {
+    set: super::Val,
+    _arena: Arena,
+}
+
+impl std::ops::Deref for Shared {
+    type Target = super::Val;
+
+    fn deref(&self) -> &super::Val {
+        &self.set
+    }
+}
+
 impl<C> std::ops::Deref for Held<C> {
     type Target = C;
 
@@ -612,6 +652,13 @@ impl<T: Ord + Footprint> Held<BTreeSet<T>> {
 }
 
 impl<K: Ord + Footprint, V: Footprint> Held<BTreeMap<K, V>> {
+    /// Remove `k`, returning its charge to the grant. Returns its value.
+    pub fn remove(&mut self, k: &K) -> Option<V> {
+        let v = self.items.remove(k)?;
+        self.arena.release(k.footprint() + v.footprint());
+        Some(v)
+    }
+
     /// Apply `f` to the value `k` maps to, or to a default one, charging the grant for what the
     /// entry grows by before it is held and returning what it shrinks by. Fails with the
     /// statement limit, dropping the entry, when the grant has too little left.
