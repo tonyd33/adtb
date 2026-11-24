@@ -75,7 +75,6 @@ use crate::vacuum;
 
 pub use adtb_lang::schema::Stage;
 
-pub use adtb_store::panic_text;
 pub use broken::{Broken, TermKind, detail};
 #[cfg(any(test, feature = "testing"))]
 pub use check::idle_deltas_checked;

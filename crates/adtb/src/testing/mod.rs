@@ -35,7 +35,8 @@ pub use crate::storage::{
     Quarantine, Shape, manifest_hash,
 };
 pub use crate::vacuum::Charged;
-pub use crate::write::{idle_deltas_checked, panic_text};
+pub use crate::write::idle_deltas_checked;
+pub use adtb_store::panic_text;
 pub use adtb_store::testing::{Probe, Records, TxnProbe};
 pub use control::{PageHold, VacuumHold};
 pub use object::{CommitLogPages, Object};

@@ -1,0 +1,8 @@
+-- catch_unwind: a call that catches a panic.
+
+main = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"\bcatch_unwind$";
+  return c;
+} | arr range;

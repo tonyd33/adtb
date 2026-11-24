@@ -3,7 +3,6 @@
 //! due.
 
 use std::collections::BTreeSet;
-use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +17,7 @@ use crate::exec::{self, F64};
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
 use crate::storage::{Pid, RetainedLog};
 use crate::verify::Mended;
-use crate::write::{self, Due, Found, panic_text};
+use crate::write::{self, Due, Found};
 
 use super::settings::Settings;
 use super::verify::{Cursor, Job, Verifier};
@@ -298,8 +297,7 @@ impl<R: Runtime> Background<R> {
         while io.poll().is_some() {}
     }
 
-    /// Run the worker. A panic in its read of a page ends it and leaves a `Structure` finding, the
-    /// engine running. Any other panic crashes the process.
+    /// Run the worker. A panic in it crashes the process.
     fn run(&self) {
         let mends = self.control.lock(&self.rt).mends;
         if mends {
@@ -340,22 +338,7 @@ impl<R: Runtime> Background<R> {
             }
             let current = pass.as_mut().expect("a pass began above");
             let page = cursor.next.expect("a running pass has a next page").0;
-            let done = match self.read_page(current, page) {
-                Ok(done) => done,
-                Err(text) => {
-                    current.found.insert(Found::Structure {
-                        at: format!("the background worker stopped: {text}"),
-                    });
-                    self.verifier.keep_scrub(
-                        &self.schema,
-                        self.findings,
-                        current.stamp,
-                        &current.found,
-                        true,
-                    );
-                    return;
-                }
-            };
+            let done = self.read_page(current, page);
             cursor.next = (!done).then_some(Pid(page + 1));
             if done {
                 pass = None;
@@ -411,17 +394,15 @@ impl<R: Runtime> Background<R> {
     }
 
     /// Check page `page`, mark and keep what it newly finds and map the damage recorded, and, at
-    /// the end of the file, map it again and end the pass. Returns whether the pass has ended, or the text of a panic in the read.
-    fn read_page(&self, pass: &mut Pass<'_, R>, page: u64) -> Result<bool, String> {
+    /// the end of the file, map it again and end the pass. Returns whether the pass has ended.
+    fn read_page(&self, pass: &mut Pass<'_, R>, page: u64) -> bool {
         let v = &self.verifier;
         if page < pass.end {
             let fail = self.control.lock(&self.rt).fail.take();
-            let read = caught(|| {
-                if let Some(text) = fail {
-                    panic!("{text}");
-                }
-                v.db.scrub_page(Pid(page), &pass.log)
-            })?;
+            if let Some(text) = fail {
+                panic!("{text}");
+            }
+            let read = v.db.scrub_page(Pid(page), &pass.log);
             let mut found: BTreeSet<Found> = read
                 .into_iter()
                 .filter(|f| !pass.found.contains(f))
@@ -454,7 +435,7 @@ impl<R: Runtime> Background<R> {
                 pass.resumed,
             );
         }
-        Ok(ended)
+        ended
     }
 
     fn save(&self, cursor: Cursor, saved: &mut Cursor) {
@@ -488,11 +469,6 @@ impl<R: Runtime> Background<R> {
 
 /// Returns what `body` returns, or the text of its panic. A fatal I/O error, and a payload with no
 /// text, which is the runtime's own unwinding, go on up.
-fn caught<T>(body: impl FnOnce() -> T) -> Result<T, String> {
-    catch_unwind(AssertUnwindSafe(body))
-        .map_err(|payload| panic_text(&*payload).unwrap_or_else(|| resume_unwind(payload)))
-}
-
 fn done(page: u64, end: u64) -> f64 {
     if end == 0 {
         return 0.0;

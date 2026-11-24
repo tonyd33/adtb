@@ -282,13 +282,8 @@ change of either setting wakes the worker.
 A pass has a `Verify` row in `sys::jobs` from its first page to its last,
 in this process, and none between passes.
 
-A panic in the worker's read of a page and its judgement of that page ends
-the worker for this process and leaves a `Structure` finding in group
-`scrub`, beside what the pass found so far, the engine running. On a
-database quarantined whole the rows stay in memory. Any other panic of the
-worker, a write of kept rows or a mark above all, and a fatal I/O error
-anywhere, is not caught: it crashes the process, as on every thread. The
-worker is a daemon
+A panic in the worker, and a fatal I/O error anywhere, is not caught: it
+crashes the process, as on every thread. The worker is a daemon
 of the runtime (runtime.md), so a simulated run neither waits for it nor
 counts its timers against a deadlock.
 

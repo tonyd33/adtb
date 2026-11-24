@@ -1065,102 +1065,30 @@ fn a_budget_too_small_to_compute_reads_little() {
 }
 
 #[test]
-fn a_panic_in_the_worker_leaves_a_finding_and_the_engine_running() {
+fn a_panic_in_the_workers_read_ends_the_run_with_no_call_after_it() {
     let mut sim = Sim::new(50, Config::default());
-    finished(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
-        insert(&db, 0, 3);
-        set_io(&db, "0.001");
-        set_interval(&db, "Some { value: 0s }");
-        while !in_pass(&db) {
-            nap(&rt, Duration::from_millis(1));
-        }
-        db.testing()
-            .plant(Plant::Panic {
-                site: Site::BackgroundRead,
-                message: "boom".into(),
-            })
-            .unwrap();
-        nap(&rt, Duration::from_secs(1));
-        let rows = found(&db);
-        assert_eq!(1, rows.len(), "{rows:?}");
-        assert!(
-            rows[0].starts_with("Structure") && rows[0].contains("boom"),
-            "{rows:?}"
-        );
-        assert!(!in_pass(&db), "the job row went with the worker");
-        insert(&db, 3, 4);
-        assert_eq!(4, api::sorted(api::result(&db, USERS)).len());
-        set_interval(&db, "Some { value: 1h }");
-        db.close().expect("the close");
-    });
-}
-
-#[test]
-fn a_lookalike_fatal_message_is_an_ordinary_worker_failure() {
-    let mut sim = Sim::new(51, Config::default());
-    finished(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
-        set_interval(&db, "Some { value: 0s }");
-        db.testing()
-            .plant(Plant::Panic {
-                site: Site::BackgroundRead,
-                message: "fatal I/O error: write: a test".into(),
-            })
-            .unwrap();
-        nap(&rt, Duration::from_secs(1));
-        assert_eq!(1, found(&db).len());
-        assert_eq!(
-            vec![r#""the background worker stopped: fatal I/O error: write: a test""#],
-            api::query(
-                &db,
-                "from f in sys::verify_findings.Structure select f.where"
-            )
-        );
-        assert!(!in_pass(&db));
-        api::results(&db, r#"insert users { id: users.key(1), name: "alive" }"#);
-        assert_eq!(
-            vec![r#""alive""#],
-            api::query(&db, "from u in users select u.name")
-        );
-        db.close().expect("the close");
-    });
-}
-
-#[test]
-fn a_caught_panic_keeps_what_the_pass_found_beside_its_finding_across_a_reopen() {
-    let mut sim = Sim::new(52, Config::default());
-    let two_rows = |rows: Vec<String>| {
-        assert_eq!(2, rows.len(), "{rows:?}");
-        assert!(rows.iter().any(|r| r.starts_with("Checksum")), "{rows:?}");
-        assert!(
-            rows.iter()
-                .any(|r| r.starts_with("Structure") && r.contains("boom")),
-            "{rows:?}"
-        );
-    };
-    finished(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
-        set_interval(&db, "Some { value: 1h }");
-        insert(&db, 0, 3);
-        flush(&db);
-        rot(&rt, users_page(&db));
-        nap(&rt, Duration::from_secs(3600 + 60));
-        assert_eq!(1, found(&db).len(), "the rot is found first");
-        db.testing()
-            .plant(Plant::Panic {
-                site: Site::BackgroundRead,
-                message: "boom".into(),
-            })
-            .unwrap();
-        nap(&rt, Duration::from_secs(3600 + 60));
-        two_rows(found(&db));
-        db.close().expect("the close");
-    });
-    finished(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
-        two_rows(found(&db));
-    });
+    let after = AtomicBool::new(false);
+    let run = catch_unwind(AssertUnwindSafe(|| {
+        sim.run(|rt| {
+            let db = open::opened(&rt, FILE, &app(), &unvacuumed());
+            insert(&db, 0, 3);
+            set_interval(&db, "Some { value: 0s }");
+            db.testing()
+                .plant(Plant::Panic {
+                    site: Site::BackgroundRead,
+                    message: "boom".into(),
+                })
+                .unwrap();
+            nap(&rt, Duration::from_secs(1));
+            after.store(true, Ordering::Relaxed);
+        })
+    }));
+    let payload = run.expect_err("the panic ends the run");
+    assert_eq!(
+        Some("boom".to_owned()),
+        adtb::testing::panic_text(&*payload)
+    );
+    assert!(!after.load(Ordering::Relaxed), "a call ran past the panic");
 }
 
 #[test]
@@ -1204,41 +1132,7 @@ fn a_panic_in_a_kept_write_of_the_worker_ends_the_run_with_no_call_after_it() {
 }
 
 #[test]
-fn a_caught_panic_on_a_database_marked_whole_stays_in_memory() {
-    let mut sim = Sim::new(54, Config::default());
-    finished(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
-        set_interval(&db, "Some { value: 10min }");
-        insert(&db, 0, 3);
-        let stray = db
-            .testing()
-            .plant(Plant::Orphan {
-                kind: PageKind::HeapSlotted,
-                owner: 7,
-            })
-            .expect("a page no relation holds")
-            .page()
-            .unwrap();
-        flush(&db);
-        rot(&rt, stray);
-        nap(&rt, Duration::from_secs(660));
-        assert!(db.testing().probe().marked(Quarantine::Database));
-        assert_eq!(1, db.testing().held_findings());
-        let before = db.testing().probe().logged_commits();
-        db.testing()
-            .plant(Plant::Panic {
-                site: Site::BackgroundRead,
-                message: "boom".into(),
-            })
-            .unwrap();
-        nap(&rt, Duration::from_secs(660));
-        assert_eq!(2, db.testing().held_findings());
-        assert_eq!(before, db.testing().probe().logged_commits());
-    });
-}
-
-#[test]
-fn a_real_file_survives_a_tiny_budget_and_a_panic_in_the_worker() {
+fn a_real_file_scrubs_under_a_tiny_budget_and_serves_calls() {
     let dir = scratch("survive");
     let path = dir.join("db");
     let db = Database::open(&path, &app(), &host_options()).expect("the file opens");
@@ -1251,16 +1145,6 @@ fn a_real_file_survives_a_tiny_budget_and_a_panic_in_the_worker() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(Vec::<String>::new(), text(&db, FINDINGS));
-    db.testing()
-        .plant(Plant::Panic {
-            site: Site::BackgroundRead,
-            message: "boom".into(),
-        })
-        .unwrap();
-    while db.testing().held_findings() == 0 {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(text(&db, FINDINGS)[0].contains("boom"));
     text(&db, r#"insert users { id: users.key(1), name: "n" }"#);
     db.close().expect("the close");
 }
