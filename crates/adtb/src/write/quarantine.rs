@@ -323,15 +323,6 @@ impl<R: Runtime> Database<R> {
             .collect()
     }
 
-    /// Fail as [`admit_database`](Database::admit_database) does, attempting the failed read of
-    /// an unarmed open once more first.
-    pub fn admit_call(&self) -> Result<(), Error> {
-        if let Some(why) = self.pager.rearm() {
-            return Err(Error::Unarmed(why));
-        }
-        self.admit_database()
-    }
-
     /// Returns the refusal [`admit_database`](Database::admit_database) gives, as
     /// [`fail`](Database::fail) maps it, without mapping the damage recorded. `None` when the
     /// database is not quarantined.
@@ -339,11 +330,18 @@ impl<R: Runtime> Database<R> {
         self.admit_database().err().map(Mapped)
     }
 
-    /// Fail if the open is unarmed or the database is quarantined.
-    pub fn admit_database(&self) -> Result<(), Error> {
-        if let Some(why) = self.pager.unarmed() {
-            return Err(Error::Unarmed(why));
+    /// Fail if the open is still unarmed once the failed read is attempted again.
+    fn admit_armed(&self) -> Result<(), Error> {
+        match self.pager.rearm() {
+            Some(why) => Err(Error::Unarmed(why)),
+            None => Ok(()),
         }
+    }
+
+    /// Fail if the open is unarmed or the database is quarantined, attempting the failed read of
+    /// an unarmed open once more first.
+    pub fn admit_database(&self) -> Result<(), Error> {
+        self.admit_armed()?;
         if self.pager.database_marked() {
             return Err(Error::admitted(Quarantine::Database));
         }
@@ -353,9 +351,7 @@ impl<R: Runtime> Database<R> {
     /// Fail if the open is unarmed, or vacuum of `rel` would write a quarantined constructor heap
     /// or index.
     pub(super) fn admit_vacuum(&self, rel: &Rel) -> Result<(), Error> {
-        if let Some(why) = self.pager.unarmed() {
-            return Err(Error::Unarmed(why));
-        }
+        self.admit_armed()?;
         let marks = self.pager.quarantined();
         let heaps = rel
             .ctors

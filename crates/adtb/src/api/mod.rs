@@ -1028,7 +1028,7 @@ impl<R: Runtime> Engine<R> {
 
     /// Returns the failure of every call but `verify` and `dump` on a database quarantined whole.
     fn refusal(&self) -> Option<Error> {
-        let refused = self.db.admit_call().err()?;
+        let refused = self.db.admit_database().err()?;
         Some(self.write_error(TxnId(0), refused))
     }
 

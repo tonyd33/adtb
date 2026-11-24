@@ -1,6 +1,9 @@
 use adtb::runtime::{IoError, OpKind};
 use adtb::testing::{Knobs, PageKind, Pid, page};
-use adtb::{CallOptions, Error, FatalReason, Log, OpenOptions};
+use adtb::{
+    CallOptions, Error, FatalReason, Log, OpenError, OpenOptions, Pins, Registration, TaskOptions,
+    TxnOptions,
+};
 use adtb_sim::{Action, Config, Match, Outcome, Plan, Sim, SimRuntime, Submitted};
 use adtb_simkit::{api, open};
 use adtb_testkit::damage::DataFile;
@@ -13,6 +16,11 @@ add type User = { id: Key users, name: Text }
 add relation users : User key id generate sequence
 ";
 
+const MIGRATION: &str = "module app
+add type Note = { id: Key notes, text: Text }
+add relation notes : Note key id generate sequence
+";
+
 const FILE: &str = "app.adt";
 const LOG_DIR: &str = "app.adt-log";
 const DATA: DataFile = DataFile::new(FILE, 8192);
@@ -22,6 +30,10 @@ const LATE: &str = "this open read pages it could not check, so the database mus
 fn options() -> OpenOptions {
     OpenOptions {
         testing: Knobs::default().with_segment_size(8192),
+        registrations: vec![Registration::new(
+            "reads",
+            "import app\nquery names () -> Set Text = from u in users select u.name\n",
+        )],
         ..open::options(2)
     }
 }
@@ -347,4 +359,82 @@ fn a_read_failing_while_the_open_arms_fails_each_call_as_storage_until_a_reopen(
             "{what}: no case of {of} left the open unarmed with a call naming the failure: {reached:?}"
         );
     }
+}
+
+/// An entry a client calls first on an open left unarmed.
+#[derive(Clone, Copy, Debug)]
+enum Entry {
+    Query,
+    Begin,
+    Backup,
+    Registered,
+    Task,
+}
+
+const ENTRIES: [Entry; 5] = [
+    Entry::Query,
+    Entry::Begin,
+    Entry::Backup,
+    Entry::Registered,
+    Entry::Task,
+];
+
+/// Returns what `entry` answers on `db`, its rows dropped.
+fn entered(db: &adtb::Database<SimRuntime>, entry: Entry) -> Result<(), Error> {
+    let opts = CallOptions::default();
+    match entry {
+        Entry::Query => db.query_text(NAMES, &[], &opts).map(drop),
+        Entry::Begin => db.begin(&TxnOptions::default()).map(drop),
+        Entry::Backup => db.query_text("backup to \"b\"", &[], &opts).map(drop),
+        Entry::Registered => db.registered("reads")?.call(1, &[], &opts).map(drop),
+        Entry::Task => {
+            let authority = db.role_authority();
+            let owner = authority.session("owner")?;
+            let bound = authority.bind(&owner, "reads", &Pins::default())?;
+            bound
+                .submit(1, Vec::new(), TaskOptions::default())
+                .map(drop)
+        }
+    }
+}
+
+#[test]
+fn every_entry_retries_the_failed_read_and_an_open_given_migrations_fails_naming_it() {
+    crash::silence_fatal_panics();
+    let files = made();
+    let list = pages_of(&files, PageKind::DamageList)[0];
+    let failing = || Plan::new().rule(reads_of(list), fail());
+    for entry in ENTRIES {
+        let mut sim = Sim::with_files(7, Config::default(), files.clone());
+        let got = process::run(&mut sim, |rt| {
+            rt.plan(failing());
+            let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
+            rt.plan(Plan::new());
+            let got = entered(&db, entry);
+            db.close().expect("the database closes");
+            got
+        });
+        assert_eq!(
+            Err(storage(LATE)),
+            got,
+            "{entry:?}: the first call after the read clears tries it again"
+        );
+    }
+    let mut sim = Sim::with_files(7, Config::default(), files);
+    let got = process::run(&mut sim, |rt| {
+        rt.plan(failing());
+        let opened = adtb::Database::open_in(rt, FILE, &Log::new([APP, MIGRATION]), &options());
+        opened.map(drop).map_err(|e| match e {
+            OpenError::Io(e) => (e.kind(), e.to_string()),
+            e => panic!("the open fails as I/O: {e:?}"),
+        })
+    });
+    assert_eq!(
+        Err((
+            std::io::ErrorKind::Other,
+            format!("page {} is unreadable", list.0)
+        )),
+        got,
+        "an open given migrations fails naming the read"
+    );
 }
