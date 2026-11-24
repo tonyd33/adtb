@@ -1,0 +1,8 @@
+# A version of the log with no row in catalog::migrations is a finding of verify.
+use catalog-running
+
+restamp migration 1 none
+
+probe holding verify
+----
+Structure { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.014588Z, where: "catalog::migrations version 1: no row, the log hashes 2e5a8e0ff0a1017e0af0e618c816bdaca98d01bfe40265520d52b6cd48a59662" }

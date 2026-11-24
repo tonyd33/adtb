@@ -21,7 +21,7 @@ use adtb_lang::translate::{
 };
 use adtb_lang::types::Ty;
 
-use crate::catalog::{self, Catalog, VersionHash};
+use crate::catalog::{self, Catalog};
 use crate::exec::{Priority, Val};
 use crate::runtime::Runtime;
 
@@ -34,7 +34,7 @@ use super::pinned;
 use super::reads::Reads;
 use super::server::{holds_monitor, monitored};
 use super::settings::Settings;
-use super::stated;
+use super::stated::{self, Hashes};
 use super::text::{DynRows, Normal, Prepared, rows};
 use super::txn::{AdHocTransaction, Committed, TxnCallOptions};
 use super::{CallOptions, Database, Engine, OWNER_ID, OpenError};
@@ -481,16 +481,12 @@ pub(super) fn role_name(
 pub(super) struct Over<'a> {
     pub(super) source: &'a Source,
     pub(super) compiled: &'a Compiled,
-    /// The hash of the version `source` is at.
-    hash: &'a VersionHash,
+    /// The hash of each version up to the one `source` is at.
+    hash: &'a Hashes,
 }
 
 impl<'a> Over<'a> {
-    pub(super) fn new(
-        source: &'a Source,
-        compiled: &'a Compiled,
-        hash: &'a VersionHash,
-    ) -> Over<'a> {
+    pub(super) fn new(source: &'a Source, compiled: &'a Compiled, hash: &'a Hashes) -> Over<'a> {
         Over {
             source,
             compiled,
@@ -510,7 +506,7 @@ pub(super) fn settled(compiled: Compiled<Schema>) -> Result<Compiled, RejectReas
 struct Pin {
     source: Source,
     compiled: Compiled,
-    hash: VersionHash,
+    hash: Hashes,
 }
 
 impl Pin {
@@ -635,12 +631,15 @@ fn pinned_within(c: &Checked, over: &Over<'_>) -> Result<(), Error> {
 
 /// Refuse an open whose bundles pin a version before the file's and would read a constructor
 /// enabled since. A bundle that does not check at its pin is left for registration to refuse.
-pub(super) fn downgrade(catalog: &Catalog, regs: &[Registration]) -> Result<(), OpenError> {
-    let hash = catalog.version_hash();
+pub(super) fn downgrade(
+    catalog: &Catalog,
+    hash: &Hashes,
+    regs: &[Registration],
+) -> Result<(), OpenError> {
     let now = Over {
         source: catalog.source(),
         compiled: catalog.compiled(),
-        hash: &hash,
+        hash,
     };
     let version = catalog.source().version();
     for r in regs {
@@ -687,11 +686,7 @@ fn pinned(now: &Over<'_>, h: &Header, pins: &mut Pins) -> Result<Option<Arc<Pin>
     }
     let at = now.source.version();
     let hashed = |over: &Over<'_>| {
-        let hash = over
-            .hash
-            .get()
-            .map_err(|e| Error::internal(Broken::CatalogError(e)))?;
-        let hash = stated::hex(&hash);
+        let hash = stated::hex(&over.hash.get()?);
         if hash == h.hash {
             return Ok(());
         }
@@ -727,7 +722,8 @@ fn stale(now: &Over<'_>, c: &Checked) -> Result<Option<String>, Error> {
     catalog::stale(now.source, now.compiled.committed(), &reader).map_err(catalog_error)
 }
 
-fn catalog_error(e: catalog::Error) -> Error {
+/// Returns the refusal of a registration whose catalog read or change fails with `e`.
+pub(super) fn catalog_error(e: catalog::Error) -> Error {
     match e {
         catalog::Error::Refused(why) | catalog::Error::Unaccepted(_, why) => {
             Error::invalid(why.join("\n"))
@@ -749,6 +745,7 @@ pub(super) struct Live {
 /// pins, its owner as `stored` records it. Returns those bundles.
 pub(super) fn readers(
     catalog: &mut Catalog,
+    hash: &Hashes,
     regs: &[Registration],
     live: &BTreeSet<String>,
     stored: &Stored,
@@ -765,11 +762,10 @@ pub(super) fn readers(
             bundle: r.name.clone(),
             reason,
         };
-        let hash = catalog.version_hash();
         let now = Over {
             source: catalog.source(),
             compiled: &compiled,
-            hash: &hash,
+            hash,
         };
         let (c, source) = match pinned(&now, h, &mut pins).map_err(refused)? {
             Some(pin) => (checked(&pin.over(), r), pin.source.clone()),

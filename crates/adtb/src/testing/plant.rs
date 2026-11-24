@@ -67,8 +67,11 @@ pub enum Plant {
     /// [`Planted::Refused`].
     FailOn(PageError),
     /// Replace the hash the row of migration `version` of `catalog::migrations` holds by `hash`,
-    /// as one committed catalog transaction.
-    Restamp { version: u64, hash: [u8; 32] },
+    /// or delete the row when `hash` is `None`, as one committed catalog transaction.
+    Restamp {
+        version: u64,
+        hash: Option<[u8; 32]>,
+    },
 }
 
 /// What a plant answers.
@@ -174,7 +177,7 @@ impl<R: Runtime> Testing<'_, R> {
         Ok(Planted::Done)
     }
 
-    fn restamp(self, version: u64, hash: [u8; 32]) -> Result<(), Failed> {
+    fn restamp(self, version: u64, hash: Option<[u8; 32]>) -> Result<(), Failed> {
         let (w, pager) = (self.db.tested_db(), self.db.tested_pager());
         self.db
             .tested_catalog()

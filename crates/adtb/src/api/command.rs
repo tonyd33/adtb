@@ -359,7 +359,7 @@ pub(super) fn reindexed(compiled: &Compiled, rel: RelId, index: Option<usize>) -
 impl<R: Runtime> Engine<R> {
     /// Returns the folded schema: its version and hash, then each module's declarations.
     fn printed_schema(&self) -> Result<String, write::Error> {
-        let hash = self.hash.get()?;
+        let hash = self.hash.stored().get()?;
         let hash: String = hash.iter().map(|b| format!("{b:02x}")).collect();
         let mut out = format!("-- version {} hash {hash}\n", self.source.version());
         let mut module = None;

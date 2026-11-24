@@ -20,3 +20,9 @@ bundle web-1.0 pins 1 edition "2026-10"
   query names () -> Set Text = from u in users select u.name
 
 reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Invalid { detail: "bundle web-1.0 pins version 1 with hash 2e5a8e0ff0a1017e0af0e618c816bdaca98d01bfe40265520d52b6cd48a59662, and the log's version 1 has hash ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" } } }
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query names () -> Set Text = from u in users select u.name
+
+reopen refused RegistrationRefused { bundle: "web-2.0", reason: Rejected { reason: Invalid { detail: "bundle web-2.0 pins version 2 with hash a209f34fc6e7e70237f95210d1991acdbfff9e9715081f05d075c5261df8ae16, and the log's version 2 has hash d9c5c5ca26217ffc7a31e86efdc0a28a6ec109bce14897298af1c57010f0a89c" } } }

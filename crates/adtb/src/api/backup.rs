@@ -11,7 +11,7 @@ use crate::runtime::Runtime;
 use crate::storage::{self, BackupError, BackupRun, Envelope, Manifest, Passphrase, Proved};
 use crate::write::{self, Bounds, Local, Stop, Txn};
 
-use super::cause::{Broken, Failure};
+use super::cause::Failure;
 use super::error::{FatalReason, RejectReason};
 use super::statements::Refusal;
 use super::text::{DynRows, Prepared, rows};
@@ -403,11 +403,7 @@ impl<R: Runtime> Engine<R> {
     }
 
     pub(super) fn envelope(&self) -> Result<Envelope, Error> {
-        let hash = self
-            .hash
-            .get()
-            .map_err(|e| Error::internal(Broken::CatalogError(e)))?;
-        Ok(self.envelope_of(hash))
+        Ok(self.envelope_of(self.hash.get()?))
     }
 
     /// Returns the envelope of the version the database is at, whose hash is `hash`.

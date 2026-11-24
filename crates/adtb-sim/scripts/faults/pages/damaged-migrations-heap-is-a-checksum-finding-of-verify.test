@@ -1,0 +1,12 @@
+# Damage on the heap of catalog::migrations is a Checksum finding of verify, as on any catalog
+# heap, and the log check that reads the heap adds nothing.
+use dump-app
+
+reopen
+
+damage heap catalog::migrations Migration
+
+probe holding verify
+----
+Checksum { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.403932Z, where: "heap catalog::migrations Migration: Checksum" }
+Structure { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.403932Z, where: "the database: quarantined whole, so the findings of this run are not kept" }

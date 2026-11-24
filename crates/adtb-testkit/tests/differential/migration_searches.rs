@@ -6,8 +6,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adtb::testing::chained_hash;
+use adtb::{Database, Log, OpenOptions, Registration};
 use adtb_lang::evolve::{ResolvedOp, Source};
 use adtb_lang::ids::Space;
 use adtb_lang::lex::{Kw, Tok, lex};
@@ -23,7 +25,7 @@ use adtb_testkit::profile;
 use adtb_testkit::schemas::{self, Kind, Migration, Rows};
 
 use super::migrations::{held, opened, reference, stored_hash};
-use super::{panic_message, seeds_of};
+use super::{panic_message, process, seeds_of};
 
 #[path = "migration_searches/coverage.rs"]
 mod coverage;
@@ -180,12 +182,25 @@ impl Walk {
 
     /// Returns why the hash the engine stored for a version of the log, the hash chained over
     /// the operators each migration resolved to as it applied, and the one chained over their
-    /// resolution on replay `folded` differ, or why the last differs from the version hash.
-    fn hashes(&self, folded: &Source) -> Option<String> {
+    /// resolution on replay `folded` differ, why the engine refuses a bundle pinning a version
+    /// with the hash chained on replay, or why the last differs from the version hash. Counts
+    /// each pinned version the engine judged in `pinned`.
+    fn hashes(&self, folded: &Source, pinned: &AtomicUsize) -> Option<String> {
         let schema = |s: &Source| s.check().map(|c| c.schema().clone()).ok();
         let (Some(applied), Some(replayed)) = (schema(&self.source), schema(folded)) else {
             return Some("the source does not check".into());
         };
+        let (mut a, mut r) = ([0; 32], [0; 32]);
+        let mut chained = Vec::new();
+        for (n, at) in (1..).zip(&self.resolved) {
+            a = chained_hash(&applied, a, at);
+            let ops = match folded.resolved(n) {
+                Ok(ops) => ops,
+                Err(ds) => return Some(format!("migration {n} does not resolve: {ds:?}")),
+            };
+            r = chained_hash(&replayed, r, &ops);
+            chained.push((a, r));
+        }
         let mut sim = Sim::new(self.seed, Config::default());
         let role = opened(&mut sim, &self.log[..1], |db| {
             db.role_authority().create_role(schemas::ROLE)
@@ -202,21 +217,18 @@ impl Walk {
             Ok(s) => s,
             Err(e) => return Some(format!("the engine does not open the log: {e:?}")),
         };
-        let (mut a, mut r) = ([0; 32], [0; 32]);
-        for ((n, at), stored) in (1..).zip(&self.resolved).zip(stored) {
-            a = chained_hash(&applied, a, at);
-            let ops = match folded.resolved(n) {
-                Ok(ops) => ops,
-                Err(ds) => return Some(format!("migration {n} does not resolve: {ds:?}")),
-            };
-            r = chained_hash(&replayed, r, &ops);
-            let bytes = |h: [u8; 32]| Some(Value::Bytes(h.to_vec()));
-            if stored != bytes(a) || a != r {
+        for ((n, (a, r)), stored) in (1..).zip(&chained).zip(stored) {
+            if stored != Some(Value::Bytes(a.to_vec())) || a != r {
                 return Some(format!(
                     "version {n} hashes as stored {stored:?}, as applied {a:?}, on replay {r:?}"
                 ));
             }
         }
+        let pins = chained.iter().map(|(_, r)| *r);
+        if let Err(e) = pinned_at(&mut sim, &self.log, pins) {
+            return Some(e);
+        }
+        pinned.fetch_add(chained.len(), Ordering::Relaxed);
         match adtb::version_hash(folded) {
             Ok(h) if h == r => None,
             h => Some(format!(
@@ -224,6 +236,32 @@ impl Walk {
             )),
         }
     }
+}
+
+/// Open the database at `log` in a process of `sim` with a bundle pinning each version with the
+/// hash `hashes` gives it in version order. Returns why the open fails.
+fn pinned_at(
+    sim: &mut Sim,
+    log: &[String],
+    hashes: impl Iterator<Item = [u8; 32]>,
+) -> Result<(), String> {
+    let mut registrations = Vec::new();
+    for (v, h) in (1..).zip(hashes) {
+        let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
+        let text = format!("bundle pin{v}-1.0 pins {v} ({hex}) edition \"2026-10\"\n");
+        let r = Registration::bundle(&text).map_err(|e| format!("`{text}`: {e:?}"))?;
+        registrations.push(r);
+    }
+    process(sim, |rt| {
+        let options = OpenOptions {
+            registrations,
+            ..OpenOptions::default()
+        };
+        let db = Database::open_in(rt, "differential.adt", &Log::new(log.to_vec()), &options)
+            .map_err(|e| format!("the engine refuses a version's pin: {e:?}"))?;
+        db.close()
+            .map_err(|e| format!("the engine does not close: {e}"))
+    })
 }
 
 /// A broken invariant at migration `k` of the case of `seed`, with the log before it.
@@ -293,9 +331,10 @@ fn replayed_kinds() -> Vec<Kind> {
 #[test]
 fn a_migration_resolves_as_it_applies_on_every_replay_of_the_log() {
     let kinds = replayed_kinds();
-    let judged = std::sync::atomic::AtomicUsize::new(0);
-    let reverts = std::sync::atomic::AtomicUsize::new(0);
-    let hashed = std::sync::atomic::AtomicUsize::new(0);
+    let judged = AtomicUsize::new(0);
+    let reverts = AtomicUsize::new(0);
+    let hashed = AtomicUsize::new(0);
+    let pinned = AtomicUsize::new(0);
     let failures = each_seed(|seed, at| {
         let mut walk = match Walk::new(seed) {
             Ok(w) => w,
@@ -374,10 +413,10 @@ fn a_migration_resolves_as_it_applies_on_every_replay_of_the_log() {
                 if let Some(f) = walk.replays(&folded, version) {
                     return failed(f);
                 }
-                judged.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                judged.fetch_add(1, Ordering::Relaxed);
                 mine += 1;
                 if revert {
-                    reverts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    reverts.fetch_add(1, Ordering::Relaxed);
                     mine_reverted += 1;
                 }
                 walk.case = if forward {
@@ -390,7 +429,7 @@ fn a_migration_resolves_as_it_applies_on_every_replay_of_the_log() {
         }
         let whole = walk
             .replays(&folded, 1)
-            .or_else(|| walk.hashes(&folded))
+            .or_else(|| walk.hashes(&folded, &pinned))
             .map(|finding| Failed {
                 seed,
                 k: replayed() * STRETCH,
@@ -399,8 +438,8 @@ fn a_migration_resolves_as_it_applies_on_every_replay_of_the_log() {
                 finding,
             });
         if whole.is_none() {
-            judged.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            hashed.fetch_add(walk.log.len(), std::sync::atomic::Ordering::Relaxed);
+            judged.fetch_add(1, Ordering::Relaxed);
+            hashed.fetch_add(walk.log.len(), Ordering::Relaxed);
         }
         whole
     });
@@ -409,6 +448,7 @@ fn a_migration_resolves_as_it_applies_on_every_replay_of_the_log() {
     profile::assert_reached("a migration judged", judged, 4);
     profile::assert_reached("a revert judged", reverts.into_inner(), 1);
     profile::assert_reached("a stored version hash judged", hashed.into_inner(), 4);
+    profile::assert_reached("a pinned version judged", pinned.into_inner(), 4);
 }
 
 /// Assert each of `floors` was counted at least once in `counts`.

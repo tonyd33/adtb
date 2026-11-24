@@ -1,0 +1,14 @@
+# A backup whose read of the version's hash meets damage on the heap of catalog::migrations fails
+# as any call meeting damage on a catalog page fails: the database is quarantined.
+use dump-app
+
+reopen
+
+damage heap catalog::migrations Migration
+
+fatal Quarantined { what: "the database" }
+  backup to "bk"
+
+probe marks
+----
+the database

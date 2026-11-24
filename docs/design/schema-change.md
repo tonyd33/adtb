@@ -95,8 +95,8 @@ Postconditions:
 - `version_hash` returns the hash of the version `source` is at: 32
   zero bytes at version 0, and at version `n` the BLAKE3-256 hash of
   the hash at `n - 1` followed by migration `n`'s resolved operators
-  in the wire value encoding. It panics if a migration of the log does
-  not resolve.
+  in the wire value encoding. It fails with the first migration of the
+  log that does not resolve, or the migration model's failure on it.
 - `version_hash()` gives the hash of each version up to the catalog's
   as the `hash` of that version's row of `migrations`, which the
   migration that made the version wrote in the transaction that

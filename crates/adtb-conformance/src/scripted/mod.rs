@@ -101,7 +101,8 @@
 //! - `mark OBJECT`: the mark of OBJECT set, durably: `database`, `heap RELATION CTOR` or `index
 //!   RELATION CLAUSE`.
 //! - `restamp migration V HASH`: the hash the row of version V of `catalog::migrations` holds
-//!   replaced by HASH, 64 hex digits, as one committed catalog transaction.
+//!   replaced by HASH, 64 hex digits, or the row deleted when HASH is `none`, as one committed
+//!   catalog transaction.
 //! - `damage PAGE`: every later read of the page in this open refused as failing its checksum,
 //!   and the damage recorded.
 //! - `flip PAGE`: a byte of the page's body inverted on the device once this process closes the
@@ -309,7 +310,7 @@ enum Head {
     Mark(fault::Marked),
     Restamp {
         version: u64,
-        hash: [u8; 32],
+        hash: Option<[u8; 32]>,
     },
     Fault {
         fault: fault::Fault,

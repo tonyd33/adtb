@@ -142,6 +142,12 @@ exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "crates/adtb/src/catal
 rows = { source_replays = "zero" }
 
 [[rule]]
+query = "hash-replays.tql"
+include = ["crates/adtb/src/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
+rows = { hash_replays = "zero" }
+
+[[rule]]
 query = "catalog-transactions.tql"
 include = ["crates/adtb/src/catalog/**/*.rs"]
 exclude = [
@@ -245,7 +251,13 @@ rows = { debug_text = "zero" }
 [[rule]]
 query = "catalog-begins.tql"
 include = ["crates/adtb/src/**/*.rs"]
-exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
+exclude = [
+  "**/tests.rs",
+  "**/*_tests.rs",
+  "**/tests/**",
+  "**/test_world/**",
+  "crates/adtb/src/catalog/*_testing.rs",
+]
 rows = { change_begins = "zero" }
 
 [[rule]]

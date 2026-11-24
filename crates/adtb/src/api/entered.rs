@@ -1,10 +1,13 @@
 //! The engine held open for one call.
 
-use crate::catalog;
+use std::sync::Arc;
+
+use crate::catalog::{self, VersionHash};
 use crate::runtime::Runtime;
 use crate::write::{self, Bounds, Local, Txn};
 
 use super::admitted::Admitted;
+use super::stated::Hashes;
 use super::statements::Failure;
 use super::text::{DynRows, Prepared};
 use super::{CallOptions, Committed, Engine, Error, Position, RejectReason, TxnId};
@@ -25,6 +28,18 @@ impl<R: Runtime> std::ops::Deref for Entered<'_, R> {
     fn deref(&self) -> &Engine<R> {
         self.engine
     }
+}
+
+/// Returns the stored hashes `hash` of the database `db`, a call whose read of them fails
+/// failing as a call that meets the failure writing catalog rows.
+pub(super) fn call_hashes<R: Runtime>(
+    hash: VersionHash,
+    db: Arc<write::Database<R>>,
+    schema: Arc<adtb_lang::schema::Committed>,
+) -> Hashes {
+    Hashes::new(hash, move |e| {
+        Error::of_write(&db, &schema, TxnId(0), db.mapping().fail(e.into()))
+    })
 }
 
 impl<R: Runtime> Engine<R> {

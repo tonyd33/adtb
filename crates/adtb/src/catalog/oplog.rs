@@ -27,9 +27,12 @@ pub(super) trait StoredHashes: Send + Sync {
     fn read(&self) -> Result<BTreeMap<u64, Hash>, Error>;
 }
 
-impl StoredHashes for BTreeMap<u64, Hash> {
+/// The rows of a log with no migration.
+struct Unmigrated;
+
+impl StoredHashes for Unmigrated {
     fn read(&self) -> Result<BTreeMap<u64, Hash>, Error> {
-        Ok(self.clone())
+        Ok(BTreeMap::new())
     }
 }
 
@@ -59,7 +62,7 @@ impl VersionHash {
             version: 0,
             hash: Arc::new(OnceLock::from([0; 32])),
             log: Arc::new(OnceLock::from(BTreeMap::new())),
-            stored: Arc::new(BTreeMap::new()),
+            stored: Arc::new(Unmigrated),
         }
     }
 
@@ -113,6 +116,15 @@ impl VersionHash {
         }
         let h = self.logged(self.version)?;
         Ok(*self.hash.get_or_init(|| h))
+    }
+
+    /// Read the hash of every version, so that no later [`VersionHash::get`] or
+    /// [`VersionHash::at`] fails.
+    pub fn read(&self) -> Result<(), Error> {
+        for v in 1..=self.version {
+            self.at(v)?;
+        }
+        Ok(())
     }
 
     /// Returns the version the log is at.
@@ -204,19 +216,19 @@ pub fn chained_last(previous: Hash, source: &Source) -> Replaying<Hash> {
     Ok(log.chained(previous, &ops))
 }
 
-/// Returns each version of the log of `source` whose hash in `stored` differs from the one
-/// [`version_hash`] chains to, with the stored hash and the chained one, in version order. A
-/// version `stored` lacks is not returned.
+/// Returns each version of the log of `source` whose hash in `stored` is absent or differs from
+/// the one [`version_hash`] chains to, with the stored hash and the chained one, in version order.
 ///
 /// Fail as [`version_hash`] does.
 pub fn unchained(
     source: &Source,
     stored: &BTreeMap<u64, Hash>,
-) -> Replaying<Vec<(u64, Hash, Hash)>> {
+) -> Replaying<Vec<(u64, Option<Hash>, Hash)>> {
     let mut out = Vec::new();
     chain(super::engine_declarations(), source, |v, _, h| {
-        if let Some(s) = stored.get(&v).filter(|&s| *s != h) {
-            out.push((v, *s, h));
+        let s = stored.get(&v).copied();
+        if s != Some(h) {
+            out.push((v, s, h));
         }
     })?;
     Ok(out)

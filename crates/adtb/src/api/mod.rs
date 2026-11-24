@@ -365,8 +365,8 @@ struct Engine<R: Runtime> {
     audit: catalog::codec::Codec<server::AuditRow>,
     /// The source of the version the database is at.
     source: Source,
-    /// The hash of the version the database is at.
-    hash: catalog::VersionHash,
+    /// The hash of each version up to the one the database is at.
+    hash: stated::Hashes,
     /// The registered queries of the live bundles, which `explain B::q(args)` names.
     bundles: Lock<Arc<Bundles>>,
     registered: Lock<Vec<Arc<registered::Checked>>>,
@@ -946,13 +946,18 @@ impl<R: Runtime> Engine<R> {
         .vacuuming(options.background_vacuum())
         .owing(owed, !pager.opens_unwritten());
         let archiver = storage::Archiver::bounding(&pager, options.archive_dir());
+        let hash = entered::call_hashes(
+            catalog.version_hash(),
+            db.clone(),
+            parts.compiled.shared_schema().clone(),
+        );
         Ok(Engine {
             rt,
             sums: error_value::Sums::new(parts.compiled.committed()),
             audit: catalog::codec::Codec::new(parts.compiled.committed()),
             compiled: parts.compiled,
             source: catalog.source().clone(),
-            hash: catalog.version_hash(),
+            hash,
             bundles: Lock::new(Arc::new(parts.bundles)),
             registered: Lock::new(parts.registered.into_iter().map(Arc::new).collect()),
             deployed: bundle::StoredLock::new(parts.deployed),
@@ -1019,7 +1024,8 @@ impl<R: Runtime> Engine<R> {
         let (mut stored, settings) = settings::deployed_state(&catalog, &pager, &txns)?;
         let opened = micros(pager.wall());
         let regs = &commanded(&options.registrations, &stored, opened, &settings)?;
-        registered::downgrade(&catalog, regs)?;
+        let hashes = opened_hashes(&catalog, regs)?;
+        registered::downgrade(&catalog, &hashes, regs)?;
         let live = stored.readers(opened, &settings);
         let headers: Vec<&bundle::Header> = regs.iter().filter_map(Registration::header).collect();
         if writable {
@@ -1027,7 +1033,7 @@ impl<R: Runtime> Engine<R> {
         }
         let live = if writable {
             let roles = catalog.committed_roles(&pager, &txns).map_err(corrupt)?;
-            let live = registered::readers(&mut catalog, regs, &live, &stored, &roles)?;
+            let live = registered::readers(&mut catalog, &hashes, regs, &live, &stored, &roles)?;
             catalog.settle(&pager, &txns).map_err(corrupt)?;
             let applied = catalog.source().log().len();
             options
@@ -1061,8 +1067,8 @@ impl<R: Runtime> Engine<R> {
         })?;
         let schema = compiled.shared_schema().clone();
         let now = micros(pager.wall());
-        let hash = catalog.version_hash();
-        let over = registered::Over::new(catalog.source(), &compiled, &hash);
+        let hashes = opened_hashes(&catalog, regs)?;
+        let over = registered::Over::new(catalog.source(), &compiled, &hashes);
         let registered = match unapplied {
             None => migrated.then(|| registered::register(&over, regs, &stored, now, &settings))?,
             Some(_) => Vec::new(),
@@ -1256,6 +1262,17 @@ fn commanded(
     Ok(out)
 }
 
+/// Returns the hashes of `catalog`'s log that the registrations `regs` check against, every
+/// version's read when there is one, failing as any catalog read of an open fails. A later read
+/// fails as a registration's other catalog reads fail.
+fn opened_hashes(catalog: &Catalog, regs: &[Registration]) -> Result<stated::Hashes, OpenError> {
+    let hash = catalog.version_hash();
+    if !regs.is_empty() {
+        hash.read().map_err(corrupt)?;
+    }
+    Ok(stated::Hashes::new(hash, registered::catalog_error))
+}
+
 /// Refuse a log whose migrations at or below the file's version differ from the file's by
 /// hash, naming the first that does.
 fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
@@ -1271,7 +1288,8 @@ fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
 /// Returns whether `text`, applied where migration `m` of the log was, gives the hash `hash`
 /// holds for `m`'s version; not when `text` does not parse, apply, build or resolve.
 ///
-/// Fail when `hash` cannot read a version's hash or the migration model fails on `text`.
+/// Fail as any catalog read of an open fails when `hash` cannot read a version's hash, and when
+/// the migration model fails on `text`.
 fn same_hash(hash: &catalog::VersionHash, m: &Logged, text: &str) -> Result<bool, OpenError> {
     let refused = |reason| OpenError::MigrationRefused {
         version: m.number,
@@ -1292,9 +1310,7 @@ fn same_hash(hash: &catalog::VersionHash, m: &Logged, text: &str) -> Result<bool
         return Ok(false);
     }
     let stored = |v: u64| -> Result<catalog::Hash, OpenError> {
-        let h = hash
-            .at(v)
-            .map_err(|e| refused(Error::internal(Broken::CatalogError(e))))?;
+        let h = hash.at(v).map_err(corrupt)?;
         Ok(h.expect("each version of the file's log has a hash"))
     };
     let Ok(shipped) = catalog::chained_last(stored(m.number - 1)?, &source) else {

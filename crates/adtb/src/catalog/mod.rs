@@ -28,6 +28,8 @@ mod pending;
 mod probed;
 mod read;
 mod readers;
+#[cfg(any(test, feature = "testing"))]
+mod restamp_testing;
 mod root;
 mod roots;
 mod roots_heap;
@@ -1002,7 +1004,8 @@ impl Catalog {
         &self.source
     }
 
-    /// Returns the hash of the version the catalog is at, made at most once for every holder.
+    /// Returns the hash of each version up to the one the catalog is at, as its row of
+    /// `catalog::migrations` holds it, the rows read at most once for every holder.
     pub fn version_hash(&self) -> VersionHash {
         self.hash.clone()
     }

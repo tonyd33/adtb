@@ -12,7 +12,6 @@ use adtb_lang::schema::{Schema, Scope};
 use adtb_lang::textual::Form;
 use adtb_lang::types::{FnId, KeyCtors, RelRef, Ty};
 
-use crate::catalog::VersionHash;
 use crate::exec::Val;
 use crate::write::{Items, Outcome};
 
@@ -20,7 +19,7 @@ use super::cause::Broken;
 use super::command;
 use super::error::Error;
 use super::server::Holds;
-use super::stated;
+use super::stated::{self, Hashes};
 
 /// The rows one item of ad hoc text returned, with their type.
 #[derive(Debug)]
@@ -114,7 +113,7 @@ impl Prepared {
     /// for `caller`, refusing a version it states with another hash than `hash` gives.
     pub fn new(
         compiled: &Compiled,
-        hash: &VersionHash,
+        hash: &Hashes,
         bundles: &Bundles,
         text: &str,
         params: &[(&str, Ty, Val)],
@@ -134,7 +133,7 @@ impl Prepared {
     /// Returns `items` checked as [`Prepared::new`] checks the text they were parsed from.
     pub fn of_items(
         compiled: &Compiled,
-        hash: &VersionHash,
+        hash: &Hashes,
         bundles: &Bundles,
         items: &[AdhocItem],
         params: &[(&str, Ty, Val)],
@@ -149,7 +148,7 @@ impl Prepared {
     /// holds when given.
     pub(super) fn naming(
         compiled: &Compiled,
-        hash: &VersionHash,
+        hash: &Hashes,
         scope: Option<&Scope>,
         bundles: &Bundles,
         items: &[AdhocItem],

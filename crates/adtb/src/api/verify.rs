@@ -842,8 +842,14 @@ impl<R: Runtime> Engine<R> {
         let schema = self.catalog.schema();
         let codec = Codec::<MigrationRow>::new(schema);
         let broken = |e: catalog::Error| write::Error::from(write::Broken::CatalogError(e));
+        let rows = match self.db.relation_rows(tx, codec.relation(), None) {
+            Ok(rows) => rows,
+            // The page check reports the damage.
+            Err(e) if e.page().is_some() => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
         let mut stored = BTreeMap::new();
-        for row in self.db.relation_rows(tx, codec.relation(), None)? {
+        for row in rows {
             let row = codec
                 .decode_val(schema, &row)
                 .map_err(|r| broken(r.into()))?;
@@ -853,12 +859,18 @@ impl<R: Runtime> Engine<R> {
             .map_err(|f| broken(catalog::unresolved(f).into()))?;
         Ok(unchained
             .into_iter()
-            .map(|(v, stored, chained)| Found::Structure {
-                at: format!(
-                    "catalog::migrations version {v}: stored hash {}, the log hashes {}",
-                    super::stated::hex(&stored),
-                    super::stated::hex(&chained)
-                ),
+            .map(|(v, stored, chained)| {
+                let chained = super::stated::hex(&chained);
+                let at = match stored {
+                    Some(stored) => format!(
+                        "catalog::migrations version {v}: stored hash {}, the log hashes {chained}",
+                        super::stated::hex(&stored)
+                    ),
+                    None => {
+                        format!("catalog::migrations version {v}: no row, the log hashes {chained}")
+                    }
+                };
+                Found::Structure { at }
             })
             .collect())
     }

@@ -244,6 +244,13 @@ pub(super) fn mark(rest: &str) -> Option<Head> {
 
 pub(super) fn restamp(rest: &str) -> Option<Head> {
     let (version, hex) = rest.strip_prefix("migration ")?.split_once(' ')?;
+    let version = version.parse().ok()?;
+    if hex == "none" {
+        return Some(Head::Restamp {
+            version,
+            hash: None,
+        });
+    }
     if hex.len() != 64 {
         return None;
     }
@@ -252,8 +259,8 @@ pub(super) fn restamp(rest: &str) -> Option<Head> {
         *b = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
     }
     Some(Head::Restamp {
-        version: version.parse().ok()?,
-        hash,
+        version,
+        hash: Some(hash),
     })
 }
 

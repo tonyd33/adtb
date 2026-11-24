@@ -1,0 +1,22 @@
+-- hash_replays: a call that computes a version's hash from the log, outside the functions named
+-- for it. Every engine read takes the hash its row of `catalog::migrations` stores. The chain runs
+-- in `version_hash` and `unchained`; verify compares the stored hashes with the log's in
+-- `unchained`; an open compares a migration the file holds with the log's in `same_hash`; and a
+-- unit test builds a migration row in `applied`.
+
+chainer = r"(^|::)(version_hash|chained_last|unchained|chain)$";
+
+owned f m = ((text f ~ r"(^|::)chain$") `and` (text m ~ r"^(version_hash|unchained)$"))
+  `or` ((text f ~ r"(^|::)unchained$") `and` (text m == "unchained"))
+  `or` ((text f ~ r"(^|::)chained_last$") `and` (text m == "same_hash"))
+  `or` ((text f ~ r"(^|::)version_hash$") `and` (text m == "applied"));
+
+main = do {
+  d <- descendants_of_kind :function_item;
+  m <- pure d | #name;
+  c <- pure d | descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ chainer;
+  guard $ not (owned f m);
+  return c;
+} | arr range;
