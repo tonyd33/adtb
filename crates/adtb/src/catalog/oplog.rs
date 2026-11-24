@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use adtb_lang::evolve::{
@@ -9,73 +11,140 @@ use adtb_lang::schema::Schema;
 use crate::heap::{FieldType, put_uvarint};
 use crate::key::{Scalar, Value};
 
-use super::Error;
 use super::codec::{Codec, Field, Nested, Payload, nullary};
 use super::operators::{
     self as o, MIGRATION_OP_OP, MigrationOpRow, OP_CLAUSE_BODY, OpClauseRow, flag, optional,
 };
+use super::{Error, Rot};
 
 /// A BLAKE3-256 hash.
 pub type Hash = [u8; 32];
 
-/// The hash of one version, made at most once and shared by every clone.
-#[derive(Clone, Debug)]
+/// A reader of the hash each migration of a file's log stores in its row of
+/// `catalog::migrations`.
+pub(super) trait StoredHashes: Send + Sync {
+    /// Returns the hash of each version a row holds, by version.
+    fn read(&self) -> Result<BTreeMap<u64, Hash>, Error>;
+}
+
+impl StoredHashes for BTreeMap<u64, Hash> {
+    fn read(&self) -> Result<BTreeMap<u64, Hash>, Error> {
+        Ok(self.clone())
+    }
+}
+
+/// The hash of each version of a log up to one, read at most once and shared by every clone.
+#[derive(Clone)]
 pub struct VersionHash {
-    source: Arc<Source>,
+    version: u64,
     hash: Arc<OnceLock<Hash>>,
-    /// The hash of each version of the log, by number from 0.
-    log: Arc<OnceLock<Vec<Hash>>>,
+    /// The hash of each version from 1, once read.
+    log: Arc<OnceLock<BTreeMap<u64, Hash>>>,
+    stored: Arc<dyn StoredHashes>,
+}
+
+impl fmt::Debug for VersionHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VersionHash")
+            .field("version", &self.version)
+            .field("hash", &self.hash.get())
+            .finish_non_exhaustive()
+    }
 }
 
 impl VersionHash {
-    /// Returns the hash of the version `source` is at, made on its first call that succeeds.
-    pub fn of(source: Arc<Source>) -> VersionHash {
+    /// Returns the hashes of the empty log.
+    pub(super) fn empty() -> VersionHash {
         VersionHash {
-            source,
-            hash: Arc::default(),
-            log: Arc::default(),
+            version: 0,
+            hash: Arc::new(OnceLock::from([0; 32])),
+            log: Arc::new(OnceLock::from(BTreeMap::new())),
+            stored: Arc::new(BTreeMap::new()),
         }
     }
 
-    /// Returns the hash of the version, as [`version_hash`] gives it.
+    /// Returns the hashes of a log at `version` whose migrations' rows `stored` reads, on the
+    /// first call that needs one.
+    pub(super) fn stored(version: u64, stored: Arc<dyn StoredHashes>) -> VersionHash {
+        VersionHash {
+            version,
+            hash: Arc::default(),
+            log: Arc::default(),
+            stored,
+        }
+    }
+
+    /// Returns the hashes of this log with one more migration, whose version has hash `hash`.
+    pub(super) fn after(&self, hash: Hash) -> VersionHash {
+        let version = self.version + 1;
+        let log = self.log.get().map_or_else(OnceLock::new, |log| {
+            let mut log = log.clone();
+            log.insert(version, hash);
+            OnceLock::from(log)
+        });
+        VersionHash {
+            version,
+            hash: Arc::new(OnceLock::from(hash)),
+            log: Arc::new(log),
+            stored: self.stored.clone(),
+        }
+    }
+
+    /// Returns the hashes of this log up to version `v`.
+    ///
+    /// Preconditions: `v` is at most [`VersionHash::version`].
+    pub fn upto(&self, v: u64) -> VersionHash {
+        assert!(v <= self.version, "a log holds the versions up to its own");
+        if v == self.version {
+            return self.clone();
+        }
+        VersionHash {
+            version: v,
+            hash: Arc::default(),
+            log: self.log.clone(),
+            stored: self.stored.clone(),
+        }
+    }
+
+    /// Returns the hash of the version.
     pub fn get(&self) -> Result<Hash, Error> {
         if let Some(h) = self.hash.get() {
             return Ok(*h);
         }
-        let h = version_hash(&self.source).map_err(super::unresolved)?;
+        let h = self.logged(self.version)?;
         Ok(*self.hash.get_or_init(|| h))
     }
 
-    /// Returns the version `source` is at.
+    /// Returns the version the log is at.
     pub fn version(&self) -> u64 {
-        self.source.version()
+        self.version
     }
 
-    /// Returns the hash of version `v` of the log, `None` for a version after the one `source` is
-    /// at.
+    /// Returns the hash of version `v` of the log, `None` for a version after its own.
     pub fn at(&self, v: u64) -> Result<Option<Hash>, Error> {
-        if v == self.source.version() {
+        if v > self.version {
+            return Ok(None);
+        }
+        if v == self.version {
             return self.get().map(Some);
+        }
+        self.logged(v).map(Some)
+    }
+
+    fn logged(&self, v: u64) -> Result<Hash, Error> {
+        if v == 0 {
+            return Ok([0; 32]);
         }
         let log = match self.log.get() {
             Some(log) => log,
             None => {
-                let mut log = vec![[0; 32]];
-                chain(super::engine_declarations(), &self.source, |_, h| {
-                    log.push(h);
-                })
-                .map_err(super::unresolved)?;
+                let log = self.stored.read()?;
                 self.log.get_or_init(|| log)
             }
         };
-        Ok(usize::try_from(v).ok().and_then(|v| log.get(v)).copied())
-    }
-
-    /// Hold `hash` as the version's when no hash is held yet.
-    ///
-    /// Preconditions: `hash` is the hash of the version.
-    pub(super) fn made(&self, hash: Hash) {
-        self.hash.get_or_init(|| hash);
+        log.get(&v)
+            .copied()
+            .ok_or_else(|| Rot::NoMigration(v).into())
     }
 }
 
@@ -105,24 +174,34 @@ impl OperatorRow {
 /// Fail with the diagnostics of the first migration of the log that does not resolve, or the
 /// migration model's failure on it.
 pub fn version_hash(source: &Source) -> Replaying<Hash> {
-    chain(super::engine_declarations(), source, |_, _| {})
+    chain(super::engine_declarations(), source, |_, _, _| {})
 }
 
-/// Returns the hash [`version_hash`] returns, giving `each` the operators of each migration
-/// of the log in order with the hash of the version it leaves.
+/// Returns the hash [`version_hash`] returns, giving `each` the version each migration of the
+/// log leaves, in order, with its operators and its hash.
 pub fn chain(
     schema: &Schema,
     source: &Source,
-    mut each: impl FnMut(&[OperatorRow], Hash),
+    mut each: impl FnMut(u64, &[OperatorRow], Hash),
 ) -> Replaying<Hash> {
     let log = Log::new(schema);
     let mut h = [0; 32];
     for l in source.log() {
         let ops = log.rows(&source.resolved(l.number)?);
         h = log.chained(h, &ops);
-        each(&ops, h);
+        each(l.number, &ops, h);
     }
     Ok(h)
+}
+
+/// Returns the hash of the version `source` is at, chained over `previous`, the hash of the
+/// version before it.
+///
+/// Fail as [`version_hash`] does on the last migration of the log.
+pub fn chained_last(previous: Hash, source: &Source) -> Replaying<Hash> {
+    let log = Log::new(super::engine_declarations());
+    let ops = log.rows(&source.resolved(source.version())?);
+    Ok(log.chained(previous, &ops))
 }
 
 /// Returns the hash of the version after one whose hash is `previous`, migrated by `ops`.

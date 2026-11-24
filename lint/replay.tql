@@ -1,12 +1,13 @@
 -- source_replays: a call in the catalog that applies a migration to a source, or checks or
 -- resolves a source, outside the functions named for it. `Catalog::apply` applies a migration
 -- once through `Source::record`; opening folds the log in `fold_from_empty`; pending drops apply
--- in `enforcing` and `held`; the version hash resolves in `chain`.
+-- in `enforcing` and `held`; the version hash resolves in `chain`, and one migration's over the
+-- stored hash before it in `chained_last`.
 
 replayer = r"[.:](accept|migrate|migrate_keeping|record|record_steps|steps|resolved|apply_recording|apply_noting|spelling|replayed|names_with|check)$";
 
 owned f m = ((text f ~ r"[.:](record|steps)$") `and` (text m ~ r"^(apply|at)$"))
-  `or` ((text f ~ r"[.:]resolved$") `and` (text m ~ r"^(recordable|chain|operators)$"))
+  `or` ((text f ~ r"[.:]resolved$") `and` (text m ~ r"^(recordable|chain|chained_last|operators)$"))
   `or` ((text f ~ r"[.:]migrate$") `and` (text m == "fold_from_empty"))
   `or` ((text f ~ r"[.:]migrate_keeping$") `and` (text m ~ r"^(enforcing|held)$"))
   `or` ((text f ~ r"[.:]record_steps$") `and` (text m == "enforcing"))

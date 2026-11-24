@@ -92,7 +92,7 @@ use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
 use crate::verify::{self, Depth, Problem, Report};
 
 use broken::refusal;
-pub use broken::{Broken, model_fault, refused_by, unresolved};
+pub use broken::{Broken, model_fault, refused_by};
 pub use deploy::Rewrite;
 pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
 pub use grants::Dormant;
@@ -108,7 +108,7 @@ pub(crate) use limits::{not_normal, past_limits};
 use memo::Memo;
 #[cfg(any(test, feature = "testing"))]
 pub use oplog::chained;
-pub use oplog::{Hash, VersionHash, version_hash};
+pub use oplog::{Hash, VersionHash, chained_last, version_hash};
 use read::{Snapshot, delete_keyed, delete_rows};
 pub use readers::{Read, Reader, source_at, stale};
 pub(crate) use root::Changing;
@@ -468,8 +468,8 @@ fn named<R: Runtime>(
 /// The texts of a stored log's migrations and the roles each makes dormant, by version.
 type Log = (BTreeMap<u64, String>, BTreeMap<u64, BTreeSet<String>>);
 
-/// The source a log folds to, its schema and its checked program.
-type Folded = (Source, Compiled, VersionHash);
+/// The source a log folds to and its checked program.
+type Folded = (Source, Compiled);
 
 /// The most logs [`FOLDED`] holds: the distinct logs a process reopens while it works. A server
 /// on one database reopens 1 or 2; a test sweep reopens one for each schema it sweeps.
@@ -514,8 +514,7 @@ fn fold_from_empty(
     let compiled = source
         .check()
         .map_err(|ds| unchecked(source.version(), ds))?;
-    let hash = VersionHash::of(Arc::new(source.clone()));
-    Ok((source, committed(compiled)?, hash))
+    Ok((source, committed(compiled)?))
 }
 
 /// Returns whether `keys` holds an order key for each constructor of every declared sum of
@@ -595,7 +594,7 @@ impl Catalog {
         let next = Checked::engine()?;
         let empty = Catalog {
             source: Source::default(),
-            hash: VersionHash::of(Arc::default()),
+            hash: VersionHash::empty(),
             compiled: next.compiled.clone(),
             texts: next.texts.clone(),
             root: pid,
@@ -736,7 +735,7 @@ impl Catalog {
         let large = LargeStore::open(root.large.0, root.large.1);
         let roots = Roots::open(pager, root.roots, large)?;
         let named = named(pager, &txns, &roots)?;
-        let (source, compiled, hash) = fold(&named.migrations, &named.dormant)?;
+        let (source, compiled) = fold(&named.migrations, &named.dormant)?;
         let schema = compiled.committed();
         check_order_keys(schema, &named.keys)?;
         let readers = Readers::reopened(&source, named.pending)?;
@@ -782,6 +781,13 @@ impl Catalog {
             &heaps,
             &key_indexes(schema, &stored),
         )?;
+        let hash = read::stored_hashes(
+            pager,
+            &txns,
+            compiled.shared_schema(),
+            &heaps,
+            source.version(),
+        );
         let catalog = Catalog {
             source,
             hash,
@@ -815,7 +821,7 @@ impl Catalog {
         Ok(Catalog {
             texts: ElementTexts::of(&Source::default(), compiled.schema())?,
             source: Source::default(),
-            hash: VersionHash::of(Arc::default()),
+            hash: VersionHash::empty(),
             compiled: committed(compiled)?,
             root: pager.catalog_root(),
             large,

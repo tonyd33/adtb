@@ -403,23 +403,28 @@ impl<R: Runtime> Engine<R> {
     }
 
     pub(super) fn envelope(&self) -> Result<Envelope, Error> {
+        let hash = self
+            .hash
+            .get()
+            .map_err(|e| Error::internal(Broken::CatalogError(e)))?;
+        Ok(self.envelope_of(hash))
+    }
+
+    /// Returns the envelope of the version the database is at, whose hash is `hash`.
+    pub(super) fn envelope_of(&self, hash: crate::catalog::Hash) -> Envelope {
         let version = self
             .catalog
             .source()
             .log()
             .last()
             .map_or(0, |migration| migration.number);
-        let hash = self
-            .hash
-            .get()
-            .map_err(|e| Error::internal(Broken::CatalogError(e)))?;
-        Ok(Envelope {
+        Envelope {
             release: env!("CARGO_PKG_VERSION").to_owned(),
             edition: super::bundle::EDITION.to_owned(),
             schema_version: version,
             schema_hash: hash.iter().map(|b| format!("{b:02x}")).collect(),
             catalog_version: CATALOG_VERSION,
-        })
+        }
     }
 
     fn restore_from(

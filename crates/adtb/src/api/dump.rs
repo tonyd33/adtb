@@ -948,8 +948,8 @@ impl<R: Runtime> Entered<'_, R> {
     ) -> Result<DumpManifest, Refusal> {
         let target = self.target(path).map_err(Refusal::own)?;
         self.admit_dump().map_err(Refusal::own)?;
-        let envelope = self.envelope().map_err(Refusal::own)?;
         let failed = |e| self.met(id, e);
+        let envelope = self.envelope_of(self.hash.get().map_err(|e| failed(e.into()))?);
         let broken = |r: Rot| failed(write::Error::from(write::Broken::CatalogError(r.into())));
         let rows = |r| self.db.relation_rows(tx, r, None).map_err(failed);
         let schema = self.schema();

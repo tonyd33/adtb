@@ -60,7 +60,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adtb_file::Disk;
 use adtb_lang::check::{Bundles, Compiled};
-use adtb_lang::evolve::{Logged, Privilege, Replaying, Source};
+use adtb_lang::evolve::{Logged, Privilege, Source};
 use adtb_lang::norm;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
 use adtb_lang::schema::Committed as CommittedSchema;
@@ -1259,44 +1259,46 @@ fn commanded(
 /// Refuse a log whose migrations at or below the file's version differ from the file's by
 /// hash, naming the first that does.
 fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
+    let hash = catalog.version_hash();
     for (m, shipped) in catalog.source().log().iter().zip(&log.migrations) {
-        if &m.text != shipped && !same_hash(m, shipped)? {
+        if &m.text != shipped && !same_hash(&hash, m, shipped)? {
             return Err(OpenError::Diverged { version: m.number });
         }
     }
     Ok(())
 }
 
-/// Returns whether `text`, applied where migration `m` of the log was, gives the version hash
-/// `m` gives; not when `text` does not parse, apply, build or resolve.
+/// Returns whether `text`, applied where migration `m` of the log was, gives the hash `hash`
+/// holds for `m`'s version; not when `text` does not parse, apply, build or resolve.
 ///
-/// Fail when the log up to `m` does not resolve or the migration model fails on either text.
-fn same_hash(m: &Logged, text: &str) -> Result<bool, OpenError> {
-    let broken = |b| OpenError::MigrationRefused {
+/// Fail when `hash` cannot read a version's hash or the migration model fails on `text`.
+fn same_hash(hash: &catalog::VersionHash, m: &Logged, text: &str) -> Result<bool, OpenError> {
+    let refused = |reason| OpenError::MigrationRefused {
         version: m.number,
-        reason: Error::internal(Broken::Catalog(b)),
+        reason,
     };
-    let hash = |text: &str| -> Result<Option<Replaying<catalog::Hash>>, OpenError> {
-        let Ok(file) = parse_migration(text, ParseOptions::default()).ok() else {
-            return Ok(None);
-        };
-        let source = match m.before.migrate(&file, text) {
-            Ok(source) => source,
-            Err(f) => {
-                return catalog::model_fault(&f).map_or(Ok(None), |b| Err(broken(b)));
-            }
-        };
-        if source.schema().is_err() {
-            return Ok(None);
-        }
-        Ok(Some(catalog::version_hash(&source)))
-    };
-    let Some(Ok(shipped)) = hash(text)? else {
+    let Ok(file) = parse_migration(text, ParseOptions::default()).ok() else {
         return Ok(false);
     };
-    match hash(&m.text)? {
-        Some(Ok(h)) => Ok(h == shipped),
-        Some(Err(f)) => Err(broken(catalog::unresolved(f))),
-        None => Ok(false),
+    let source = match m.before.migrate(&file, text) {
+        Ok(source) => source,
+        Err(f) => {
+            return catalog::model_fault(&f).map_or(Ok(false), |b| {
+                Err(refused(Error::internal(Broken::Catalog(b))))
+            });
+        }
+    };
+    if source.schema().is_err() {
+        return Ok(false);
     }
+    let stored = |v: u64| -> Result<catalog::Hash, OpenError> {
+        let h = hash
+            .at(v)
+            .map_err(|e| refused(Error::internal(Broken::CatalogError(e))))?;
+        Ok(h.expect("each version of the file's log has a hash"))
+    };
+    let Ok(shipped) = catalog::chained_last(stored(m.number - 1)?, &source) else {
+        return Ok(false);
+    };
+    Ok(shipped == stored(m.number)?)
 }

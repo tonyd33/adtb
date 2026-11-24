@@ -105,22 +105,10 @@ impl Roots {
         txns: &Transactions<R>,
         damage: PageError,
     ) -> Result<Vec<RootsRow>, Error> {
-        let logged = pager.logged_commits();
-        'scan: loop {
-            let mut versions = Vec::new();
-            self.0.scan(pager, |v| versions.push(v))?;
-            let mut rows = Vec::new();
-            for v in versions {
-                let live = txns.latest_live(pager, &v.header.writers, &logged);
-                let Some(live) = v.looked_up(pager, live)? else {
-                    continue 'scan;
-                };
-                if live.ok_or(damage)? {
-                    rows.push(RootsRow::decode(&v.row)?);
-                }
-            }
-            return Ok(rows);
-        }
+        super::read::latest(pager, txns, &self.0, damage)?
+            .iter()
+            .map(|row| Ok(RootsRow::decode(row)?))
+            .collect()
     }
 
     /// Returns every version of the heap with its row, whoever wrote it.

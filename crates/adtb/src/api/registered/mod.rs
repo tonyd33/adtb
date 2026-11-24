@@ -709,11 +709,10 @@ fn pinned(now: &Over<'_>, h: &Header, pins: &mut Pins) -> Result<Option<Arc<Pin>
     let compiled = source
         .check()
         .map_err(|ds| Error::invalid(joined(ds.iter().map(|d| d.diag.message.as_str()))))?;
-    let hash = VersionHash::of(Arc::new(source.clone()));
     let pin = Arc::new(Pin {
         source,
         compiled: settled(compiled).map_err(Error::rejected)?,
-        hash,
+        hash: now.hash.upto(h.pins),
     });
     pins.0.insert(h.pins, pin.clone());
     hashed(&pin.over())?;

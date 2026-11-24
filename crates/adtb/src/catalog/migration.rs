@@ -33,10 +33,9 @@ use super::roots::RootsRow;
 use super::steps::Stepped;
 use super::{
     Broken, Built, CatCtorId, CatRelId, Catalog, Change, Checked, Data, ElementTexts, Error, Hash,
-    Migrating, Readers, Snapshot, VersionHash, change, ctor_count, ctor_id, ctor_index,
-    ctor_relations, delete_keyed, element_types, heap_root, index_ctors, index_keys, indexes,
-    layout, moved, oplog, owner, pending, planned, refusal, rel_id, relation, row_key, row_type,
-    rows, steps,
+    Migrating, Readers, Snapshot, change, ctor_count, ctor_id, ctor_index, ctor_relations,
+    delete_keyed, element_types, heap_root, index_ctors, index_keys, indexes, layout, moved, oplog,
+    owner, pending, planned, refusal, rel_id, relation, row_key, row_type, rows, steps,
 };
 
 impl Catalog {
@@ -518,7 +517,7 @@ impl Catalog {
         m.ids_from(self.next_heap);
         let mut next = Catalog {
             source: b.next.source.clone(),
-            hash: VersionHash::of(std::sync::Arc::new(b.next.source.clone())),
+            hash: self.hash.clone(),
             compiled: b.next.compiled.clone(),
             texts: b.next.texts.clone(),
             root: self.root,
@@ -624,7 +623,9 @@ impl Catalog {
         let named = self.roots.admit(named)?;
         self.roots.insert_all(m, &named)?;
         next.insert_all(m, b.data)?;
-        self.write_rows(m, &next, b)?;
+        if let Some(hash) = self.write_rows(m, &next, b)? {
+            next.hash = self.hash.after(hash);
+        }
         next.next_heap = m.top.get();
         Ok(next)
     }
@@ -661,13 +662,14 @@ impl Catalog {
 
     /// Write the catalog rows of `next`'s version as `m.x` over this catalog's: delete the stored
     /// row with the key of each row `b.old` holds that the version does not, insert each other row
-    /// of the version, and insert the row of its migration.
+    /// of the version, and insert the row of its migration. Returns the hash that row holds, `None`
+    /// for an empty log.
     fn write_rows<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
         next: &Catalog,
         b: &Built,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<Hash>, Error> {
         let pager = m.pager;
         let old: BTreeMap<CatRelId, Held> = b
             .old
@@ -696,11 +698,10 @@ impl Catalog {
             }
         }
         if next.source.log().is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let previous = self.stored_hash(m)?;
         let hash = oplog::Log::new(next.schema()).chained(previous, b.operators);
-        next.hash.made(hash);
         for (r, rows) in rows::recorded(
             next.schema(),
             &next.source,
@@ -712,7 +713,7 @@ impl Catalog {
                 next.insert_all(m, &next.admitted(pager, r, c, rows.into_iter().cloned())?)?;
             }
         }
-        Ok(())
+        Ok(Some(hash))
     }
 
     fn stored_hash<R: Runtime>(&self, m: &Migrating<'_, R>) -> Result<Hash, Error> {

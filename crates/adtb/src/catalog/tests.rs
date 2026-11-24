@@ -70,7 +70,7 @@ fn a_log_folds_with_its_own_dormant_roles_after_its_texts_folded_with_others() {
         (2, "module app\ngrant read shapes to web\n".to_string()),
     ]);
     let dormancy = |dormant: &BTreeMap<u64, BTreeSet<String>>| -> Vec<bool> {
-        let (source, _, _) = fold(&texts, dormant).expect("the log folds");
+        let (source, _) = fold(&texts, dormant).expect("the log folds");
         source.grants.iter().map(|g| g.dormant).collect()
     };
     let web = BTreeMap::from([(2, BTreeSet::from(["web".to_string()]))]);
