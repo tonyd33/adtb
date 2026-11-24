@@ -85,6 +85,12 @@ exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "c
 rows = { holder_builders = "zero" }
 
 [[rule]]
+query = "decoded-index.tql"
+include = ["crates/adtb-exec/src/exec/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
+rows = { decoded_index = "zero" }
+
+[[rule]]
 query = "catch-unwind.tql"
 include = ["crates/adtb/src/**/*.rs", "crates/adtb-exec/src/**/*.rs", "crates/adtb-store/src/**/*.rs", "crates/adtb-heap/src/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "crates/adtb-exec/src/exec/host.rs", "crates/adtb-store/src/ranks.rs"]

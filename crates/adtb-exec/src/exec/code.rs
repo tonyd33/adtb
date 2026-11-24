@@ -16,7 +16,7 @@ use super::memory::{Arena, Grant};
 use super::prim::{self, Op};
 use super::store::conv;
 use super::types::{At, base, ctors, field, key_fields, repr};
-use super::value::{F32, F64, Val};
+use super::value::{F32, F64, Val, mistyped};
 use super::{Broken, Error, Fault};
 
 /// An operand of an instruction.
@@ -403,7 +403,12 @@ impl Code {
                         let fs = v.fields()?;
                         let mut ks: Vec<Val> = at
                             .iter()
-                            .map(|a| Ok(fs[a.of(c)?].clone()))
+                            .map(|a| {
+                                let at = a.of(c)?;
+                                fs.get(at)
+                                    .cloned()
+                                    .ok_or_else(|| mistyped("a value with the key's fields", v))
+                            })
                             .collect::<Result<_, Error>>()?;
                         Ok(Ok(if *single {
                             ks.pop().expect("a key has a field")
@@ -442,7 +447,9 @@ impl Code {
                     let out = self.map(f, regs, sel, catch, |get| {
                         let mut kept = BTreeSet::new();
                         for v in get(*src).as_set()? {
-                            if keep[v.ctor_of()? as usize] {
+                            let c = v.ctor_of()?;
+                            let kept_ctor = keep.get(c as usize).copied();
+                            if kept_ctor.ok_or_else(|| mistyped("a constructor of the set", v))? {
                                 kept.insert(v.clone());
                             }
                         }

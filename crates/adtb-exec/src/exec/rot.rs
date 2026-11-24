@@ -14,6 +14,8 @@ pub enum Rot {
     SpillUndecoded,
     SpillNotPair,
     DeferredNoVariable,
+    /// A deferred row binds a variable twice, out of order or past the plan's variables.
+    DeferredShape,
     Index(btree::Error),
     StoredPath(Vec<Step>),
     RetentionWindow(btree::Error),
@@ -83,6 +85,9 @@ impl fmt::Display for Rot {
             Rot::SpillUndecoded => f.write_str("a spilled value does not decode"),
             Rot::SpillNotPair => f.write_str("a spilled build record is not a pair"),
             Rot::DeferredNoVariable => f.write_str("a deferred row names no variable"),
+            Rot::DeferredShape => f.write_str(
+                "a deferred row binds a variable twice, out of order or past the plan's variables",
+            ),
             Rot::Index(e) => write!(f, "{e}"),
             Rot::Markers(e) => write!(f, "the safe snapshot markers are damaged: {e}"),
             Rot::StoredPath(steps) => {

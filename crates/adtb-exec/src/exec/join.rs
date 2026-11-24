@@ -32,10 +32,7 @@ pub struct Deferral {
     chain: Arc<Chain>,
     step: usize,
     build: usize,
-    /// The variables bound to one value at every row, the same for every row deferred at this
-    /// probe.
-    fixed: Vec<(u32, Val)>,
-    /// Per partition, records of a row's key and its varying variables.
+    /// Per partition, records of a row's key and every variable it binds.
     parts: Vec<Writer>,
 }
 
@@ -46,7 +43,6 @@ pub type Deferred = BTreeMap<(usize, usize), Deferral>;
 struct Waiting {
     chain: Arc<Chain>,
     step: usize,
-    fixed: Vec<(u32, Val)>,
     rows: Stream,
 }
 
@@ -177,13 +173,12 @@ impl<R: Runtime> Ctx<R> {
                         chain: c.clone(),
                         step: at,
                         build,
-                        fixed: f.fixed(),
                         parts: (0..parts.len()).map(|_| Writer::default()).collect(),
                     });
                 for &r in sel {
                     let k = Val::record(keys[&r].clone());
                     let vs: Vec<Val> = f
-                        .varying(r)
+                        .bound(r)
                         .into_iter()
                         .flat_map(|(v, x)| [Val::Int(i64::from(v)), x])
                         .collect();
@@ -240,7 +235,6 @@ impl<R: Runtime> Ctx<R> {
                         by.entry((d.build, p)).or_default().push(Waiting {
                             chain: d.chain.clone(),
                             step: d.step,
-                            fixed: d.fixed.clone(),
                             rows,
                         });
                     }
@@ -333,7 +327,7 @@ impl<R: Runtime> Ctx<R> {
             if bound.is_empty() {
                 return Ok(());
             }
-            let f = Frame::rebuild(self.program.vars, &w.fixed, bound);
+            let f = Frame::rebuild(self.program.vars, bound)?;
             let _held = self.grant.take(f.size())?;
             let sel = f.all();
             let input = Probed {

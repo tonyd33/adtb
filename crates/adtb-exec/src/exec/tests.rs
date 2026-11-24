@@ -290,6 +290,36 @@ fn a_spilled_row_naming_no_variable_of_the_plan_is_rot() {
 }
 
 #[test]
+fn deferred_rows_binding_a_variable_twice_out_of_order_or_past_the_plan_are_rot() {
+    let row = |vs: &[u32]| {
+        vs.iter()
+            .map(|&v| (v, Val::Int(i64::from(v))))
+            .collect::<Vec<_>>()
+    };
+    let rebuilt =
+        |rows: &[&[u32]]| Frame::rebuild(4, rows.iter().map(|r| row(r)).collect()).map(|f| f.len());
+    assert_eq!(Ok(2), rebuilt(&[&[1, 2], &[1, 2]]));
+    let mixed = Frame::rebuild(
+        4,
+        vec![row(&[1, 2]), vec![(1, Val::Int(5)), (3, Val::Int(3))]],
+    )
+    .expect("rows binding other variables rebuild");
+    assert_eq!(
+        [&Val::Int(1), &Val::Int(2), &Val::Int(5), &Val::Int(3)],
+        [
+            mixed.get(1, 0),
+            mixed.get(2, 0),
+            mixed.get(1, 1),
+            mixed.get(3, 1)
+        ]
+    );
+    assert_eq!(Ok(0), rebuilt(&[]));
+    for rows in [&[&[2, 1][..]][..], &[&[1, 1]], &[&[1], &[4]]] {
+        assert_eq!(Err(Rot::DeferredShape), rebuilt(rows), "{rows:?}");
+    }
+}
+
+#[test]
 fn printing_a_value_not_of_its_form_is_an_internal_error() {
     let printed =
         |what: Broken, is: &str| matches!(what, Broken::Print(e) if e.message.contains(is));

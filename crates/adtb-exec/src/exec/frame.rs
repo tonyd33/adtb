@@ -1,3 +1,4 @@
+use super::rot::Rot;
 use super::value::Val;
 
 /// The values of one variable over the rows of a frame.
@@ -123,51 +124,48 @@ impl Frame {
         Frame { len, cols }
     }
 
-    /// Returns the variables bound to one value at every row, with their values.
-    pub fn fixed(&self) -> Vec<(u32, Val)> {
+    /// Returns every variable bound at row `row`, ascending, with its value there.
+    pub fn bound(&self, row: u32) -> Vec<(u32, Val)> {
         self.cols
             .iter()
             .enumerate()
             .filter_map(|(i, c)| match c {
+                Col::Unset => None,
                 Col::One(v) => Some((i as u32, v.clone())),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Returns the variables bound row by row, with their values at row `row`.
-    pub fn varying(&self, row: u32) -> Vec<(u32, Val)> {
-        self.cols
-            .iter()
-            .enumerate()
-            .filter_map(|(i, c)| match c {
                 Col::Many(vs) => Some((i as u32, vs[row as usize].clone())),
-                _ => None,
             })
             .collect()
     }
 
-    /// Returns a frame of `vars` variables binding `fixed` at every row and, at each row of
-    /// `rows`, its values.
-    ///
-    /// Preconditions:
-    /// - Every row of `rows` binds the same variables.
-    /// - Every variable of `fixed` and `rows` is below `vars`.
-    pub fn rebuild(vars: usize, fixed: &[(u32, Val)], rows: Vec<Vec<(u32, Val)>>) -> Frame {
-        let mut cols = vec![Col::Unset; vars];
-        for (v, x) in fixed {
-            cols[*v as usize] = Col::One(x.clone());
-        }
+    /// Returns a frame of `vars` variables binding, at each row of `rows`, its values, a variable
+    /// with one value at every row bound once. Fail with `DeferredShape` unless every row of
+    /// `rows` binds its variables in ascending order, each once and below `vars`.
+    pub fn rebuild(vars: usize, rows: Vec<Vec<(u32, Val)>>) -> Result<Frame, Rot> {
         let len = rows.len();
-        for row in rows {
+        let mut cols = vec![Col::Unset; vars];
+        for (r, row) in rows.into_iter().enumerate() {
+            if row.windows(2).any(|w| w[0].0 >= w[1].0) {
+                return Err(Rot::DeferredShape);
+            }
             for (v, x) in row {
-                match &mut cols[v as usize] {
-                    Col::Many(vs) => vs.push(x),
-                    c => *c = Col::Many(vec![x]),
+                let c = cols.get_mut(v as usize).ok_or(Rot::DeferredShape)?;
+                if let Col::Unset = c {
+                    *c = Col::Many(vec![Val::Int(0); len]);
+                }
+                if let Col::Many(vs) = c {
+                    vs[r] = x;
                 }
             }
         }
-        Frame { len, cols }
+        for c in &mut cols {
+            if let Col::Many(vs) = c
+                && let [first, rest @ ..] = vs.as_slice()
+                && rest.iter().all(|x| x == first)
+            {
+                *c = Col::One(first.clone());
+            }
+        }
+        Ok(Frame { len, cols })
     }
 
     /// Returns an estimate of the bytes the frame's own columns hold.

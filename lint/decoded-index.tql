@@ -1,0 +1,8 @@
+-- decoded_index: a slice indexed by an id whose read from a value can fail, which may lie past
+-- the slice's end.
+
+main = do {
+  e <- descendants_of_kind :index_expression;
+  guard $ text e ~ r"\[[^\[\]]*\?[^\[\]]*\]$";
+  return e;
+} | arr range;
