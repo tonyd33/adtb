@@ -164,6 +164,41 @@ impl Granted {
             Granted::CallFn(x) => Granted::CallFn(f(IdKind::Function, *x)?),
         })
     }
+
+    /// Returns each object the privilege's text names, by kind and id, each target's relation
+    /// variable before its selection, a field list's fields only when it is written.
+    pub(super) fn named(&self) -> Vec<(IdKind, u64)> {
+        let mut out = Vec::new();
+        let mut target = |t: &GrantTarget| {
+            out.push((IdKind::Relation, t.relation));
+            match &t.sel {
+                GrantSel::Whole => {}
+                GrantSel::Set(s) => out.push((IdKind::Set, *s)),
+                GrantSel::Ctors(cs) => out.extend(cs.iter().map(|&c| (IdKind::Ctor, c))),
+            }
+        };
+        let fields = match self {
+            Granted::Read(t, fs) | Granted::Update(t, fs) => {
+                target(t);
+                fs.listed.then_some(&fs.ids)
+            }
+            Granted::Insert(t) | Granted::Delete(t) => {
+                target(t);
+                None
+            }
+            Granted::Retag(a, b, _) => {
+                target(a);
+                target(b);
+                None
+            }
+            Granted::CallFn(x) => {
+                out.push((IdKind::Function, *x));
+                None
+            }
+        };
+        out.extend(fields.into_iter().flatten().map(|&f| (IdKind::Field, f)));
+        out
+    }
 }
 
 /// What a role holds of a privilege: its place among the grants, its grant option and its

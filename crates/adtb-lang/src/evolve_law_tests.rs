@@ -639,6 +639,19 @@ deprecate ms.M2",
             .then("drop relation vs\ndrop type V", None)
             .refused("the inverse of `deprecate vs.V` names a relation a later migration dropped")
             .labelled(DROPPED),
+        Case::new("grant read vs to support")
+            .then("drop relation vs\ndrop type V", None)
+            .refused(
+                "the inverse of `grant read vs to support` names a relation a later migration dropped",
+            )
+            .labelled(DROPPED),
+        Case::new("revoke read vs from support")
+            .after("grant read vs to support")
+            .then("drop relation vs\ndrop type V", None)
+            .refused(
+                "the inverse of `revoke read vs from support` names a relation a later migration dropped",
+            )
+            .labelled(DROPPED),
     ]
 }
 
@@ -1779,10 +1792,10 @@ fn unknown(name: &str, bits: u64, o: &Outcome) -> Option<String> {
 }
 
 /// The cases each shape runs with no bit set, and those the `declared` and `granted` bits add.
-const CASES: (usize, usize, usize) = (164, 2, 5);
+const CASES: (usize, usize, usize) = (166, 2, 5);
 
 /// The cases of each shape whose revert is refused for a reason the spec states.
-const REFUSED: usize = 16;
+const REFUSED: usize = 18;
 
 /// The number of shapes the search runs in: every shape under the `deep` profile, else the first
 /// two, which set each bit both ways.

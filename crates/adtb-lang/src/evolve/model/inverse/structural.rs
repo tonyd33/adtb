@@ -538,6 +538,7 @@ impl Cx<'_> {
                 .filter_map(|c| td.ctor_named(c).and_then(|c| ids.ctor_id(c)))
                 .map(CatCtorId::raw)
                 .collect(),
+            of: at.of(),
         })
     }
 

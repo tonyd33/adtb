@@ -1,0 +1,19 @@
+# A revert of a grant on a relation a later migration dropped is refused naming the relation.
+seed 89
+use shop
+
+role support
+
+migrate
+  module shop
+  add type Stamp = { id: Key stamps, label: Text }
+  add relation stamps : Stamp key id generate sequence
+  module shop
+  grant read stamps to support
+  module shop
+  drop relation stamps
+  drop type Stamp
+
+migrate refused MigrationRefused { version: 5, reason: Rejected { reason: SchemaRefused { operator: "revert 0003", detail: "the inverse of `grant read stamps to support` names a relation a later migration dropped" } } }
+  module shop
+  revert 0003

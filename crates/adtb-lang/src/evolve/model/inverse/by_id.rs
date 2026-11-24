@@ -1,4 +1,6 @@
 use super::*;
+use crate::evolve::model::ClauseM;
+use crate::evolve::model::op::{Res, refuse};
 use crate::ids::{KeyKind, Space};
 
 /// A declaration, by the id of the object it declares, a stored view's by the id of its
@@ -10,13 +12,6 @@ pub(in crate::evolve) enum DeclOf {
 }
 
 impl DeclOf {
-    pub(in crate::evolve) fn word(self) -> &'static str {
-        match self {
-            DeclOf::Object(kind, _) => word(kind),
-            DeclOf::Store(_) => "function",
-        }
-    }
-
     pub(in crate::evolve) fn mapped(self, again: &Recreated) -> DeclOf {
         match self {
             DeclOf::Object(kind, id) => DeclOf::Object(kind, again_id(again, kind.space(), id)),
@@ -116,7 +111,7 @@ impl Inverse {
                     *s = s.mapped(&|x| again_id(again, Space::Shared, x));
                 }
             }
-            Inverse::Grants { back } => {
+            Inverse::Grants { back, .. } => {
                 for h in back {
                     h.privilege = h
                         .privilege
@@ -221,7 +216,160 @@ impl Inverse {
         }
         self
     }
+
+    /// Returns each object the step names by id outside its texts, with the text of the operator
+    /// inverted.
+    fn named(&self) -> (Vec<Obj>, &str) {
+        let shared = |x: &u64| (Space::Shared, *x);
+        match self {
+            Inverse::Rename { object, of, .. } => (vec![*object], of),
+            Inverse::DropSet { set, of } => (vec![(Space::Set, *set)], of),
+            Inverse::AddSet {
+                relation,
+                members,
+                of,
+                ..
+            } => (
+                [relation].into_iter().chain(members).map(shared).collect(),
+                of,
+            ),
+            Inverse::States { states, of } => {
+                let mut out = Vec::new();
+                for (s, _) in states {
+                    match *s {
+                        StateKey::Relation(r, c) => out.extend([shared(&r), shared(&c)]),
+                        StateKey::Value(c) => out.push(shared(&c)),
+                    }
+                }
+                (out, of)
+            }
+            Inverse::Grants { back, of } => (
+                back.iter()
+                    .flat_map(|h| h.privilege.named())
+                    .map(|(kind, x)| (kind.key_kind().space(), x))
+                    .collect(),
+                of,
+            ),
+            Inverse::Restructure {
+                drops,
+                how,
+                checks,
+                of,
+                ..
+            } => {
+                let mut out: Vec<Obj> = checks
+                    .iter()
+                    .map(|(c, _)| (Space::Constraint, *c))
+                    .collect();
+                match how {
+                    Undo::UpFrom(cs) => out.extend(cs.iter().map(shared)),
+                    Undo::Unnest(ty, products) => {
+                        out.push(shared(ty));
+                        out.extend(products.iter().map(|(c, _)| shared(c)));
+                    }
+                    Undo::Written | Undo::Derived => {}
+                }
+                out.extend(drops.iter().map(|&i| (Space::Index, i)));
+                (out, of)
+            }
+            Inverse::Unadd { ctor, of, .. } => (vec![shared(ctor)], of),
+            Inverse::Readd {
+                ty,
+                joins,
+                arms,
+                of,
+                ..
+            } => {
+                let mut out = vec![shared(ty)];
+                out.extend(joins.iter().map(|&s| (Space::Set, s)));
+                for (c, _, beside, _) in arms {
+                    out.push((Space::Constraint, *c));
+                    out.extend(beside.iter().map(shared));
+                }
+                (out, of)
+            }
+            Inverse::Apply { of, .. }
+            | Inverse::Restore { of, .. }
+            | Inverse::RestoreRelation { of, .. }
+            | Inverse::Module { of, .. }
+            | Inverse::Replay { of, .. } => (Vec::new(), of),
+            Inverse::Redeclare { decl, of, .. } => (vec![decl.obj()], of),
+            Inverse::KeyClause { relation, of, .. } => (vec![shared(relation)], of),
+            Inverse::Reorder {
+                ty,
+                ctor,
+                order,
+                of,
+            } => {
+                let mut out: Vec<Obj> = ctor.iter().map(shared).collect();
+                out.extend(order.iter().map(|&f| (Space::Field, f)));
+                out.push(shared(ty));
+                (out, of)
+            }
+            Inverse::PlaceCtors { ty, of, .. } => (vec![shared(ty)], of),
+        }
+    }
 }
+
+impl DeclOf {
+    /// Returns the object the declaration declares, a stored view's function.
+    fn obj(self) -> Obj {
+        match self {
+            DeclOf::Object(kind, id) => (kind.space(), id),
+            DeclOf::Store(f) => (Space::Function, f),
+        }
+    }
+}
+
+impl Model {
+    /// Refuse step `inv` of a revert when it names by id an object the model lacks and `late`,
+    /// the source after the reverted migration, holds.
+    pub(in crate::evolve::model) fn gate(&self, inv: &Inverse, late: &Late) -> Res<()> {
+        let (named, of) = inv.named();
+        match named
+            .into_iter()
+            .filter(|&o| !self.holds(o))
+            .find_map(|o| late.get(&o))
+        {
+            Some(&kind) => refuse(dropped(of, word(kind))),
+            None => Ok(()),
+        }
+    }
+
+    fn holds(&self, (space, id): Obj) -> bool {
+        let clauses = || self.relations.values().flat_map(|r| &r.clauses);
+        match space {
+            Space::Shared => {
+                self.types.contains_key(&id)
+                    || self.ctors.contains_key(&id)
+                    || self.relations.contains_key(&id)
+                    || self.stores.contains_key(&id)
+            }
+            Space::Set => self.sets.contains_key(&id),
+            Space::Field => self.fields.contains_key(&id),
+            Space::Function => self.functions.contains_key(&id),
+            Space::Constraint => self.denials.contains_key(&id),
+            Space::Index => self.relations.values().any(|r| {
+                r.implied.values().any(|&x| x == id)
+                    || r.clauses.iter().any(|c| match c {
+                        ClauseM::Key { id: x, .. } | ClauseM::Index { id: x, .. } => *x == Some(id),
+                        _ => false,
+                    })
+            }),
+            Space::Computed => {
+                clauses().any(|c| matches!(c, ClauseM::Computed { id: Some(x), .. } if *x == id))
+            }
+            Space::Default => clauses().any(
+                |c| matches!(c, ClauseM::Default { ids, .. } if ids.iter().any(|&(_, x)| x == id)),
+            ),
+        }
+    }
+}
+
+/// The fault of a step of a revert naming by id an object the model lacks that the source after
+/// the reverted migration lacks too.
+pub(in crate::evolve::model) const UNHELD: &str =
+    "an inverse names an object the model does not hold";
 
 /// Returns the refusal of the inverse of operator text `of` whose object of kind `word` is gone.
 pub(in crate::evolve) fn dropped(of: &str, word: &str) -> String {

@@ -5,7 +5,7 @@ use super::run::Run;
 use super::*;
 use crate::ast::{self, Fill};
 use crate::check::{self, Ref};
-use crate::evolve::model::inverse::{DeclOf, Late as Gone, PlacedArms, Term, Undo, dropped};
+use crate::evolve::model::inverse::{DeclOf, Late as Gone, PlacedArms, Term, UNHELD, Undo};
 use crate::evolve::{Resolved, holds, match_arms};
 use crate::ids::KeyKind;
 use crate::parse::{Options, parse_schema};
@@ -33,7 +33,7 @@ impl Model {
         let mut set = Vec::new();
         for (c, t) in checks {
             let Some(item) = self.decl_of(DeclOf::Object(KeyKind::Constraint, c)) else {
-                return refuse(dropped(of, "constraint"));
+                return broken(UNHELD);
             };
             set.push((item, self.spell(&t, of, gone)?));
         }
@@ -43,19 +43,19 @@ impl Model {
             Undo::UpFrom(ctors) => {
                 for &c in ctors {
                     if !self.ctors.contains_key(&c) {
-                        return refuse(dropped(of, "constructor"));
+                        return broken(UNHELD);
                     }
                     from.push(c);
                 }
             }
             Undo::Unnest(ty, products) => {
                 let Some((module, t)) = self.spelled_obj((Space::Shared, *ty)) else {
-                    return refuse(dropped(of, "type"));
+                    return broken(UNHELD);
                 };
                 let mut moved = Vec::new();
                 for (c, was) in products {
                     let Some(n) = self.ctors.get(c).map(|x| x.name.clone()) else {
-                        return refuse(dropped(of, "constructor"));
+                        return broken(UNHELD);
                     };
                     if n != *was {
                         moved.push((n, was.clone()));
@@ -93,7 +93,7 @@ impl Model {
         if !drops.is_empty() {
             for id in drops {
                 if !self.drop_index_id(id) {
-                    return refuse(dropped(of, "index"));
+                    return broken(UNHELD);
                 }
             }
             self.settle_ids(run);
@@ -140,15 +140,9 @@ impl Model {
     /// Remove constructor `ctor` with its arms as the inverse of adding it, then, with `record`,
     /// set its type, when a sum of one constructor named after it, to a record of its fields,
     /// those of `record` first in that order.
-    pub(super) fn unadd(
-        &mut self,
-        run: &mut Run,
-        ctor: u64,
-        record: Option<Vec<u64>>,
-        of: &str,
-    ) -> Res<()> {
+    pub(super) fn unadd(&mut self, run: &mut Run, ctor: u64, record: Option<Vec<u64>>) -> Res<()> {
         let Some(t) = self.ctors.get(&ctor).map(|c| c.ty) else {
-            return refuse(dropped(of, "constructor"));
+            return broken(UNHELD);
         };
         self.remove_ctor(run, t, ctor, true)?;
         let Some(order) = record else {
@@ -194,7 +188,7 @@ impl Model {
         gone: &Gone,
     ) -> Res<()> {
         if !self.types.contains_key(&ty) {
-            return refuse(dropped(of, "type"));
+            return broken(UNHELD);
         }
         let after = after
             .into_iter()
@@ -202,7 +196,7 @@ impl Model {
         let mut sets = Vec::new();
         for s in joins {
             if !self.sets.contains_key(&s) {
-                return refuse(dropped(of, "set"));
+                return broken(UNHELD);
             }
             sets.push(s);
         }
@@ -213,12 +207,17 @@ impl Model {
         let mut placed = Vec::new();
         for (c, n, beside, texts) in arms {
             let Some(item) = self.decl_of(DeclOf::Object(KeyKind::Constraint, c)) else {
-                return refuse(dropped(of, "constraint"));
+                return broken(UNHELD);
             };
             let beside = match beside {
                 Some(b) => match schema.ids().ctor_of(cat_ctor(b)) {
                     Some(r) if r.def() == def => Some(r.index()),
-                    _ => return refuse(dropped(of, "constructor")),
+                    Some(_) => {
+                        return refuse(format!(
+                            "the inverse of `{of}` names a constructor that now belongs to another type"
+                        ));
+                    }
+                    None => return broken(UNHELD),
                 },
                 None => None,
             };

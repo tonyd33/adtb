@@ -12,6 +12,7 @@ mod structural;
 
 pub(in crate::evolve) use super::Term;
 pub(super) use by_id::Recreated;
+pub(in crate::evolve::model) use by_id::UNHELD;
 use by_id::removed;
 pub(in crate::evolve) use by_id::{DeclOf, dropped, holding, recreate};
 use of_op::Run;
@@ -101,8 +102,8 @@ pub(in crate::evolve::model) enum Inverse {
         states: Vec<(StateKey, Option<State>)>,
         of: String,
     },
-    /// Set what each role holds of a privilege back.
-    Grants { back: Vec<HeldGrant> },
+    /// Set what each role holds of a privilege back; `of` is the text of the operator inverted.
+    Grants { back: Vec<HeldGrant>, of: String },
     /// Add declaration `text`, of kind `kind` and name `name`, to module `module`; `of` is the
     /// text of the operator inverted.
     Restore {
@@ -162,11 +163,12 @@ pub(in crate::evolve::model) enum Inverse {
         of: String,
     },
     /// Put each constructor of `placed` of a type, in turn, after the nearest constructor before
-    /// it in `order` the type holds, else first.
+    /// it in `order` the type holds, else first; `of` is the text of the operator inverted.
     PlaceCtors {
         ty: u64,
         order: Vec<u64>,
         placed: Vec<u64>,
+        of: String,
     },
 }
 
@@ -174,8 +176,8 @@ pub(in crate::evolve::model) enum Inverse {
 /// held it, from `after`: the first removes what `after` holds and `before` does not, named by
 /// the ids of `after`, and runs before the operator's inverse; the second restores what `before`
 /// held, named by the ids of `before`, and runs after it. Either is `None` when it changes
-/// nothing.
-fn grants_back(before: &Source, after: &Source) -> (Option<Inverse>, Option<Inverse>) {
+/// nothing. `of` is the text of the operator.
+fn grants_back(before: &Source, after: &Source, of: &str) -> (Option<Inverse>, Option<Inverse>) {
     let held = |grants: &[LogGrant], g: &LogGrant| {
         grants
             .iter()
@@ -202,8 +204,14 @@ fn grants_back(before: &Source, after: &Source) -> (Option<Inverse>, Option<Inve
     let (gone, kept): (Vec<HeldGrant>, Vec<HeldGrant>) =
         back.into_iter().partition(|h| h.held.is_none());
     (
-        (!gone.is_empty()).then_some(Inverse::Grants { back: gone }),
-        (!kept.is_empty()).then_some(Inverse::Grants { back: kept }),
+        (!gone.is_empty()).then(|| Inverse::Grants {
+            back: gone,
+            of: of.to_string(),
+        }),
+        (!kept.is_empty()).then(|| Inverse::Grants {
+            back: kept,
+            of: of.to_string(),
+        }),
     )
 }
 
@@ -511,7 +519,7 @@ impl Cx<'_> {
             let mut step = self.inverse(&run.at(around, start, op, &ops[i]))?;
             // A replay applies the grants and revokes of the migration it applies again.
             if !step.iter().any(|s| matches!(s, Inverse::Replay { .. })) {
-                let (gone, kept) = grants_back(before, state);
+                let (gone, kept) = grants_back(before, state, &logged.text[op.span.range()]);
                 if let Some(gone) = gone {
                     step.insert(0, gone);
                 }

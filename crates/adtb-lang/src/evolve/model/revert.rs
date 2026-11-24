@@ -6,7 +6,7 @@ use crate::ast::{self, Fill, OperatorKind};
 use crate::canon::Names;
 use crate::evolve::model::inverse::Replayed;
 use crate::evolve::model::inverse::{
-    DeclOf, Inverse, Late as Gone, Recreated, Term, dropped, holding, recreate, word,
+    DeclOf, Inverse, Late as Gone, Recreated, Term, UNHELD, holding, recreate,
 };
 use crate::evolve::{Clause, Cx, Failed, Logged, Resolved, Written};
 use crate::ids::KeyKind;
@@ -343,6 +343,7 @@ impl Model {
     /// Apply one step of an inverse, `gone` holding the objects of the source after the reverted
     /// migration.
     fn undo(&mut self, run: &mut Run, inv: Inverse, gone: &Gone, undone: &mut Undone) -> Res<()> {
+        self.gate(&inv, gone)?;
         match inv {
             Inverse::Restructure {
                 drops,
@@ -357,20 +358,17 @@ impl Model {
                 self.undo_ops(run, run.module(), text, How::Written, &[], undone)
             }
             Inverse::Rename {
-                object,
-                word,
-                to,
-                of,
+                object, word, to, ..
             } => {
                 let Some((module, name)) = self.spelled_obj(object) else {
-                    return refuse(dropped(&of, word));
+                    return broken(UNHELD);
                 };
                 let text = format!("rename {word} {name} to {to}");
                 self.undo_ops(run, &module, text.into(), How::Written, &[], undone)
             }
-            Inverse::DropSet { set, of } => {
+            Inverse::DropSet { set, .. } => {
                 let Some((module, set)) = self.spelled_obj((Space::Set, set)) else {
-                    return refuse(dropped(&of, "set"));
+                    return broken(UNHELD);
                 };
                 self.undo_ops(
                     run,
@@ -385,9 +383,9 @@ impl Model {
                 relation,
                 name,
                 members,
-                of,
-            } => self.add_set_back(run, relation, &name, members, &of, undone),
-            Inverse::Unadd { ctor, record, of } => self.unadd(run, ctor, record, &of),
+                ..
+            } => self.add_set_back(run, relation, &name, members, undone),
+            Inverse::Unadd { ctor, record, .. } => self.unadd(run, ctor, record),
             Inverse::Readd {
                 ty,
                 ctor,
@@ -408,8 +406,8 @@ impl Model {
                     gone,
                 )
             }
-            Inverse::States { states, of } => self.set_states(states, &of),
-            Inverse::Grants { back } => {
+            Inverse::States { states, .. } => self.set_states(states),
+            Inverse::Grants { back, .. } => {
                 crate::evolve::grant::hold(&mut self.grants, back);
                 Ok(())
             }
@@ -429,7 +427,7 @@ impl Model {
             } => self.restore(run, (&module, "relation", &name), &text, &of, gone),
             Inverse::Redeclare { decl, text, of } => {
                 let Some(item) = self.decl_of(decl) else {
-                    return refuse(dropped(&of, decl.word()));
+                    return broken(UNHELD);
                 };
                 match text {
                     Some(text) => {
@@ -464,18 +462,11 @@ impl Model {
                 Ok(())
             }
             Inverse::Reorder {
-                ty,
-                ctor,
-                order,
-                of,
-            } => self.reorder(ty, ctor, &order, &of, gone),
+                ty, ctor, order, ..
+            } => self.reorder(ty, ctor, &order),
             Inverse::KeyClause { relation, text, of } => {
-                let r = relation;
-                if !self.relations.contains_key(&r) {
-                    return refuse(dropped(&of, "relation"));
-                }
                 let text = self.spell(&text, &of, gone)?;
-                self.key_clause(r, &text)
+                self.key_clause(relation, &text)
             }
             Inverse::Replay {
                 logged,
@@ -601,28 +592,26 @@ impl Model {
         Ok(())
     }
 
-    /// Add set `name` of relation variable `relation` with constructors `members` back, refusing as
-    /// the inverse of `of` when a later migration dropped one.
+    /// Add set `name` of relation variable `relation` with constructors `members` back.
     fn add_set_back(
         &mut self,
         run: &mut Run,
         relation: u64,
         name: &str,
         members: Vec<u64>,
-        of: &str,
         undone: &mut Undone,
     ) -> Res<()> {
         let (Some(rel), Some(module)) = (
             self.relations.get(&relation),
             self.module_of((Space::Shared, relation)),
         ) else {
-            return refuse(dropped(of, "relation"));
+            return broken(UNHELD);
         };
         let (rel, module) = (rel.name.clone(), module.to_string());
         let mut ctors = Vec::new();
         for c in members {
             let Some(ctor) = self.ctors.get(&c) else {
-                return refuse(dropped(of, "constructor"));
+                return broken(UNHELD);
             };
             ctors.push(ctor.name.clone());
         }
@@ -670,22 +659,17 @@ impl Model {
         }
     }
 
-    /// Set each write state of `states` to what it states, refusing as the inverse of `of` when a
-    /// later migration dropped its relation variable or constructor.
-    fn set_states(&mut self, states: Vec<(StateKey, Option<State>)>, of: &str) -> Res<()> {
-        for (s, _) in &states {
-            let (rel, ctor) = match *s {
-                StateKey::Relation(r, c) => (Some(r), c),
-                StateKey::Value(c) => (None, c),
-            };
-            if rel
-                .is_some_and(|r| !self.relations.contains_key(&r) && !self.stores.contains_key(&r))
-            {
-                return refuse(dropped(of, "relation"));
+    /// Set each write state of `states` to what it states.
+    fn set_states(&mut self, states: Vec<(StateKey, Option<State>)>) -> Res<()> {
+        let held = |s: &StateKey| match *s {
+            StateKey::Relation(r, c) => {
+                (self.relations.contains_key(&r) || self.stores.contains_key(&r))
+                    && self.ctors.contains_key(&c)
             }
-            if !self.ctors.contains_key(&ctor) {
-                return refuse(dropped(of, "constructor"));
-            }
+            StateKey::Value(c) => self.ctors.contains_key(&c),
+        };
+        if !states.iter().all(|(s, _)| held(s)) {
+            return broken(UNHELD);
         }
         for (s, state) in states {
             match (s, state) {
@@ -920,39 +904,18 @@ impl Model {
         }
     }
 
-    /// Put the fields of constructor `ctor` of type `ty`, or of its header, in `order`, refusing
-    /// as the inverse of `of` when a later migration dropped one of them.
-    fn reorder(
-        &mut self,
-        ty: u64,
-        ctor: Option<u64>,
-        order: &[u64],
-        of: &str,
-        gone: &Gone,
-    ) -> Res<()> {
-        let held = |space: Space, id: u64, kind: KeyKind| -> Res<bool> {
-            let live = match space {
-                Space::Field => self.fields.contains_key(&id),
-                _ => self.ctors.contains_key(&id),
-            };
-            if !live && gone.contains_key(&(space, id)) {
-                return refuse(dropped(of, word(kind)));
-            }
-            Ok(live)
-        };
-        if let Some(c) = ctor
-            && !held(Space::Shared, c, KeyKind::Ctor)?
-        {
+    /// Put the fields of constructor `ctor` of type `ty`, or of its header, in `order`.
+    fn reorder(&mut self, ty: u64, ctor: Option<u64>, order: &[u64]) -> Res<()> {
+        if ctor.is_some_and(|c| !self.ctors.contains_key(&c)) {
             return Ok(());
         }
-        let mut fields = Vec::new();
-        for &f in order {
-            if held(Space::Field, f, KeyKind::Field)? {
-                fields.push(f);
-            }
-        }
+        let fields: Vec<u64> = order
+            .iter()
+            .copied()
+            .filter(|f| self.fields.contains_key(f))
+            .collect();
         if !self.types.contains_key(&ty) {
-            return refuse(dropped(of, "type"));
+            return broken(UNHELD);
         }
         let part = match (&self.types[&ty].body, ctor) {
             (TypeBody::Record { ctor }, _) => Some(*ctor),
