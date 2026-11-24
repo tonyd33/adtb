@@ -521,8 +521,8 @@ after a schema change.
   `T`, through constructor patterns, or-patterns and named-set
   patterns. On `T.S` it must name every constructor of `S`, and
   naming a constructor outside `S` is a type error.
-- `_` does not match a value of a sum. It matches only a scalar: a
-  base type or a newtype. Within a constructor pattern, a field of a
+- `_` does not match a value of a sum. It matches a value of any
+  other type. Within a constructor pattern, a field of a
   sum type is covered by naming its constructors in some arm; a field
   that no arm discriminates (every arm has a binder or `_` there) is
   covered by that binder or `_`, whatever its type.

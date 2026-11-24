@@ -613,10 +613,6 @@ Postconditions on a normal form, beyond those of §1:
 - Normalisation never duplicates or drops a term that contains
   `Fresh`. A `Let` whose bound expression contains `Fresh` is kept, and
   its variable is substituted nowhere.
-- A `Let` remains only where its bound expression is partial or
-  contains `Fresh`, and no rewrite of
-  [../spec/semantics.md §5.11](../spec/semantics.md#511-normalisation)
-  applies anywhere in it.
 - A node rebuilt from a checked node, its children normalised, keeps
   the type that node was checked at. A node a reduction puts in place
   of a checked node has that node's type or a subtype of it.
@@ -630,6 +626,11 @@ Postconditions on a normal form, beyond those of §1:
 - Every `sum` and `avg` ranges over bindings, never over values a
   `select` may have merged
   ([../spec/queries.md §10.1](../spec/queries.md#101-aggregates-range-over-bindings)).
+
+Note: the current rewrites keep a `Let` only where its bound expression
+is partial or contains `Fresh` and no rewrite of
+[../spec/semantics.md §5.11](../spec/semantics.md#511-normalisation)
+applies in it. This is not a postcondition, and no caller may rely on it.
 
 ### 7.1 Totality
 
