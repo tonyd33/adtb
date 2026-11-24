@@ -41,7 +41,7 @@ fn option(rest: &str) -> Option<Head> {
 type Reader = fn(&str) -> Option<Head>;
 
 /// The directives, each by its first word.
-const DIRECTIVES: [(&str, Reader); 39] = [
+const DIRECTIVES: [(&str, Reader); 40] = [
     ("seed", |rest| Some(Head::Seed(rest.parse().ok()?))),
     ("use", |rest| valued(rest).map(Head::Use)),
     ("option", option),
@@ -81,6 +81,7 @@ const DIRECTIVES: [(&str, Reader); 39] = [
     ("fatal", |rest| valued(rest).map(Head::Fatal)),
     ("retry", |rest| valued(rest).map(Head::Retry)),
     ("mark", fault::mark),
+    ("restamp", fault::restamp),
     ("damage", |rest| fault::fault(Fault::Damage, rest)),
     ("flip", |rest| fault::fault(Fault::Flip, rest)),
     ("lose", |rest| fault::fault(Fault::Lose, rest)),

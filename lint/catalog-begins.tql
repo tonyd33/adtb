@@ -1,8 +1,9 @@
 -- change_begins: a call of `Change::begin`, which begins a catalog transaction, outside the
 -- functions the open and create sequence runs: a deploy's rewrite, the record of grants, the
--- release of held drops, a migration, and the fill of a new catalog.
+-- release of held drops, a migration, and the fill of a new catalog; and a test's restamp of a
+-- migration's stored hash.
 
-opening = r"^(rewrite|record_grants|unhold|migrate_with|fill)$";
+opening = r"^(rewrite|record_grants|unhold|migrate_with|fill|restamp)$";
 
 begins = do {
   c <- descendants_of_kind :call_expression;

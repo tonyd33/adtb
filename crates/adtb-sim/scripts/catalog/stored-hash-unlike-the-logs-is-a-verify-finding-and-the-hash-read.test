@@ -1,0 +1,22 @@
+# A row of catalog::migrations whose hash differs from the one the log chains to is a finding of
+# verify. The next migration chains over the stored hash, and every read of a version's hash
+# takes its row's.
+use catalog-running
+
+restamp migration 1 ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+
+migrate
+  module auth
+  add type Note = { id: Key notes, text: Text }
+  add relation notes : Note key id generate sequence
+
+probe holding verify
+----
+Structure { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.538998Z, where: "catalog::migrations version 1: stored hash ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff, the log hashes 2e5a8e0ff0a1017e0af0e618c816bdaca98d01bfe40265520d52b6cd48a59662" }
+Structure { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.538998Z, where: "catalog::migrations version 2: stored hash d9c5c5ca26217ffc7a31e86efdc0a28a6ec109bce14897298af1c57010f0a89c, the log hashes a209f34fc6e7e70237f95210d1991acdbfff9e9715081f05d075c5261df8ae16" }
+
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query names () -> Set Text = from u in users select u.name
+
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Invalid { detail: "bundle web-1.0 pins version 1 with hash 2e5a8e0ff0a1017e0af0e618c816bdaca98d01bfe40265520d52b6cd48a59662, and the log's version 1 has hash ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" } } }

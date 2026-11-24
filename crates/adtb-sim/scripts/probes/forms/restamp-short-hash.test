@@ -1,0 +1,3 @@
+use stock
+
+restamp migration 1 ff

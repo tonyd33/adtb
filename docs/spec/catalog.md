@@ -2101,6 +2101,10 @@ and checks:
    constructor, has no entries in it.
 3. Logic: every admitted constraint, run once as its denial query over
    the whole database; every nonempty result is a finding.
+4. Log, when `verify` checks the whole database: the `hash` of each row of
+   `catalog::migrations` is its version's hash
+   ([evolution.md §2.1](evolution.md#21-position-and-hash)) as the log
+   chains it; each row whose hash differs is a `Structure` finding.
 
 A free page holds nothing, and neither check reads its contents as
 damage. A write the page lost before it was freed is still a lost

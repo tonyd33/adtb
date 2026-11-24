@@ -92,7 +92,7 @@ use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
 use crate::verify::{self, Depth, Problem, Report};
 
 use broken::refusal;
-pub use broken::{Broken, model_fault, refused_by};
+pub use broken::{Broken, model_fault, refused_by, unresolved};
 pub use deploy::Rewrite;
 pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
 pub use grants::Dormant;
@@ -108,7 +108,7 @@ pub(crate) use limits::{not_normal, past_limits};
 use memo::Memo;
 #[cfg(any(test, feature = "testing"))]
 pub use oplog::chained;
-pub use oplog::{Hash, VersionHash, chained_last, version_hash};
+pub use oplog::{Hash, VersionHash, chained_last, unchained, version_hash};
 use read::{Snapshot, delete_keyed, delete_rows};
 pub use readers::{Read, Reader, source_at, stale};
 pub(crate) use root::Changing;

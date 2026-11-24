@@ -242,6 +242,21 @@ pub(super) fn mark(rest: &str) -> Option<Head> {
     Some(Head::Mark(marked(rest)?))
 }
 
+pub(super) fn restamp(rest: &str) -> Option<Head> {
+    let (version, hex) = rest.strip_prefix("migration ")?.split_once(' ')?;
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut hash = [0; 32];
+    for (b, pair) in hash.iter_mut().zip(hex.as_bytes().chunks(2)) {
+        *b = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(Head::Restamp {
+        version: version.parse().ok()?,
+        hash,
+    })
+}
+
 pub(super) fn fault(fault: Fault, rest: &str) -> Option<Head> {
     Some(Head::Fault {
         fault,
@@ -403,7 +418,7 @@ impl State {
         self.crashing.take()
     }
 
-    /// Run a mark, fault, edit, crash or probe step.
+    /// Run a mark, restamp, fault, edit, crash or probe step.
     pub(super) fn step(
         &mut self,
         rt: &SimRuntime,
@@ -419,6 +434,13 @@ impl State {
                     .map(drop)
                     .map_err(|e| failed("the mark is not set", &e))
             }
+            Head::Restamp { version, hash } => t
+                .plant(Plant::Restamp {
+                    version: *version,
+                    hash: *hash,
+                })
+                .map(drop)
+                .map_err(|e| failed("the row is not restamped", &e)),
             Head::Fault { fault, page } => {
                 let pid = page.pid(t).map_err(|e| Differs::at(step, e))?;
                 self.roles.insert(pid, page.to_string());
@@ -453,7 +475,7 @@ impl State {
                 Ok(())
             }
             Head::Probe(probed) => probe_rows(step, self.probe(rt, t, probed)),
-            _ => unreachable!("state runs only marks, faults, edits, crashes and probes"),
+            _ => unreachable!("state runs only marks, restamps, faults, edits, crashes and probes"),
         }
     }
 

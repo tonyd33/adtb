@@ -66,6 +66,9 @@ pub enum Plant {
     /// Fail as the write path fails on meeting `error`, setting the marks it sets. Answers
     /// [`Planted::Refused`].
     FailOn(PageError),
+    /// Replace the hash the row of migration `version` of `catalog::migrations` holds by `hash`,
+    /// as one committed catalog transaction.
+    Restamp { version: u64, hash: [u8; 32] },
 }
 
 /// What a plant answers.
@@ -164,8 +167,19 @@ impl<R: Runtime> Testing<'_, R> {
                         .fail(write::Error::Exec(crate::exec::Error::Page(e))),
                 ));
             }
+            Plant::Restamp { version, hash } => {
+                return self.restamp(version, hash).map(|()| Planted::Done);
+            }
         }
         Ok(Planted::Done)
+    }
+
+    fn restamp(self, version: u64, hash: [u8; 32]) -> Result<(), Failed> {
+        let (w, pager) = (self.db.tested_db(), self.db.tested_pager());
+        self.db
+            .tested_catalog()
+            .restamp(pager, w.txns(), version, hash)
+            .map_err(|e| Failed::Write(e.into()))
     }
 
     fn insert(self, heap: Object, rows: &[Vec<Value>]) -> Result<Vec<Tid>, Failed> {

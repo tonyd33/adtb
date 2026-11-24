@@ -13,7 +13,8 @@ use adtb_lang::types::{RelId, Ty};
 use adtb_sys::lock::Lock;
 
 use crate::catalog::codec::{
-    Codec, Ctor, Decode, Field, Fields, IdField, Relation, Row, field, listed, relation,
+    Codec, Ctor, Decode, Field, Fields, IdField, MigrationRow, Relation, Row, field, listed,
+    relation,
 };
 use crate::catalog::{self, Catalog, Denial, KeptField, KeptRow, Rot, engine_relation};
 use crate::exec::{F64, Val};
@@ -823,6 +824,9 @@ impl<R: Runtime> Engine<R> {
                 at: format!("constraint {id}: {why}"),
             },
         }));
+        if matches!(scope, VerifyScope::Database) && !self.catalog.is_unread() {
+            found.extend(self.unchained(tx)?);
+        }
         if holding {
             job.phase("the file", 0.9);
             let inventory = self.db.structures().inventory(Some(self.db.txns()));
@@ -830,6 +834,33 @@ impl<R: Runtime> Engine<R> {
             found.extend(report.findings.iter().filter_map(Found::of_problem));
         }
         Ok(())
+    }
+
+    /// Returns a finding for each version whose row of `catalog::migrations`, as `tx` reads it,
+    /// holds a hash other than the one the log chains to.
+    fn unchained(&self, tx: &write::Txn) -> Result<Vec<Found>, write::Error> {
+        let schema = self.catalog.schema();
+        let codec = Codec::<MigrationRow>::new(schema);
+        let broken = |e: catalog::Error| write::Error::from(write::Broken::CatalogError(e));
+        let mut stored = BTreeMap::new();
+        for row in self.db.relation_rows(tx, codec.relation(), None)? {
+            let row = codec
+                .decode_val(schema, &row)
+                .map_err(|r| broken(r.into()))?;
+            stored.insert(row.version(), *row.hash());
+        }
+        let unchained = catalog::unchained(self.catalog.source(), &stored)
+            .map_err(|f| broken(catalog::unresolved(f).into()))?;
+        Ok(unchained
+            .into_iter()
+            .map(|(v, stored, chained)| Found::Structure {
+                at: format!(
+                    "catalog::migrations version {v}: stored hash {}, the log hashes {}",
+                    super::stated::hex(&stored),
+                    super::stated::hex(&chained)
+                ),
+            })
+            .collect())
     }
 
     /// Returns the damage that quarantined the commit log when `e` is that damage met by a read,

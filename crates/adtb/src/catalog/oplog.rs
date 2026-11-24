@@ -204,6 +204,24 @@ pub fn chained_last(previous: Hash, source: &Source) -> Replaying<Hash> {
     Ok(log.chained(previous, &ops))
 }
 
+/// Returns each version of the log of `source` whose hash in `stored` differs from the one
+/// [`version_hash`] chains to, with the stored hash and the chained one, in version order. A
+/// version `stored` lacks is not returned.
+///
+/// Fail as [`version_hash`] does.
+pub fn unchained(
+    source: &Source,
+    stored: &BTreeMap<u64, Hash>,
+) -> Replaying<Vec<(u64, Hash, Hash)>> {
+    let mut out = Vec::new();
+    chain(super::engine_declarations(), source, |v, _, h| {
+        if let Some(s) = stored.get(&v).filter(|&s| *s != h) {
+            out.push((v, *s, h));
+        }
+    })?;
+    Ok(out)
+}
+
 /// Returns the hash of the version after one whose hash is `previous`, migrated by `ops`.
 #[cfg(any(test, feature = "testing"))]
 pub fn chained(schema: &Schema, previous: Hash, ops: &[ResolvedOp]) -> Hash {

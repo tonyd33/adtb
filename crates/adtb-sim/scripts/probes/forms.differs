@@ -68,6 +68,7 @@ scripts/probes/forms/probe-plan-bodiless.test:3: `probe plan` takes a body
 scripts/probes/forms/query-suffix.test:3: `query sorted` is not a directive
 scripts/probes/forms/register-bodiless.test:3: `register web-1.0 pins 1 edition "2026-10" error` takes a body
 scripts/probes/forms/reopen-suffix.test:3: `reopen x` is not a directive
+scripts/probes/forms/restamp-short-hash.test:3: `restamp migration 1 ff` is not a directive
 scripts/probes/forms/restore-bare.test:3: `restore x` is not a directive
 scripts/probes/forms/restore-refused-rows.test:4: `----` is not a directive
 scripts/probes/forms/retry-bare.test:3: `retry` is not a directive

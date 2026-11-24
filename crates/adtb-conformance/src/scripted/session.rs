@@ -616,6 +616,7 @@ impl Script {
             | Head::Plan
             | Head::ProbePlan => role::sent_step(step, txn::texted(db, txns, step)?),
             Head::Mark(_)
+            | Head::Restamp { .. }
             | Head::Fault { .. }
             | Head::Edit { .. }
             | Head::Crash(_)
