@@ -566,9 +566,6 @@ impl Model {
                     }
                     _ => (Vec::new(), None, None),
                 };
-                if self.s.extra.next.is_multiple_of(2) {
-                    out.splice(0..0, self.transient(rng));
-                }
                 out.push(op(
                     Kind::AddType,
                     format!("add type {ty} = {{ id: Key {name}, a: I64 }}"),
@@ -653,13 +650,13 @@ impl Model {
         }
     }
 
-    /// Returns the operators adding a type and its relation, then an operator on them whose
-    /// inverse refuses while it is built, then dropping them.
-    fn transient(&mut self, rng: &mut Rng) -> Vec<Op> {
-        let n = self.fresh("");
-        let (r, t, k) = (format!("r{n}"), format!("T{n}"), format!("K{n}"));
-        let (a, b) = (format!("E{n}"), format!("F{n}"));
-        let (p, q, m) = (format!("P{n}"), format!("Q{n}"), format!("M{n}"));
+    /// Returns the operators adding a type and its relation, named by `n`, then an operator on
+    /// them whose inverse refuses while it is built, of the four kinds the one `variant` picks
+    /// modulo four, then dropping them.
+    pub(super) fn transient(n: u64, variant: u64) -> Vec<Op> {
+        let (r, t, k) = (format!("tr{n}"), format!("Tr{n}"), format!("Tk{n}"));
+        let (a, b) = (format!("Te{n}"), format!("Tf{n}"));
+        let (p, q, m) = (format!("Tp{n}"), format!("Tq{n}"), format!("Tm{n}"));
         let mut out = vec![
             op(
                 Kind::AddType,
@@ -672,28 +669,37 @@ impl Model {
                 format!("add relation {r} : {t} key id generate sequence"),
             ),
         ];
-        let reach = Some(super::Reach::RefusedInverseOfTransient);
-        let refused = match rng.below(4) {
-            0 => op(Kind::DropField, format!("drop field {t}.{a}.a")),
-            1 => op(Kind::MoveFieldDown, format!("move field {t}.h to {t}.{a}")),
-            2 => op(
-                Kind::Split,
-                format!(
-                    "split constructor {t}.{a} into {p} {{ a: I64, b: I64 }} | {q} {{ a: I64, b: I64 }}\n  by match\n    | {a} {{ a, b }} -> {p} {{ a: a, b: b }}"
+        let (refused, reach) = match variant % 4 {
+            0 => (
+                op(Kind::DropField, format!("drop field {t}.{a}.a")),
+                super::Reach::TransientDropField,
+            ),
+            1 => (
+                op(Kind::MoveFieldDown, format!("move field {t}.h to {t}.{a}")),
+                super::Reach::TransientMoveDown,
+            ),
+            2 => (
+                op(
+                    Kind::Split,
+                    format!(
+                        "split constructor {t}.{a} into {p} {{ a: I64, b: I64 }} | {q} {{ a: I64, b: I64 }}\n  by match\n    | {a} {{ a, b }} -> {p} {{ a: a, b: b }}"
+                    ),
                 ),
+                super::Reach::TransientLossySplit,
             ),
             _ => {
                 out.insert(0, op(Kind::AddType, format!("add type {k} = {a} | {b}")));
-                op(
+                let merge = op(
                     Kind::Merge,
                     format!(
                         "merge constructor {t}.({a} | {b}) into {m} {{ k: {k}, b: I64 }}\n  by match\n    | {a} x -> {m} {{ k: {a}, b: x.b }}\n    | {b} y -> {m} {{ k: {b}, b: y.b }}"
                     ),
-                )
+                );
+                (merge, super::Reach::TransientLossyMerge)
             }
         };
         let merged = refused.kind == Kind::Merge;
-        out.push(refused.reaching(reach));
+        out.push(refused.reaching(Some(reach)));
         out.push(op(Kind::DropRelation, format!("drop relation {r}")));
         out.push(op(Kind::DropType, format!("drop type {t}")));
         if merged {

@@ -177,13 +177,18 @@ pub enum Reach {
     DisableRetagTarget,
     /// A broken `deprecate` of an enabled constructor a delete action retags into.
     DeprecateRetagTarget,
-    /// An operator whose inverse refuses while it is built, on a type and relation the
-    /// migration adds and drops.
-    RefusedInverseOfTransient,
+    /// A `drop field`, whose inverse needs a fill, of a type the migration adds and drops.
+    TransientDropField,
+    /// A `move field` down, whose inverse needs a fill, of a type the migration adds and drops.
+    TransientMoveDown,
+    /// A lossy split of a constructor of a type the migration adds and drops.
+    TransientLossySplit,
+    /// A merge dropping a field, of constructors of a type the migration adds and drops.
+    TransientLossyMerge,
 }
 
 impl Reach {
-    pub const ALL: [Reach; 10] = [
+    pub const ALL: [Reach; 13] = [
         Reach::MergeAcrossStages,
         Reach::MovedDownAction,
         Reach::ArmLater,
@@ -193,8 +198,23 @@ impl Reach {
         Reach::ReplacedWhileUnbuilt,
         Reach::DisableRetagTarget,
         Reach::DeprecateRetagTarget,
-        Reach::RefusedInverseOfTransient,
+        Reach::TransientDropField,
+        Reach::TransientMoveDown,
+        Reach::TransientLossySplit,
+        Reach::TransientLossyMerge,
     ];
+
+    /// Returns whether the shape is an operator whose inverse refuses while it is built, on a
+    /// type the migration adds and drops.
+    pub fn transient(self) -> bool {
+        matches!(
+            self,
+            Reach::TransientDropField
+                | Reach::TransientMoveDown
+                | Reach::TransientLossySplit
+                | Reach::TransientLossyMerge
+        )
+    }
 }
 
 /// An operator of a drawn migration.
@@ -331,10 +351,9 @@ impl Migration {
     /// Returns whether a `revert` of the migration, right after it, restores the data and
     /// schema before it, each operator drawn where no switch steers a known finding.
     pub fn exact(&self) -> bool {
-        self.ops.iter().all(|o| {
-            let transient = o.reach == Some(Reach::RefusedInverseOfTransient);
-            !o.broken && (o.kind.exact() || transient)
-        })
+        self.ops
+            .iter()
+            .all(|o| !o.broken && (o.kind.exact() || o.reach.is_some_and(Reach::transient)))
     }
 
     /// Returns the rows the migration leaves of `rows`, those of the case it was drawn over, or
@@ -736,7 +755,9 @@ impl Case {
     /// Returns a migration of 1 to 4 drawn operators over the case's schema with `seed`,
     /// producing version `version`, its first of `kind` and broken when `broke`, or `None` when
     /// the schema holds nothing an operator of `kind` applies to. Each operator after it is
-    /// drawn valid; an operator another needs comes before it.
+    /// drawn valid; an operator another needs comes before it. When not `broke` and `version` is
+    /// a multiple of 3, operators adding a type and relation, acting on them and dropping them
+    /// follow.
     pub fn migration(&self, seed: u64, kind: Kind, broke: bool, version: u64) -> Option<Migration> {
         let mut rng = Rng::new(seed);
         let mut m = Model {
@@ -761,6 +782,10 @@ impl Case {
                     break;
                 }
             }
+        }
+        if !broke && version.is_multiple_of(3) {
+            ops.extend(Model::transient(version, version / 3));
+            steps.push((ops.len(), m.s.clone(), m.keys.clone()));
         }
         Some(Migration {
             ops,
