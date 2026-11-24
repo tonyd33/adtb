@@ -566,6 +566,9 @@ impl Model {
                     }
                     _ => (Vec::new(), None, None),
                 };
+                if self.s.extra.next.is_multiple_of(2) {
+                    out.splice(0..0, self.transient(rng));
+                }
                 out.push(op(
                     Kind::AddType,
                     format!("add type {ty} = {{ id: Key {name}, a: I64 }}"),
@@ -652,6 +655,55 @@ impl Model {
             }
             other => unreachable!("{other:?} is no relation operator"),
         }
+    }
+
+    /// Returns the operators adding a type and its relation, then an operator on them whose
+    /// inverse refuses while it is built, then dropping them.
+    fn transient(&mut self, rng: &mut Rng) -> Vec<Op> {
+        let n = self.fresh("");
+        let (r, t, k) = (format!("r{n}"), format!("T{n}"), format!("K{n}"));
+        let (a, b) = (format!("E{n}"), format!("F{n}"));
+        let (p, q, m) = (format!("P{n}"), format!("Q{n}"), format!("M{n}"));
+        let mut out = vec![
+            op(
+                Kind::AddType,
+                format!(
+                    "add type {t} {{ id: Key {r}, h: I64 }} = {a} {{ a: I64, b: I64 }} | {b} {{ b: I64 }}"
+                ),
+            ),
+            op(
+                Kind::AddRelation,
+                format!("add relation {r} : {t} key id generate sequence"),
+            ),
+        ];
+        let reach = Some(super::Reach::RefusedInverseOfTransient);
+        let refused = match rng.below(4) {
+            0 => op(Kind::DropField, format!("drop field {t}.{a}.a")),
+            1 => op(Kind::MoveFieldDown, format!("move field {t}.h to {t}.{a}")),
+            2 => op(
+                Kind::Split,
+                format!(
+                    "split constructor {t}.{a} into {p} {{ a: I64, b: I64 }} | {q} {{ a: I64, b: I64 }}\n  by match\n    | {a} {{ a, b }} -> {p} {{ a: a, b: b }}"
+                ),
+            ),
+            _ => {
+                out.insert(0, op(Kind::AddType, format!("add type {k} = {a} | {b}")));
+                op(
+                    Kind::Merge,
+                    format!(
+                        "merge constructor {t}.({a} | {b}) into {m} {{ k: {k}, b: I64 }}\n  by match\n    | {a} x -> {m} {{ k: {a}, b: x.b }}\n    | {b} y -> {m} {{ k: {b}, b: y.b }}"
+                    ),
+                )
+            }
+        };
+        let merged = refused.kind == Kind::Merge;
+        out.push(refused.reaching(reach));
+        out.push(op(Kind::DropRelation, format!("drop relation {r}")));
+        out.push(op(Kind::DropType, format!("drop type {t}")));
+        if merged {
+            out.push(op(Kind::DropType, format!("drop type {k}")));
+        }
+        out
     }
 
     /// Draw a named set operator of `kind`, as [`Model::draw`] does.

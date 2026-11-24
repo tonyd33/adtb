@@ -1,5 +1,5 @@
 use crate::evolve::*;
-use crate::ids::{KeyKind, Owner, Space};
+use crate::ids::{KeyKind, Owner, Space, is_named};
 
 use super::op::{Kind as OpKind, Op, StateKey};
 use super::{IndexKind, Item, Model, Obj, TypeBody};
@@ -429,57 +429,76 @@ impl Replayed {
     }
 }
 
-/// Drop from `steps`, the inverses of the operators of a migration that pass through `states`,
-/// the inverse of each operator that adds or removes only objects the migration both adds and
-/// drops, when every operator adding or removing such an object is dropped too, and each step
-/// naming by id only such objects.
-fn cancel_transient(steps: &mut [Undoing], states: &[Source]) {
-    let ends = [states.first(), states.last()];
-    let lasting: BTreeSet<Obj> = ends
-        .into_iter()
-        .flatten()
-        .flat_map(|s| holding(&s.ids))
-        .collect();
-    let mut transient: BTreeSet<Obj> = states
-        .iter()
-        .flat_map(|s| holding(&s.ids))
-        .filter(|o| !lasting.contains(o))
-        .collect();
-    let touched: Vec<BTreeSet<Obj>> = states
-        .windows(2)
-        .map(|pair| {
-            holding(&pair[0].ids)
-                .symmetric_difference(&holding(&pair[1].ids))
-                .copied()
-                .collect()
-        })
-        .collect();
-    let cancelled =
-        |t: &BTreeSet<Obj>, transient: &BTreeSet<Obj>| !t.is_empty() && t.is_subset(transient);
-    loop {
-        let kept: BTreeSet<Obj> = touched
-            .iter()
-            .filter(|t| !cancelled(t, &transient))
+/// The objects a migration passing through `states` both adds and drops, when every operator
+/// adding, removing or rekeying such an object adds, removes or rekeys only such objects, with
+/// whether each operator does.
+struct Transient {
+    objects: BTreeSet<Obj>,
+    cancelled: Vec<bool>,
+}
+
+impl Transient {
+    fn of(states: &[Source]) -> Transient {
+        let ends = [states.first(), states.last()];
+        let lasting: BTreeSet<Obj> = ends
+            .into_iter()
             .flatten()
-            .copied()
+            .flat_map(|s| holding(&s.ids))
             .collect();
-        let before = transient.len();
-        transient.retain(|o| !kept.contains(o));
-        if transient.len() == before {
-            break;
+        let mut objects: BTreeSet<Obj> = states
+            .iter()
+            .flat_map(|s| holding(&s.ids))
+            .filter(|o| !lasting.contains(o))
+            .collect();
+        let built: Vec<bool> = states.iter().map(|s| s.built().is_ok()).collect();
+        let touched: Vec<BTreeSet<Obj>> = states
+            .windows(2)
+            .zip(built.windows(2))
+            .map(|(pair, built)| {
+                // A source that does not build holds the ids of its named objects alone.
+                let known = |s: &Source| -> BTreeSet<(Obj, ObjectKey)> {
+                    s.ids
+                        .iter()
+                        .filter(|(k, _)| built[0] && built[1] || is_named(k.kind()))
+                        .map(|(k, &id)| ((k.kind().space(), id), k.clone()))
+                        .collect()
+                };
+                known(&pair[0])
+                    .symmetric_difference(&known(&pair[1]))
+                    .map(|(o, _)| *o)
+                    .collect()
+            })
+            .collect();
+        let cancelled =
+            |t: &BTreeSet<Obj>, objects: &BTreeSet<Obj>| !t.is_empty() && t.is_subset(objects);
+        loop {
+            let kept: BTreeSet<Obj> = touched
+                .iter()
+                .filter(|t| !cancelled(t, &objects))
+                .flatten()
+                .copied()
+                .collect();
+            let before = objects.len();
+            objects.retain(|o| !kept.contains(o));
+            if objects.len() == before {
+                break;
+            }
         }
+        let cancelled = touched.iter().map(|t| cancelled(t, &objects)).collect();
+        Transient { objects, cancelled }
     }
-    if transient.is_empty() {
-        return;
-    }
-    for ((step, _), t) in steps.iter_mut().zip(&touched) {
-        if cancelled(t, &transient) {
-            step.clear();
+
+    /// Drop from `steps` each step naming by id only transient objects.
+    fn drop_named(&self, steps: &mut [Undoing]) {
+        if self.objects.is_empty() {
+            return;
         }
-        step.retain(|inv| {
-            let (named, _) = inv.named();
-            named.is_empty() || !named.iter().all(|o| transient.contains(o))
-        });
+        for (step, _) in steps {
+            step.retain(|inv| {
+                let (named, _) = inv.named();
+                named.is_empty() || !named.iter().all(|o| self.objects.contains(o))
+            });
+        }
     }
 }
 
@@ -563,10 +582,15 @@ impl Cx<'_> {
             cell.set(names).ok();
         }
         let fills = Fills::new(fills);
+        let transient = Transient::of(&states);
         for (i, op) in logged.operators.iter().enumerate() {
             let (before, state) = (&states[i], &states[i + 1]);
             if i > 0 && before.built().is_ok() {
                 start = before;
+            }
+            if transient.cancelled[i] {
+                steps.push((Vec::new(), removed(before, state)));
+                continue;
             }
             let around = ((before, &models[i]), (state, &models[i + 1]));
             let run = Run::new(&logged, &cell, &fills);
@@ -581,7 +605,7 @@ impl Cx<'_> {
             }
             steps.push((step, removed(before, state)));
         }
-        cancel_transient(&mut steps, &states);
+        transient.drop_named(&mut steps);
         if self.accepting && !self.replaying {
             self.untaken(migration, &fills)?;
         }

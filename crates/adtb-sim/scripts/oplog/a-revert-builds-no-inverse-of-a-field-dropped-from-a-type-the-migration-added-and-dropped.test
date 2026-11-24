@@ -1,0 +1,31 @@
+seed 5
+
+migrate
+  module app
+  add module app
+  add type O = { id: Key os, n: I64 }
+  add relation os : O key id generate sequence
+
+migrate
+  module app
+  add type T = { id: Key r, a: I64, b: I64 }
+  add relation r : T key id generate sequence
+  drop field T.a
+  drop relation r
+  drop type T
+
+reopen
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "revert 0002", detail: "no inverse of migration 0002 needs `fill T.a`" } } }
+  module app
+  revert 0002
+    fill T.a = 0
+
+migrate
+  module app
+  revert 0002
+
+query
+  count(o for o in os)
+----
+0

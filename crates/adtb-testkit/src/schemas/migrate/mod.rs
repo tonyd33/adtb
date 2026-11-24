@@ -177,10 +177,13 @@ pub enum Reach {
     DisableRetagTarget,
     /// A broken `deprecate` of an enabled constructor a delete action retags into.
     DeprecateRetagTarget,
+    /// An operator whose inverse refuses while it is built, on a type and relation the
+    /// migration adds and drops.
+    RefusedInverseOfTransient,
 }
 
 impl Reach {
-    pub const ALL: [Reach; 9] = [
+    pub const ALL: [Reach; 10] = [
         Reach::MergeAcrossStages,
         Reach::MovedDownAction,
         Reach::ArmLater,
@@ -190,6 +193,7 @@ impl Reach {
         Reach::ReplacedWhileUnbuilt,
         Reach::DisableRetagTarget,
         Reach::DeprecateRetagTarget,
+        Reach::RefusedInverseOfTransient,
     ];
 }
 
@@ -327,7 +331,10 @@ impl Migration {
     /// Returns whether a `revert` of the migration, right after it, restores the data and
     /// schema before it, each operator drawn where no switch steers a known finding.
     pub fn exact(&self) -> bool {
-        self.ops.iter().all(|o| !o.broken && o.kind.exact())
+        self.ops.iter().all(|o| {
+            let transient = o.reach == Some(Reach::RefusedInverseOfTransient);
+            !o.broken && (o.kind.exact() || transient)
+        })
     }
 
     /// Returns the rows the migration leaves of `rows`, those of the case it was drawn over, or

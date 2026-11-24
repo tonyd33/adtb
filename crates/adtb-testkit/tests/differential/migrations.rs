@@ -1241,7 +1241,13 @@ fn run(seed: u64, reached: &mut Reached, last: u64, instead: Option<&Migration>)
                         if ended != Ended::Committed && o.unimaged() {
                             *reached.unimaged.entry(o.kind()).or_default() += 1;
                         }
-                        if let (Ended::Committed | Ended::Refused, Some(r)) = (ended, o.reach()) {
+                        let judged = |r| {
+                            r != Reach::RefusedInverseOfTransient
+                                || ended == Ended::Committed && m.exact()
+                        };
+                        if let (Ended::Committed | Ended::Refused, Some(r)) = (ended, o.reach())
+                            && judged(r)
+                        {
                             *reached.shapes.entry(r).or_default() += 1;
                         }
                     }
