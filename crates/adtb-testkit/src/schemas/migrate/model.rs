@@ -608,7 +608,12 @@ impl Model {
                         format!("rename relation {from} to {other}"),
                     )]);
                 }
-                let to = self.fresh("s");
+                let bound = super::super::BOUND;
+                let to = if self.s.rels.iter().all(|r| r.name != bound) {
+                    bound.to_owned()
+                } else {
+                    self.fresh("s")
+                };
                 self.s.rels[i].name.clone_from(&to);
                 self.keys.renamed(&from, &to);
                 let text = format!("rename relation {from} to {to}");

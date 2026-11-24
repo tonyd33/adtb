@@ -48,6 +48,11 @@ fn witnesses(schema: &Schema) -> String {
         out.push_str(&format!(
             "define fn wt_{name} (x: {tn}, y: app::{tn}) -> I64 = 1\n"
         ));
+        out.push_str(&format!(
+            "define fn wr_{name} () -> Set ({{ a: Key {name} }}) =\n  \
+             from {b} in {name} from x in {name} select {{ a: key x }}\n",
+            b = schemas::BOUND
+        ));
         for s in &rel.sets {
             out.push_str(&format!(
                 "define fn ws_{name} () -> Set ({{ a: Key {name} }}) =\n  \
@@ -476,9 +481,26 @@ fn binding(toks: &[(Tok, Range<usize>)], k: usize) -> bool {
 }
 
 /// Returns the refusal of each capture the rename `op` makes in `s`: a `rename field` to
-/// [`schemas::BOUND`] in a witness check whose `match` binds that name beside the field.
+/// [`schemas::BOUND`] in a witness check whose `match` binds that name beside the field, and a
+/// `rename relation` to it in the witness function whose `from` binds that name before naming
+/// the relation again.
 fn captures(s: &Source, op: &str) -> Vec<String> {
     let b = schemas::BOUND;
+    if let Some(old) = op
+        .strip_prefix("rename relation ")
+        .and_then(|r| r.strip_suffix(&format!(" to {b}")))
+    {
+        return s
+            .decls
+            .iter()
+            .filter(|d| {
+                d.text
+                    .contains(&format!("from {b} in {old} from x in {old} "))
+            })
+            .filter_map(|d| d.text.strip_prefix("fn ")?.split_whitespace().next())
+            .map(|n| format!("`{b}` in fn `{n}` would name the local binder `{b}`"))
+            .collect();
+    }
     let Some(old) = op
         .strip_prefix("rename field ")
         .and_then(|r| r.strip_suffix(&format!(" to {b}")))
@@ -565,7 +587,12 @@ fn search(
             let after = match migrated(&walk.source, &prefix) {
                 Ok(a) => a,
                 Err(why) if captures(&before, o.text()).contains(&why) => {
-                    *seen.entry("a capture refused").or_default() += 1;
+                    let by = if o.kind() == Kind::RenameRelation {
+                        "a capture by a relation's name refused"
+                    } else {
+                        "a capture refused"
+                    };
+                    *seen.entry(by).or_default() += 1;
                     break;
                 }
                 Err(why) if renames => {
@@ -631,6 +658,7 @@ fn a_rename_rewrites_exactly_the_tokens_that_resolve_to_its_object() {
             "another object of the name kept",
             "an object of the name in another module kept",
             "a capture refused",
+            "a capture by a relation's name refused",
         ],
     );
 }

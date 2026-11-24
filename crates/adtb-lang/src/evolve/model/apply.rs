@@ -882,9 +882,11 @@ impl Model {
 
     /// Refuse when a name of an object `before` names otherwise resolves otherwise in the build
     /// of a declaration that can bind names: a name a local binder of its spelling captures,
-    /// naming the declaration and the binder. Accept declarations that do not build.
+    /// naming the declaration and the binder. Accept declarations that did not build before the
+    /// rename either.
     ///
-    /// Fail with a model fault on such a name the build resolves to other objects.
+    /// Fail with a model fault on such a name the build resolves to other objects, and on
+    /// declarations that built before the rename and do not after it.
     fn faithful(&self, before: &Model, run: &mut Run) -> Res<()> {
         let all = self.named();
         let was: Vec<&(String, Vec<Obj>)> = all
@@ -898,6 +900,9 @@ impl Model {
             return Ok(());
         }
         let Ok((built, _)) = self.built(&[], &run.ahead(self)) else {
+            if before.built(&[], &run.ahead(before)).is_ok() {
+                return broken("a rename leaves declarations that built unbuilt");
+            }
             return Ok(());
         };
         for i in 0..self.decls.len() {
