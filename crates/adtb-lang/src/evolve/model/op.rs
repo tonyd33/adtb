@@ -1294,7 +1294,42 @@ impl Resolving<'_> {
                     self.found_path(p);
                 }
             }
-            _ => {}
+            OperatorKind::AddModule(_)
+            | OperatorKind::DropModule(_)
+            | OperatorKind::AddType(_)
+            | OperatorKind::DropType(_)
+            | OperatorKind::RenameType(..)
+            | OperatorKind::AddRelation(_)
+            | OperatorKind::DropRelation(_)
+            | OperatorKind::RenameRelation(..)
+            | OperatorKind::AddSet(_)
+            | OperatorKind::DropSet(..)
+            | OperatorKind::RenameSet(..)
+            | OperatorKind::RenameConstructor(..)
+            | OperatorKind::AddField { .. }
+            | OperatorKind::AlterField { .. }
+            | OperatorKind::DropField(_)
+            | OperatorKind::RenameField(..)
+            | OperatorKind::DefineFn(_)
+            | OperatorKind::DropFn(_)
+            | OperatorKind::AddConstraint(_)
+            | OperatorKind::DropConstraint(_)
+            | OperatorKind::AddCheck(_)
+            | OperatorKind::DropCheck(_)
+            | OperatorKind::Store(_)
+            | OperatorKind::Unstore(_)
+            | OperatorKind::AddComputed { .. }
+            | OperatorKind::DefineAggregate(_)
+            | OperatorKind::DropAggregate(_)
+            | OperatorKind::Enable(CtorTarget::Type(_))
+            | OperatorKind::Disable(CtorTarget::Type(_))
+            | OperatorKind::Deprecate(CtorTarget::Type(_))
+            | OperatorKind::Script(_)
+            | OperatorKind::Install { .. }
+            | OperatorKind::Uninstall(_)
+            | OperatorKind::AdoptTzdb { .. }
+            | OperatorKind::Grant(_)
+            | OperatorKind::Revoke(_) => {}
         }
     }
 
@@ -1309,7 +1344,58 @@ impl Resolving<'_> {
                 let rel = self.found_relation(relation);
                 self.found_computed(rel, field);
             }
-            _ => {}
+            OperatorKind::AddModule(_)
+            | OperatorKind::DropModule(_)
+            | OperatorKind::AddType(_)
+            | OperatorKind::DropType(_)
+            | OperatorKind::RenameType(..)
+            | OperatorKind::AddRelation(_)
+            | OperatorKind::DropRelation(_)
+            | OperatorKind::RenameRelation(..)
+            | OperatorKind::AddSet(_)
+            | OperatorKind::DropSet(..)
+            | OperatorKind::RenameSet(..)
+            | OperatorKind::AddConstructor { .. }
+            | OperatorKind::RemoveConstructor(_)
+            | OperatorKind::RenameConstructor(..)
+            | OperatorKind::SplitConstructor { .. }
+            | OperatorKind::MergeConstructor { .. }
+            | OperatorKind::NestConstructor { .. }
+            | OperatorKind::UnnestConstructor(..)
+            | OperatorKind::AlterField { .. }
+            | OperatorKind::DropField(_)
+            | OperatorKind::RenameField(..)
+            | OperatorKind::MoveField { .. }
+            | OperatorKind::AddUnique(..)
+            | OperatorKind::DropUnique(..)
+            | OperatorKind::AddIndex { .. }
+            | OperatorKind::DropIndex { .. }
+            | OperatorKind::Rekey { .. }
+            | OperatorKind::AddDefault { .. }
+            | OperatorKind::DropDefault { .. }
+            | OperatorKind::DefineFn(_)
+            | OperatorKind::RedefineFn(_)
+            | OperatorKind::DropFn(_)
+            | OperatorKind::AddConstraint(_)
+            | OperatorKind::DropConstraint(_)
+            | OperatorKind::AddCheck(_)
+            | OperatorKind::DropCheck(_)
+            | OperatorKind::Store(_)
+            | OperatorKind::Unstore(_)
+            | OperatorKind::RedefineComputed { .. }
+            | OperatorKind::DropComputed(..)
+            | OperatorKind::DefineAggregate(_)
+            | OperatorKind::DropAggregate(_)
+            | OperatorKind::Enable(_)
+            | OperatorKind::Disable(_)
+            | OperatorKind::Deprecate(_)
+            | OperatorKind::Revert { .. }
+            | OperatorKind::Script(_)
+            | OperatorKind::Install { .. }
+            | OperatorKind::Uninstall(_)
+            | OperatorKind::AdoptTzdb { .. }
+            | OperatorKind::Grant(_)
+            | OperatorKind::Revoke(_) => {}
         }
     }
 }
