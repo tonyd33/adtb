@@ -1,5 +1,5 @@
 use super::expr::{Binding, Comp, E, Join, Step};
-use super::world::{Field, T, World, value};
+use super::world::{Field, T, World, literal_int, value};
 use crate::Rng;
 
 /// A generator of expressions over the relations of one world, naming variables freshly.
@@ -201,7 +201,8 @@ impl Gen<'_> {
             return rng.pick(&reads).clone();
         }
         match t {
-            T::Int | T::Text | T::Bool | T::Float | T::Shade | T::OptInt => {
+            T::Int => Self::literal(t, literal_int(rng)),
+            T::Text | T::Bool | T::Float | T::Shade | T::OptInt => {
                 Self::literal(t, value(rng, t, self.w, &[]))
             }
             T::Key(r) => E::Lit(self.w.key(*r, 1 + rng.below(3))),

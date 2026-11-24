@@ -211,7 +211,7 @@ pub fn decimal_div(a: i128, s: u8, b: i128, t: u8, u: u8, r: Rounding) -> Result
 }
 
 /// Returns float `x` rounded to an integer of width `w`.
-pub fn float_to_int(x: f64, r: Rounding, w: Width) -> Result<i64, Fault> {
+pub fn float_to_int(x: f64, r: Rounding, w: Width) -> Result<Val, Fault> {
     if !x.is_finite() {
         return Err(Fault::NotFinite);
     }
@@ -219,7 +219,7 @@ pub fn float_to_int(x: f64, r: Rounding, w: Width) -> Result<i64, Fault> {
     if !(-(2f64.powi(63))..2f64.powi(63)).contains(&v) {
         return Err(Fault::OutOfRange);
     }
-    w.fit(i128::from(v as i64)).ok_or(Fault::OutOfRange)
+    w.int(i128::from(v as i64), Fault::OutOfRange)
 }
 
 /// Returns float `x` rounded to a decimal of scale `s`, as its unscaled digits.

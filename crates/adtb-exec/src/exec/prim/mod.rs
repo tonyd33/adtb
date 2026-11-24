@@ -64,6 +64,11 @@ impl Width {
         };
         b.fit_int(v)
     }
+
+    /// Returns `v` as an integer value of this width, failing with `fault` past its range.
+    fn int(self, v: i128, fault: Fault) -> Result<Val, Fault> {
+        self.fit(v).map(Val::Int).ok_or(fault)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -591,6 +596,11 @@ fn digits38(v: i128) -> Option<i128> {
     decimal_in_range(v).then_some(v)
 }
 
+/// Returns the length `n` as an `I64` value.
+fn length(n: usize) -> Val {
+    Val::Int(i64::try_from(n).expect("a length in memory fits an i64"))
+}
+
 /// Returns `op` of `xs`, or the fault it raises. Fails with `Unsupported` for values it cannot
 /// compute yet.
 #[expect(
@@ -611,10 +621,10 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
                 Arith::Div => p / q,
                 Arith::Rem => p % q,
             };
-            Val::Int(match w.fit(r) {
-                Some(v) => v,
-                None => return Ok(Err(Fault::ArithmeticOverflow)),
-            })
+            match w.int(r, Fault::ArithmeticOverflow) {
+                Ok(v) => v,
+                Err(f) => return Ok(Err(f)),
+            }
         }
         Op::IntNeg(w) | Op::IntAbs(w) => {
             let p = i128::from(int(x())?);
@@ -623,9 +633,9 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
             } else {
                 p.abs()
             };
-            match w.fit(r) {
-                Some(v) => Val::Int(v),
-                None => return Ok(Err(Fault::ArithmeticOverflow)),
+            match w.int(r, Fault::ArithmeticOverflow) {
+                Ok(v) => v,
+                Err(f) => return Ok(Err(f)),
             }
         }
         Op::DecAdd { s, t, sub } => {
@@ -797,9 +807,9 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
             }));
         }
         Op::Same => x().clone(),
-        Op::IntToInt(w) => match w.fit(i128::from(int(x())?)) {
-            Some(v) => Val::Int(v),
-            None => return Ok(Err(Fault::OutOfRange)),
+        Op::IntToInt(w) => match w.int(i128::from(int(x())?), Fault::OutOfRange) {
+            Ok(v) => v,
+            Err(f) => return Ok(Err(f)),
         },
         Op::IntToDec(s) => {
             match Wide::from_i128(i128::from(int(x())?))
@@ -828,11 +838,11 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
             let d = 10i128.pow(u32::from(from - to));
             Val::Decimal(Rounding::of(xs[2])?.div(dec(x())?, d))
         }
-        Op::BytesLen => Val::Int(match x() {
-            Val::Text(t) => t.len() as i64,
-            other => bytes(other)?.len() as i64,
+        Op::BytesLen => length(match x() {
+            Val::Text(t) => t.len(),
+            other => bytes(other)?.len(),
         }),
-        Op::ScalarLen => Val::Int(text(x())?.chars().count() as i64),
+        Op::ScalarLen => length(text(x())?.chars().count()),
         Op::StartsWith => Val::bool(text(x())?.starts_with(text(y())?)),
         Op::EndsWith => Val::bool(text(x())?.ends_with(text(y())?)),
         Op::Contains => Val::bool(text(x())?.contains(text(y())?)),
@@ -863,13 +873,13 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
         }
         Op::DecToInt(s, w) => {
             let r = Rounding::of(y())?.div(dec(x())?, 10i128.pow(u32::from(*s)));
-            match w.fit(r) {
-                Some(v) => Val::Int(v),
-                None => return Ok(Err(Fault::OutOfRange)),
+            match w.int(r, Fault::OutOfRange) {
+                Ok(v) => v,
+                Err(f) => return Ok(Err(f)),
             }
         }
         Op::FloatToInt(w) => match num::float_to_int(float(x())?, Rounding::of(y())?, *w) {
-            Ok(v) => Val::Int(v),
+            Ok(v) => v,
             Err(f) => return Ok(Err(f)),
         },
         Op::FloatToDec(s) => match num::float_to_decimal(float(x())?, *s, Rounding::of(xs[2])?) {
@@ -902,7 +912,7 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
                 Err(f) => return Ok(Err(f)),
             }
         }
-        Op::GraphemeLen => Val::Int(unicode::graphemes(text(x())?) as i64),
+        Op::GraphemeLen => length(unicode::graphemes(text(x())?)),
         Op::Case(c) => Val::Text(Arc::from(unicode::case(text(x())?, *c))),
         Op::Matches(p) => Val::bool(p.is_match(text(x())?)),
         Op::Collate(c) => Val::SortKey(Arc::from(c.key(text(x())?))),

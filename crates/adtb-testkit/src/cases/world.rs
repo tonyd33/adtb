@@ -671,6 +671,24 @@ fn int(rng: &mut Rng) -> String {
     }
 }
 
+/// The integers at the ends of `I64` an integer literal of an expression draws, where its
+/// arithmetic overflows.
+const ENDS: [i64; 4] = [i64::MAX, i64::MAX - 1, -i64::MAX, 1 << 62];
+
+/// Returns an integer literal of an expression: a value [`value`] draws, or one of [`ENDS`].
+pub(super) fn literal_int(rng: &mut Rng) -> String {
+    let r = rng.below(60);
+    let i = match r.checked_sub(56) {
+        Some(end) => ENDS[end as usize],
+        None => (r % 7) as i64 - 2,
+    };
+    if i < 0 {
+        format!("({i})")
+    } else {
+        i.to_string()
+    }
+}
+
 fn text(rng: &mut Rng) -> String {
     rng.pick(&[r#""""#, r#""a""#, r#""b""#, r#""ab""#, r#""é""#])
         .to_string()
