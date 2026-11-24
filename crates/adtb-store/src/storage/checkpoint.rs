@@ -20,7 +20,6 @@ use super::Lsn;
 use super::log::{LogPin, Pinned};
 use super::lsnmap::folded;
 use super::pager::{Pager, Shared};
-use super::quarantine::Quarantine;
 
 /// The checkpointer's thread, started on the first checkpoint that falls due.
 #[derive(Debug)]
@@ -187,9 +186,9 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns whether the checkpointer may recycle now: the open's readers of the log have run
-    /// and the database is not quarantined whole.
+    /// and the open withholds nothing.
     pub(super) fn recycles_in_session(&self) -> bool {
-        self.log().session_released() && !self.is_quarantined(Quarantine::Database)
+        self.log().session_released() && !self.withholds()
     }
 
     /// Returns the dirty page table: each page's `rec_lsn`.

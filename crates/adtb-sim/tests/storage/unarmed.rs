@@ -1,6 +1,6 @@
 use adtb::runtime::{IoError, OpKind};
 use adtb::testing::{Knobs, PageKind, Pid, page};
-use adtb::{Error, FatalReason, Log, OpenOptions};
+use adtb::{CallOptions, Error, FatalReason, Log, OpenOptions};
 use adtb_sim::{Action, Config, Match, Outcome, Plan, Sim, SimRuntime, Submitted};
 use adtb_simkit::{api, open};
 use adtb_testkit::damage::DataFile;
@@ -162,6 +162,19 @@ fn case(files: &Files, target: &Target) -> Option<Met> {
         "{target:?}: the opened process finishes"
     );
     let unarmed = unarmed?;
+    if let Met::Unarmed { .. } = unarmed {
+        let session = sim.files();
+        assert_eq!(
+            Vec::<String>::new(),
+            removed(files, &session),
+            "{target:?}: the unarmed session removes no segment of the log"
+        );
+        assert_eq!(
+            Vec::<Pid>::new(),
+            changed(&session_baseline(files, target), &session),
+            "{target:?}: the unarmed session's calls write no page but the header's"
+        );
+    }
     process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
         assert_eq!(
@@ -174,10 +187,52 @@ fn case(files: &Files, target: &Target) -> Option<Met> {
     Some(unarmed)
 }
 
-/// Open the database meeting `target`, setting `opened` once it opens, then run the calls
-/// [`case`] states. Returns how the open ran, `None` when the open failed.
-fn met(rt: &SimRuntime, target: &Target, opened: &mut bool) -> Option<Met> {
-    let (plan, lasting, detail) = match target {
+/// Returns the files an open of `files` meeting `target` leaves when it writes out the pages its
+/// recovery changed and closes.
+fn session_baseline(files: &Files, target: &Target) -> Files {
+    let mut sim = Sim::with_files(7, Config::default(), files.clone());
+    let body = |rt: SimRuntime| {
+        rt.plan(plans(&rt, target).0);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
+        rt.disarm();
+        rt.plan(Plan::new());
+        db.testing().flush();
+        db.close().expect("the database closes");
+    };
+    let outcome = crash::run_process(&mut sim, Box::new(body));
+    assert_eq!(
+        Outcome::Finished,
+        outcome,
+        "{target:?}: the open alone finishes"
+    );
+    sim.files()
+}
+
+/// Returns each page of the data file but the header's two that differs between `before` and
+/// `after` or is new in `after`.
+fn changed(before: &Files, after: &Files) -> Vec<Pid> {
+    let pages = |files: &Files| DATA.bytes(files).len() / 8192;
+    (2..pages(after) as u64)
+        .map(Pid)
+        .filter(|&p| p.0 as usize >= pages(before) || DATA.page(before, p) != DATA.page(after, p))
+        .collect()
+}
+
+/// Returns each segment of the log in `before` that `after` lacks.
+fn removed(before: &Files, after: &Files) -> Vec<String> {
+    let prefix = format!("{LOG_DIR}/");
+    before
+        .keys()
+        .filter(|name| name.starts_with(&prefix) && !after.contains_key(*name))
+        .cloned()
+        .collect()
+}
+
+/// Returns the plan an open meeting `target` runs under, the plan of the calls while the failure
+/// lasts, and the detail of the storage failure a call names. Arm the log of `rt` for a log
+/// target.
+fn plans(rt: &SimRuntime, target: &Target) -> (Plan, Plan, String) {
+    match target {
         Target::Page(pid) => (
             Plan::new().rule(reads_of(*pid), fail()),
             Plan::new().rule(reads_of(*pid), fail()),
@@ -187,15 +242,19 @@ fn met(rt: &SimRuntime, target: &Target, opened: &mut bool) -> Option<Met> {
             rt.arm(ops.matched());
             failing(op, *ops, *n)
         }
-    };
+    }
+}
+
+/// Open the database meeting `target`, setting `opened` once it opens, then run the calls
+/// [`case`] states. Returns how the open ran, `None` when the open failed.
+fn met(rt: &SimRuntime, target: &Target, opened: &mut bool) -> Option<Met> {
+    let (plan, lasting, detail) = plans(rt, target);
     rt.plan(plan);
     let db = open::open(rt, FILE, &Log::new([APP]), &options()).ok()?;
     *opened = true;
     rt.disarm();
     rt.plan(lasting);
-    let first = db
-        .query_text(NAMES, &[], &adtb::CallOptions::default())
-        .err();
+    let first = db.query_text(NAMES, &[], &CallOptions::default()).err();
     if first.is_none() {
         rt.plan(Plan::new());
         db.close().expect("the database closes");
@@ -218,7 +277,7 @@ fn met(rt: &SimRuntime, target: &Target, opened: &mut bool) -> Option<Met> {
         );
         api::results(&db, "verify");
         let dumped = db
-            .query_text("dump to \"d1\"", &[], &adtb::CallOptions::default())
+            .query_text("dump to \"d1\"", &[], &CallOptions::default())
             .err();
         let unlogged = matches!(target, Target::Log { .. }).then(|| storage(&detail));
         assert_eq!(

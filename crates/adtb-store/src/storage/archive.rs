@@ -24,7 +24,6 @@ use super::driver::Failed;
 use super::header::REGION;
 use super::log::{parse_segment, segment_name};
 use super::pager::Pager;
-use super::quarantine::Quarantine;
 
 const EPOCH: &str = "epoch";
 const EVERY: Duration = Duration::from_secs(1);
@@ -350,12 +349,12 @@ fn read_segment<R: Runtime>(
     })
 }
 
-/// Recycle `pager`'s log after a pass of `archiver`, unless the database is quarantined whole,
-/// and let the log of this open be recycled from then on.
+/// Recycle `pager`'s log after a pass of `archiver`, unless the open withholds its writes, and
+/// let the log of this open be recycled from then on.
 ///
 /// Preconditions: every reader of the log the open found has run.
 pub fn recycle_at_open<R: Runtime>(pager: &Pager<R>, archiver: Option<&Archiver<R>>) {
-    if pager.is_quarantined(Quarantine::Database) {
+    if pager.withholds() {
         return;
     }
     if let Some(a) = archiver {

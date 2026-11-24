@@ -1410,7 +1410,7 @@ impl<R: Runtime> Pager<R> {
     /// write neither the marks nor the damage list from now on.
     pub(crate) fn keep_unarmed(&self, why: Unarmed) {
         self.evidence().unarmed.get_or_insert(why);
-        self.marks().unverify(self.rt());
+        self.marks().unarm(self.rt());
     }
 
     /// Returns why every call but `verify` and `dump` fails on this open, `None` once the open

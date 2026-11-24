@@ -399,7 +399,7 @@ impl<R: Runtime> Pager<R> {
                 }
             })
             .ok()
-        } else if self.is_quarantined(Quarantine::Database) || self.unarmed().is_some() {
+        } else if self.withholds() {
             None
         } else {
             list = self.format_damage_list()?;

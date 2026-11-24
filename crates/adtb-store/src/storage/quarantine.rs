@@ -294,6 +294,8 @@ mod marks {
         /// Set after `cause` takes damage and cleared after it is emptied, both under its lock;
         /// read without it.
         caused: AtomicBool,
+        /// Set once the open is unarmed, and never cleared.
+        unarmed: AtomicBool,
     }
 
     #[derive(Debug)]
@@ -344,6 +346,7 @@ mod marks {
                 any: AtomicBool::new(false),
                 cause: Lock::new(None),
                 caused: AtomicBool::new(false),
+                unarmed: AtomicBool::new(false),
             }
         }
 
@@ -402,12 +405,19 @@ mod marks {
             m.state.set = read.unwrap_or_else(|(_, set)| set);
         }
 
-        /// Stop every write of the marks, as a page read with no check of its LSN does.
-        pub(in crate::storage) fn unverify<R: Runtime>(&self, rt: &R) {
+        /// Stop every write of the marks, as a page read with no check of its LSN does, for an
+        /// open left unarmed.
+        pub(in crate::storage) fn unarm<R: Runtime>(&self, rt: &R) {
             let mut m = self.lock(rt);
             if let MarksPage::Writable(page) = m.state.page {
                 m.state.page = MarksPage::Unwritable(Unwritable::Unverified(page));
             }
+            self.unarmed.store(true, Ordering::Release);
+        }
+
+        /// Returns whether the open is unarmed, taking no lock.
+        pub(in crate::storage) fn unarmed(&self) -> bool {
+            self.unarmed.load(Ordering::Acquire)
         }
 
         /// Hold the marks on page `page`, formatted empty.
@@ -581,6 +591,12 @@ impl<R: Runtime> Pager<R> {
     /// refused whole, or the read-in gate is unarmed.
     pub fn opens_unwritten(&self) -> bool {
         self.refused_whole() || self.unarmed().is_some()
+    }
+
+    /// Returns whether this open keeps its damage records in memory only, writes no damage list
+    /// and recycles no log: the database is marked, or the read-in gate is unarmed.
+    pub(crate) fn withholds(&self) -> bool {
+        self.marks().unarmed() || self.database_marked()
     }
 
     /// Returns whether the database is marked, set or held, with no regard to damage of the

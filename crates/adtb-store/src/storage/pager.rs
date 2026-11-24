@@ -17,7 +17,7 @@ use super::holding::{Holding, NO_HOLDER};
 use super::log::{Log, Pinned, Segments};
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN};
 use super::pagetable::{DirtyTable, Logged};
-use super::quarantine::{Bitmapped, Marks, Quarantine};
+use super::quarantine::{Bitmapped, Marks};
 use super::record::{Edit, MapRoot, Record};
 use super::recovery::Replaying;
 use super::{Lsn, Pid, Position};
@@ -218,7 +218,7 @@ impl<R: Runtime> Append<'_, R> {
     /// Drop the damage recorded of each page of `pids`, which the batch frees, logging each free
     /// unless the file is quarantined whole. Returns the LSN of the last free logged.
     fn free(&mut self, pids: &[Pid]) -> Option<Lsn> {
-        let whole = self.pager.is_quarantined(Quarantine::Database);
+        let whole = self.pager.withholds();
         let mut last = None;
         for &pid in pids {
             let log = &mut self.log.log;
@@ -248,7 +248,7 @@ impl<R: Runtime> Append<'_, R> {
     /// logged, `None` when none is.
     pub(super) fn refuse(&mut self, latch: &Held<'_, R>, damage: Damage) -> Option<Lsn> {
         let refusal = Refusal::of(latch);
-        let whole = self.pager.is_quarantined(Quarantine::Database);
+        let whole = self.pager.withholds();
         let m = &mut *self.meta;
         let log = &mut self.log.log;
         let logged = m
@@ -261,7 +261,7 @@ impl<R: Runtime> Append<'_, R> {
     /// Record `damage` of `pid`, logging it unless recovery has not ended or the file is
     /// quarantined whole. Returns the log's end after the record.
     pub(super) fn record_damage(&mut self, pid: Pid, damage: Damage) -> Option<Lsn> {
-        let whole = self.pager.is_quarantined(Quarantine::Database);
+        let whole = self.pager.withholds();
         let log = &mut self.log.log;
         self.meta
             .evidence
@@ -270,7 +270,7 @@ impl<R: Runtime> Append<'_, R> {
 
     /// Record every page refused so far, and log the records from now on.
     pub(super) fn start_recording(&mut self) {
-        let whole = self.pager.is_quarantined(Quarantine::Database);
+        let whole = self.pager.withholds();
         let log = &mut self.log.log;
         self.meta
             .evidence
@@ -1260,9 +1260,9 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns whether the resident copy of `pid` holds changes the file lacks and may be written
-    /// before it is refused: recovery has ended and the file is not quarantined whole.
+    /// before it is refused: recovery has ended and the open withholds nothing.
     fn writes_refused(&self, pid: Pid) -> bool {
-        if self.is_quarantined(Quarantine::Database) {
+        if self.withholds() {
             return false;
         }
         let m = self.own_meta();
