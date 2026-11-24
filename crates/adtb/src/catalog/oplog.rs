@@ -615,7 +615,7 @@ fn clause(c: &Clause) -> Nested {
 
 /// Append `v`, a value stored as `t`, in the wire value encoding: a constructor of a sum of two
 /// or more constructors tagged by its catalog id.
-pub fn encode(t: &FieldType, v: &Value, out: &mut Vec<u8>) {
+fn encode(t: &FieldType, v: &Value, out: &mut Vec<u8>) {
     match (t, v) {
         (FieldType::Scalar(_), v) => scalar(v, out),
         (FieldType::Record(ts), Value::Record(vs)) if ts.len() == vs.len() => {

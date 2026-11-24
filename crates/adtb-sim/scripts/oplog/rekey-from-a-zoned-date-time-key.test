@@ -1,0 +1,30 @@
+# A relation keyed by a zoned date-time rekeys by another field, keeping its rows and the
+# references to them.
+migrate
+  module k
+  add module k
+  add type Ev = { at: ZonedDateTime, name: Text }
+  add relation evs : Ev key at
+  add type Note = { id: Key notes, ev: Key evs }
+  add relation notes : Note key id generate sequence
+
+run
+  insert evs from (
+    from at in (match Instant.parse("2026-10-25T01:02:03Z") | Some s -> [s.value] | None -> [])
+    select { at: in_zone(at, "Europe/Lisbon"), name: "a" })
+  insert notes from (from e in evs select { ev: key e })
+
+migrate
+  module k
+  rekey relation evs key name
+    carry Note.ev
+
+query
+  from e in evs select e.name
+----
+"a"
+
+query
+  from n in notes, e in evs where n.ev == key e select e.name
+----
+"a"

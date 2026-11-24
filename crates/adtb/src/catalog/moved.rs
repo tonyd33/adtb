@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use adtb_lang::evolve::{Merged, RowFn, RowMap};
@@ -18,7 +18,7 @@ use super::ids::{
     CatCtorId, CatFieldId, CatRelId, CatTypeId, ctor_id, ctor_index, field_id, rel_id, relation,
     type_ctor_id, type_ctor_index, type_def, type_id,
 };
-use super::{Broken, Error, layout, oplog};
+use super::{Broken, Error, layout};
 
 /// Returns what `maps`, the row maps of one step from schema `a` to schema `b`, give the rows of
 /// `data`, which are in `a`'s layout.
@@ -1027,15 +1027,12 @@ impl Mapping<'_> {
         let (a, b) = (self.a, self.b);
         let rid = rel_id(a, ra);
         let rb = relation(b, rid).ok_or_else(|| Failed::from(Broken::RekeyedGone(rid)))?;
-        let old_ty = layout::field_type(a, &layout::key_value_ty(a, RelRef::Declared(ra)));
-        let mut keys: BTreeMap<Vec<u8>, Value> = BTreeMap::new();
+        let mut keys: HashMap<Value, Value> = HashMap::new();
         for (&cid, rows) in self.data.get(&rid).into_iter().flatten() {
             let c = ctor_index(a, ra, cid).ok_or_else(|| Failed::from(Broken::ForeignCtor(cid)))?;
             let (old, new) = (KeyAt::new(a, ra, c, a, ra)?, KeyAt::new(a, ra, c, b, rb)?);
             for row in rows {
-                let mut at = Vec::new();
-                oplog::encode(&old_ty, &old.value(row)?, &mut at);
-                keys.insert(at, new.value(row)?);
+                keys.insert(old.value(row)?, new.value(row)?);
             }
         }
         let keys = Arc::new(keys);
@@ -1048,16 +1045,14 @@ impl Mapping<'_> {
                     let (Some(refs), Some(id)) = (Refs::of(b, &ty, rb), f.id) else {
                         continue;
                     };
-                    let (keys, old_ty) = (keys.clone(), old_ty.clone());
+                    let keys = keys.clone();
                     let fill: Box<Fill<'static>> = Box::new(move |from, row| {
                         let at = from
                             .iter()
                             .position(|g| g.id == Some(id))
                             .ok_or_else(|| Failed::from(Broken::NotRekeyed(id)))?;
                         let key = |v: &Value| {
-                            let mut enc = Vec::new();
-                            oplog::encode(&old_ty, v, &mut enc);
-                            keys.get(&enc).cloned().ok_or_else(|| {
+                            keys.get(v).cloned().ok_or_else(|| {
                                 Failed::Refused(format!("field `{}` references no row", f.name))
                             })
                         };
