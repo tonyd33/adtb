@@ -334,6 +334,11 @@ fn unasked(fault: Fault, row: Row) -> Option<Unasked> {
                 "no operation of a sequence reads a relation of an engine module while it runs",
             ))
         }
+        (Fault::UnreadableOnce, Class::Unread, Held::LsnMap, Running) => Some(Unasked::Never(
+            "the faulted run meets an LSN map page that fails once in a recycle's fold, which then \
+             takes no checkpoint and fails no operation, or in an open, whose next call reads it \
+             again and fails naming no page",
+        )),
         (Fault::UnreadableOnce, Class::Unread, _, Opening) => Some(Unasked::AtTier(
             "at the damage tier a read failure that does not last leaves no record the open holds",
         )),
