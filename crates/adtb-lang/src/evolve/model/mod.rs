@@ -98,6 +98,9 @@ pub(super) struct Model {
     /// The id of each named object a held declaration declares, by its key, given when the
     /// operator adding it applied.
     held_ids: BTreeMap<ObjectKey, u64>,
+    /// Each unique and index the operator being applied gave a new id as the image of others,
+    /// with their ids.
+    images: BTreeMap<u64, Vec<u64>>,
     /// The log as the source the model was lifted from holds it, with the source before each
     /// migration.
     logged: Vec<super::Logged>,
@@ -261,6 +264,8 @@ enum ClauseM {
         kind: IndexKind,
         elems: Vec<Term>,
         scope: Option<Scope>,
+        /// The ids of the clauses this one is the image of, while it has no id of its own.
+        was: Vec<u64>,
     },
     Default {
         ctor: Option<Term>,
@@ -406,6 +411,7 @@ impl Model {
     /// without an id a fresh one, in the order of their relation variables' ids and their clauses.
     fn identify(&mut self) {
         let mut next = std::mem::take(&mut self.next);
+        let images = &mut self.images;
         let mut fresh = |space: Space| {
             let n = next.entry(space).or_insert(FIRST_LOG_ID);
             *n += 1;
@@ -422,13 +428,36 @@ impl Model {
                             *g = Some(fresh(Space::Default));
                         }
                     }
-                    ClauseM::Index { id: id @ None, .. } => *id = Some(fresh(Space::Index)),
+                    ClauseM::Index {
+                        id: id @ None, was, ..
+                    } => {
+                        let new = fresh(Space::Index);
+                        *id = Some(new);
+                        if !was.is_empty() {
+                            images.insert(new, std::mem::take(was));
+                        }
+                    }
                     ClauseM::Computed { id: id @ None, .. } => *id = Some(fresh(Space::Computed)),
                     _ => {}
                 }
             }
         }
         self.next = next;
+    }
+
+    /// Returns each unique and index the operator that left this model gave a new id as the image
+    /// of others, with their ids.
+    fn step_images(&self) -> BTreeMap<u64, Vec<u64>> {
+        self.images.clone()
+    }
+
+    /// Leave the unique or index `id` names without an id, so that it takes a new one as the
+    /// image of the clause it was.
+    fn reimage(id: &mut Option<u64>, was: &mut Vec<u64>) {
+        let old = id.take();
+        if was.is_empty() {
+            was.extend(old);
+        }
     }
 
     /// Returns the next id of `space`, taking it.

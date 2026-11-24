@@ -53,7 +53,11 @@ impl Model {
         for (r, ..) in self.rels_of(built, t) {
             for (k, c) in self.relations[&r].clauses.iter().enumerate() {
                 let ClauseM::Index {
-                    kind, elems, scope, ..
+                    id,
+                    kind,
+                    elems,
+                    scope,
+                    ..
                 } = c
                 else {
                     continue;
@@ -94,6 +98,7 @@ impl Model {
                 out.push(Scoped {
                     relation: r,
                     at: k,
+                    id: *id,
                     kind: *kind,
                     elems: elems.iter().map(|e| e.print(self)).collect(),
                     reached,
@@ -574,6 +579,7 @@ impl Model {
 struct Scoped {
     relation: u64,
     at: usize,
+    id: Option<u64>,
     kind: IndexKind,
     elems: Vec<String>,
     /// The constructors its scope reaches, every one when `None`.

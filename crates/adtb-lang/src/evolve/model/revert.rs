@@ -43,11 +43,13 @@ pub(super) struct Stepped {
 impl Stepped {
     /// Returns the step as a source step, `after` in place of its own model when given.
     pub(super) fn into_step(self, after: Option<&Model>) -> crate::evolve::Step {
-        crate::evolve::Step {
-            after: after.unwrap_or(&self.after).replay_source(),
-            maps: self.maps,
-            applied: self.applied,
-        }
+        let after = after.unwrap_or(&self.after);
+        crate::evolve::Step::new(
+            after.replay_source(),
+            self.maps,
+            self.applied,
+            after.step_images(),
+        )
     }
 }
 

@@ -44,9 +44,10 @@ fn sel_text(names: &[String]) -> String {
 
 /// Returns an index clause of kind `kind` over the elements `elems` in scope `names`, as text
 /// a build resolves.
-fn index_clause(kind: IndexKind, elems: &[String], names: &[String]) -> ClauseM {
+fn index_clause(kind: IndexKind, elems: &[String], names: &[String], was: Vec<u64>) -> ClauseM {
     ClauseM::Index {
         id: None,
+        was,
         kind,
         elems: elems.iter().map(|e| Term::text(e)).collect(),
         scope: Some(Scope {
@@ -154,7 +155,7 @@ fn replacements(run: &mut Run, given: &[SplitClause]) -> (Vec<Added>, Vec<ast::A
         let names = scope_names(scope);
         out.push((
             format!("{} ({elems}) in {}", kind_word(kind), sel_text(&names)),
-            index_clause(kind, &[elems.to_string()], &names),
+            index_clause(kind, &[elems.to_string()], &names, Vec::new()),
         ));
     }
     (out, arms)
@@ -493,9 +494,13 @@ impl Model {
                     fs.join(", "),
                     sel_text(&names)
                 );
-                if !entry.1.iter().any(|(x, _)| *x == text) {
-                    let clause = index_clause(cl.kind, &fs, &names);
-                    entry.1.push((text, clause));
+                let was = cl.id.into_iter().collect::<Vec<u64>>();
+                match entry.1.iter_mut().find(|(x, _)| *x == text) {
+                    Some((_, ClauseM::Index { was: held, .. })) => held.extend(was),
+                    Some(_) => {}
+                    None => entry
+                        .1
+                        .push((text, index_clause(cl.kind, &fs, &names, was))),
                 }
             }
         }
@@ -518,8 +523,8 @@ impl Model {
             .collect();
         for (r, at, parts) in rw.rescoped {
             let rel = self.relations.get_mut(&r).expect("a relation variable");
-            if let ClauseM::Index { id, scope, .. } = &mut rel.clauses[at] {
-                *id = None;
+            if let ClauseM::Index { id, scope, was, .. } = &mut rel.clauses[at] {
+                Model::reimage(id, was);
                 *scope = Some(Scope {
                     listed: parts.len() > 1,
                     parts,

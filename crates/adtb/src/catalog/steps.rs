@@ -96,11 +96,7 @@ mod tests {
         }])
         .expect("the source builds");
         after.decls[0].text = "type Pair = { a: Missing }\n".to_string();
-        Step {
-            after,
-            maps,
-            applied: None,
-        }
+        Step::new(after, maps, None, std::collections::BTreeMap::new())
     }
 
     #[test]

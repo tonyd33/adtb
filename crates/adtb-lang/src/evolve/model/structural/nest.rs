@@ -111,11 +111,12 @@ impl Model {
             id,
             elems: e,
             scope,
+            was,
             ..
         } = &mut rel.clauses[at]
         {
             if rescoped {
-                *id = None;
+                Model::reimage(id, was);
             }
             *e = elems;
             *scope = Some(Scope {

@@ -301,10 +301,13 @@ impl Model {
                         Some(Some(out)) if out.is_empty() => {}
                         Some(Some(out)) => {
                             if let ClauseM::Index {
-                                id, scope: Some(s), ..
+                                id,
+                                scope: Some(s),
+                                was,
+                                ..
                             } = &mut rel.clauses[k]
                             {
-                                *id = None;
+                                Model::reimage(id, was);
                                 s.listed = out.len() > 1;
                                 s.parts = out
                                     .iter()

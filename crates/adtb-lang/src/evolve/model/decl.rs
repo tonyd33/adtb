@@ -367,6 +367,7 @@ impl Model {
                 if let ClauseM::Index {
                     id,
                     scope: Some(scope),
+                    was,
                     ..
                 } = c
                     && scope
@@ -374,7 +375,7 @@ impl Model {
                         .iter()
                         .any(|p| p.objects().any(|o| o == (Space::Set, s)))
                 {
-                    *id = None;
+                    Model::reimage(id, was);
                 }
             }
         }

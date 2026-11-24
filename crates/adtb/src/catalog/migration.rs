@@ -757,7 +757,9 @@ fn by_ctor<'a>(
 }
 
 /// The position of the operator of a migration whose step first adds each constraint, check and
-/// unique of its result.
+/// unique of its result. A unique a step gives a new id as the image of uniques the migration
+/// added takes the position of the first operator that added one of them; one whose sources
+/// the migration did not add takes the position of its own step's operator.
 #[derive(Debug, Default)]
 struct Added {
     constraints: BTreeMap<CatConstraintId, usize>,
@@ -778,12 +780,18 @@ impl Added {
         let mut added = Added::default();
         let mut a = before;
         for (k, (_, steps)) in stepped.ops().enumerate() {
-            for (_, b) in steps {
+            for (step, b) in steps {
                 for id in constraints(b).difference(&constraints(a)) {
                     added.constraints.entry(*id).or_insert(k);
                 }
                 for id in unique_ids(b).difference(&unique_ids(a)) {
-                    added.uniques.entry(*id).or_insert(k);
+                    let source = added
+                        .uniques
+                        .iter()
+                        .filter(|(s, _)| step.is_image_of(*id, **s))
+                        .map(|(_, by)| *by)
+                        .min();
+                    added.uniques.entry(*id).or_insert(source.unwrap_or(k));
                 }
                 a = b;
             }

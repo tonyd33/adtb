@@ -1,0 +1,39 @@
+seed 17
+migrate
+  module m
+  add module m
+  add type T { id: Key ts } = A { n: I64, f: Bool, g: Bool } | B
+  add relation ts : T key id generate sequence
+
+run
+  transact
+    insert ts.A { n: 1, f: true, g: true }
+    insert ts.A { n: 1, f: false, g: true }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (n) in ts.A", detail: "rows of ts share the key 1 of `unique (n) in (A1 | A2)`" } } }
+  module m
+  add unique (n) in ts.A
+  split constructor T.A into A1 { n: I64, g: Bool } | A2 { n: I64, g: Bool }
+    by match
+      | A { n, f: true, g } -> A1 { n: n, g: g }
+      | A { n, f: false, g } -> A2 { n: n, g: g }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (n) in ts.A", detail: "rows of ts share the key 1 of `unique (n) in (B1 | B2 | A2)`" } } }
+  module m
+  add unique (n) in ts.A
+  split constructor T.A into A1 { n: I64, g: Bool } | A2 { n: I64, g: Bool }
+    by match
+      | A { n, f: true, g } -> A1 { n: n, g: g }
+      | A { n, f: false, g } -> A2 { n: n, g: g }
+  split constructor T.A1 into B1 { n: I64 } | B2 { n: I64 }
+    by match
+      | A1 { n, g: true } -> B1 { n: n }
+      | A1 { n, g: false } -> B2 { n: n }
+
+reopen
+
+query rowsort
+  from t in ts select t
+----
+A { f: false, g: true, id: ts.key(2), n: 1 }
+A { f: true, g: true, id: ts.key(1), n: 1 }

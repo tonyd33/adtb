@@ -165,6 +165,7 @@ impl Model {
         let index = self.fresh(Space::Index);
         let clause = ClauseM::Index {
             id: Some(index),
+            was: Vec::new(),
             kind,
             elems: vec![Term::text(&run.text()[first.span.to(last.span).range()])],
             scope,

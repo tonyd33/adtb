@@ -323,12 +323,12 @@ impl Model {
             for c in &mut r.clauses {
                 match c {
                     ClauseM::Default { ids, .. } => ids.retain(|(x, _)| *x != f),
-                    ClauseM::Index { id, elems, .. }
+                    ClauseM::Index { id, elems, was, .. }
                         if elems
                             .iter()
                             .any(|e| e.objects().any(|o| o == (Space::Field, f))) =>
                     {
-                        *id = None;
+                        Model::reimage(id, was);
                     }
                     _ => {}
                 }

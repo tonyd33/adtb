@@ -183,11 +183,12 @@ impl Migrated {
             let after = &self.afters[k];
             let failed = |why: String| Err(vec![Diag::new(op.span, why)]);
             let stepped = match (steps, maps) {
-                (Some(Ok(steps)), _) if steps.is_empty() => Ok(vec![crate::evolve::Step {
-                    after: after.replay_source(),
-                    maps: Vec::new(),
-                    applied: None,
-                }]),
+                (Some(Ok(steps)), _) if steps.is_empty() => Ok(vec![crate::evolve::Step::new(
+                    after.replay_source(),
+                    Vec::new(),
+                    None,
+                    after.step_images(),
+                )]),
                 (Some(Ok(steps)), _) => {
                     let last = steps.len() - 1;
                     Ok(steps
@@ -198,11 +199,12 @@ impl Migrated {
                 }
                 (Some(Err(why)), _) | (None, Err(why)) => failed(why),
                 (None, Ok(maps)) => match &self.ops[k] {
-                    Ok(resolved) => Ok(vec![crate::evolve::Step {
-                        after: after.replay_source(),
+                    Ok(resolved) => Ok(vec![crate::evolve::Step::new(
+                        after.replay_source(),
                         maps,
-                        applied: Some(resolved.clone()),
-                    }]),
+                        Some(resolved.clone()),
+                        after.step_images(),
+                    )]),
                     Err(r) => failed(r.why().to_string()),
                 },
             };
@@ -297,6 +299,7 @@ impl Model {
             model.mark(by, Added::Applying);
             run.begin(k, op.span);
             let mut next = model.clone();
+            next.images.clear();
             let renames = matches!(
                 op.kind,
                 OperatorKind::RenameType(..)

@@ -7,7 +7,7 @@ use crate::ast::{self, Fill};
 use crate::check::{self, Ref};
 use crate::evolve::revert::{DeclOf, Late as Gone, NamedId, PlacedArms, Spelled, Undo, dropped};
 use crate::evolve::{Resolved, holds, match_arms};
-use crate::ids::{CatCtorId, CatSetId, KeyKind};
+use crate::ids::{CatCtorId, CatIndexId, CatSetId, KeyKind};
 use crate::parse::{Options, parse_schema};
 use crate::span::FileId;
 
@@ -15,7 +15,7 @@ use crate::span::FileId;
 /// operators that add their replacements, how it applies its operator, and the text each check
 /// takes.
 pub(super) type Restructuring = (
-    Vec<crate::ids::CatIndexId>,
+    Vec<CatIndexId>,
     Spelled,
     Spelled,
     Undo,

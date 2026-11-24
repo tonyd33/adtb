@@ -340,6 +340,7 @@ impl<'a> Lifting<'a> {
                         _ => IndexKind::Plain,
                     };
                     let clause = ClauseM::Index {
+                        was: Vec::new(),
                         id: Some(
                             self.schema
                                 .ids()

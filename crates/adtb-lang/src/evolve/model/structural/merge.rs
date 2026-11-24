@@ -248,6 +248,9 @@ struct Rewrite {
 /// the merge maps them.
 type Alike = (u64, IndexKind, Vec<String>);
 
+/// A clause over one merge source alone: its position, the source, its text and its id.
+type Alone = (usize, u64, String, Option<u64>);
+
 impl Model {
     /// Merge constructors `sel` of `ty` into `into`. With `derived`, the values the routing's arms
     /// fix tell the merged constructors apart, and no field need be a discriminator.
@@ -343,8 +346,8 @@ impl Model {
         for (r, w) in rewrites {
             let rel = self.relations.get_mut(&r).expect("a relation variable");
             for (at, parts) in w.rescoped {
-                if let ClauseM::Index { id, scope, .. } = &mut rel.clauses[at] {
-                    *id = None;
+                if let ClauseM::Index { id, scope, was, .. } = &mut rel.clauses[at] {
+                    Model::reimage(id, was);
                     *scope = Some(Scope {
                         listed: parts.len() > 1,
                         parts,
@@ -479,7 +482,7 @@ impl Model {
     ) -> Res<BTreeMap<u64, Rewrite>> {
         let header = self.header_names(t);
         let mut out: BTreeMap<u64, Rewrite> = BTreeMap::new();
-        let mut alone: BTreeMap<Alike, Vec<(usize, u64, String)>> = BTreeMap::new();
+        let mut alone: BTreeMap<Alike, Vec<Alone>> = BTreeMap::new();
         for cl in self.scoped(built, t, sources, &[c]) {
             let Some(reached) = &cl.reached else { continue };
             let inside: Vec<u64> = reached
@@ -531,7 +534,7 @@ impl Model {
                     alone
                         .entry((cl.relation, cl.kind, fields))
                         .or_default()
-                        .push((cl.at, *one, shown));
+                        .push((cl.at, *one, shown, cl.id));
                     continue;
                 }
                 return refuse(format!(
@@ -554,6 +557,7 @@ impl Model {
             w.gone.insert(cl.at);
             w.added.push(ClauseM::Index {
                 id: None,
+                was: cl.id.into_iter().collect(),
                 kind: cl.kind,
                 elems: fields.iter().map(|f| Term::text(f)).collect(),
                 scope: Some(Scope {
@@ -565,7 +569,7 @@ impl Model {
         for ((r, kind, fields), held) in alone {
             let each = sources
                 .iter()
-                .all(|s| held.iter().any(|(_, one, _)| one == s));
+                .all(|s| held.iter().any(|(_, one, _, _)| one == s));
             let keyed = kind != IndexKind::Unique || !image.disc.fields.is_empty();
             if !each || !keyed {
                 return refuse(format!(
@@ -582,9 +586,10 @@ impl Model {
                 }
             }
             let w = out.entry(r).or_default();
-            w.gone.extend(held.iter().map(|(at, _, _)| *at));
+            w.gone.extend(held.iter().map(|(at, _, _, _)| *at));
             w.added.push(ClauseM::Index {
                 id: None,
+                was: held.iter().filter_map(|(_, _, _, id)| *id).collect(),
                 kind,
                 elems: fs.iter().map(|f| Term::text(f)).collect(),
                 scope: Some(Scope {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::ids::{CatCtorId, CatFieldId};
+use crate::ids::{CatCtorId, CatFieldId, CatIndexId};
 use crate::norm::NormalQuery;
 
 /// A function of one row, normalised against the schema it checks in.
@@ -101,4 +101,32 @@ pub struct Step {
     pub after: Source,
     pub maps: Vec<RowMap>,
     pub applied: Option<ResolvedOp>,
+    images: BTreeMap<u64, Vec<u64>>,
+}
+
+impl Step {
+    /// Returns the step to `after` moving rows by `maps` and applying `applied`, where each
+    /// unique and index of `images` the step gives a new id is the image of the clauses it lists,
+    /// each by its catalog id.
+    pub fn new(
+        after: Source,
+        maps: Vec<RowMap>,
+        applied: Option<ResolvedOp>,
+        images: BTreeMap<u64, Vec<u64>>,
+    ) -> Step {
+        Step {
+            after,
+            maps,
+            applied,
+            images,
+        }
+    }
+
+    /// Returns whether the unique or index `id`, given a new id by the step, is the image of
+    /// clause `source`: a structural operator re-scoped, replaced or narrowed `source` into it.
+    pub fn is_image_of(&self, id: CatIndexId, source: CatIndexId) -> bool {
+        self.images
+            .get(&id.raw())
+            .is_some_and(|was| was.contains(&source.raw()))
+    }
 }
