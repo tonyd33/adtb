@@ -1,5 +1,6 @@
-# A revert of a revert applies the reverted migration again: a name its own rename gave keeps
-# its spelling, and a name a later migration renamed takes the new one.
+# A revert of a revert applies the reverted migration again, each operator naming each object as
+# the operators before it left it: a name its own renames gave keeps its spelling, and a name a
+# later migration renamed takes the new one.
 seed 66
 use shop
 use customers
@@ -8,6 +9,8 @@ migrate
   module shop
   rename field Customer.name to title
   add index (title) in customers
+  rename field Customer.title to name
+  add index (name) in customers.Customer
   module shop
   revert 0002
   module shop
@@ -16,7 +19,15 @@ migrate
   revert 0003
 
 query rowsort
-  from c in customers select c.title
+  from c in customers select c.name
 ----
 "ann"
 "bob"
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "customers" and i.relation == r.id select i.clause
+----
+"index (name) in Customer"
+"index (name)"
+"key id"

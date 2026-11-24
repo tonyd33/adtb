@@ -243,9 +243,8 @@ impl Inverse {
             },
             Inverse::Replay {
                 logged,
-                text,
+                texts,
                 again: own,
-                then,
                 of,
             } => {
                 let mut all = again.clone();
@@ -253,15 +252,10 @@ impl Inverse {
                     let space = k.0;
                     all.insert(k, again_id(again, space, v));
                 }
-                let then = then
-                    .into_iter()
-                    .map(|((space, id), n)| ((space, again_id(&all, space, id)), n))
-                    .collect();
                 Inverse::Replay {
                     logged,
-                    text: text.mapped(&all),
+                    texts: texts.into_iter().map(|t| t.mapped(&all)).collect(),
                     again: all,
-                    then,
                     of,
                 }
             }

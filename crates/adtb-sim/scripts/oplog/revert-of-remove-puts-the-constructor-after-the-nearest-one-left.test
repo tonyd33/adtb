@@ -1,0 +1,72 @@
+# A revert of a `remove constructor` puts it back after the nearest constructor before it that
+# the type still holds, else first.
+seed 23
+migrate
+  module m
+  add module m
+  add type T { id: Key ts } = A { n: I64 } | B { n: I64 } | C { n: I64 } | D { n: I64 }
+  add relation ts : T key id generate sequence
+  add type U { id: Key us } = P { n: I64 } | Q { n: I64 } | R { n: I64 } | S { n: I64 }
+  add relation us : U key id generate sequence
+  deprecate ts.A
+  deprecate ts.B
+  deprecate ts.C
+  deprecate us.Q
+  deprecate us.R
+
+migrate
+  module m
+  remove constructor U.Q
+  remove constructor U.R
+
+migrate
+  module m
+  revert 0002
+
+query rowsort
+  from c in catalog::constructors, t in catalog::types where c.sum == t.id and t.name == "U"
+    select { name: c.name, position: c.position }
+----
+{ name: "P", position: 1 }
+{ name: "Q", position: 2 }
+{ name: "R", position: 3 }
+{ name: "S", position: 4 }
+
+migrate
+  module m
+  remove constructor T.C
+
+migrate
+  module m
+  remove constructor T.B
+
+migrate
+  module m
+  revert 0004
+
+query rowsort
+  from c in catalog::constructors, t in catalog::types where c.sum == t.id and t.name == "T"
+    select { name: c.name, position: c.position }
+----
+{ name: "A", position: 1 }
+{ name: "C", position: 2 }
+{ name: "D", position: 3 }
+
+migrate
+  module m
+  remove constructor T.A
+
+migrate
+  module m
+  remove constructor T.C
+
+migrate
+  module m
+  revert 0005
+
+query rowsort
+  from c in catalog::constructors, t in catalog::types where c.sum == t.id and t.name == "T"
+    select { name: c.name, position: c.position }
+----
+{ name: "B", position: 1 }
+{ name: "D", position: 2 }

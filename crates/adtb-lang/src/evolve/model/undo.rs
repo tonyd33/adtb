@@ -189,26 +189,25 @@ impl Model {
         Ok(())
     }
 
-    /// Put back constructor `name` of type `ty` as `text`, which held id `ctor`, after the
-    /// constructor `after` names, else first; as a member of each set of `joins`; and with its
+    /// Put back constructor `name` of type `ty` as `text`, which held id `ctor`, after the first
+    /// constructor of `after` the type holds, else first; as a member of each set of `joins`; and with its
     /// arms in each constraint of `arms`.
     pub(super) fn readd(
         &mut self,
         run: &mut Run,
         (ty, ctor, name): (u64, u64, &str),
         text: &str,
-        (after, joins, arms): (Option<CatCtorId>, Vec<CatSetId>, Vec<PlacedArms>),
+        (after, joins, arms): (Vec<CatCtorId>, Vec<CatSetId>, Vec<PlacedArms>),
         of: &str,
         gone: &Gone,
     ) -> Res<()> {
         if !self.types.contains_key(&ty) {
             return refuse(dropped(of, "type"));
         }
-        let after = match after {
-            Some(c) if self.ctors.contains_key(&c.raw()) => Some(c.raw()),
-            Some(_) => return refuse(dropped(of, "constructor")),
-            None => None,
-        };
+        let after = after
+            .iter()
+            .map(|c| c.raw())
+            .find(|c| self.ctors.get(c).is_some_and(|m| m.ty == ty));
         let mut sets = Vec::new();
         for s in joins {
             if !self.sets.contains_key(&s.raw()) {

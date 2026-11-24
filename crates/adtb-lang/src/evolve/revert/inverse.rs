@@ -463,16 +463,19 @@ impl Cx<'_> {
                 let names = logged
                     .names()
                     .map_err(|f| f.map_refused(|ds| unresolved(op.span, &ds)))?;
-                let mut text = Spelled::default();
-                text.copy(&logged.text, 0..logged.text.len(), &names, 0);
+                let texts = logged
+                    .operators
+                    .iter()
+                    .map(|o| {
+                        let mut text = Spelled::from(format!("module {}\n", logged.module));
+                        text.copy(&logged.text, o.span.range(), &names, 0);
+                        text
+                    })
+                    .collect();
                 Ok(vec![Inverse::Replay {
                     logged: Box::new(logged.clone()),
-                    text,
+                    texts,
                     again: self.src.recreated_by(k, before, after),
-                    then: spellings(after)
-                        .into_iter()
-                        .map(|(k, n)| (k, n.to_string()))
-                        .collect(),
                     of: at.of(),
                 }])
             }

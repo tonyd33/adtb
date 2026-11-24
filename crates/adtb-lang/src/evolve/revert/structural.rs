@@ -847,18 +847,18 @@ impl Cx<'_> {
             .position(|c| c.0 == path.ctor.text)
             .ok_or_else(missing)?;
         let text = at.decl_range(i, ctors[k].1.start..ctors[k].2)?;
-        let after = match k {
-            0 => None,
-            _ => Some(CatCtorId::from_raw(
-                before
-                    .ctor_key_id(&m, t, &ctors[k - 1].0)
-                    .ok_or_else(missing)?,
-            )),
-        };
         let schema = before
             .schema()
             .map_err(|_| vec![Diag::new(self.span, "the log does not replay")])?;
         let def = self.type_id(&schema, &path.ty)?;
+        let after: Vec<CatCtorId> = ctors[..k]
+            .iter()
+            .rev()
+            .filter_map(|(n, ..)| {
+                let c = schema.ty(def).ctor_named(n)?;
+                schema.ids().ctor_id(c)
+            })
+            .collect();
         let c = schema
             .ty(def)
             .ctor_index(&path.ctor.text)
@@ -1123,7 +1123,7 @@ impl Inverse {
                 ctor: ctor(c),
                 name,
                 text: text.mapped(again),
-                after: after.map(ctor),
+                after: after.into_iter().map(ctor).collect(),
                 joins: joins
                     .into_iter()
                     .map(|s| CatSetId::from_raw(again_id(again, Space::Set, s.raw())))

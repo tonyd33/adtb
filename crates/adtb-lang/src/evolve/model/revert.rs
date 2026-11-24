@@ -473,16 +473,11 @@ impl Model {
                 self.key_clause(r, &text)
             }
             Inverse::Replay {
-                text,
+                logged,
+                texts,
                 again,
-                then,
                 of,
-                ..
-            } => {
-                let text = text.unheld(&then);
-                let text = self.spell(&text, &of, gone)?;
-                self.replay(run, &text, again, &of, undone)
-            }
+            } => self.replay(run, (&logged, &texts), again, (&of, gone), undone),
         }
     }
 
@@ -798,27 +793,39 @@ impl Model {
     fn replay(
         &mut self,
         run: &mut Run,
-        text: &str,
+        (logged, texts): (&Logged, &[Spelled]),
         again: Recreated,
-        of: &str,
+        (of, gone): (&str, &Gone),
         undone: &mut Undone,
     ) -> Res<()> {
-        let m = match parse_migration(text, Options::default()).ok() {
-            Ok(m) => m,
-            Err(ds) => {
-                let shown: Vec<String> = ds.into_iter().map(|d| d.message).collect();
-                return refuse(format!(
-                    "the inverse of `{of}` does not parse: {}",
-                    shown.join("; ")
-                ));
-            }
-        };
         let ahead = self.ahead.clone();
-        self.expecting(&m);
+        self.expecting(&logged_file(logged));
         let replaying = self.replaying.replace(again);
-        let mut sub = Run::new(&m, text).accepting(run.is_accepting()).nested();
         let mut out = Ok(());
-        for (k, op) in m.operators.iter().enumerate() {
+        for (k, spelled) in texts.iter().enumerate() {
+            let text = match self.spell(spelled, of, gone) {
+                Ok(t) => t,
+                Err(e) => {
+                    out = Err(e);
+                    break;
+                }
+            };
+            let m = match parse_migration(&text, Options::default()).ok() {
+                Ok(m) => m,
+                Err(ds) => {
+                    let shown: Vec<String> = ds.into_iter().map(|d| d.message).collect();
+                    out = refuse(format!(
+                        "the inverse of `{of}` does not parse: {}",
+                        shown.join("; ")
+                    ));
+                    break;
+                }
+            };
+            let Some(op) = m.operators.first() else {
+                out = broken("a replayed operator's text holds no operator");
+                break;
+            };
+            let mut sub = Run::new(&m, &text).accepting(run.is_accepting()).nested();
             sub.begin(k, op.span);
             let before = self.clone();
             match self.operator(&mut sub, &op.kind) {

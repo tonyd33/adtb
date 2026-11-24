@@ -78,8 +78,8 @@ pub(in crate::evolve) enum Inverse {
         record: Option<Vec<CatFieldId>>,
         of: String,
     },
-    /// Put back constructor `name` of a type as `text`, after the constructor of `after`, else
-    /// first, as a member of each set of `joins`, with its arms in each constraint of `arms`, in
+    /// Put back constructor `name` of a type as `text`, after the first constructor of `after`
+    /// the type holds, else first, as a member of each set of `joins`, with its arms in each constraint of `arms`, in
     /// the match over the type at the position among those of the constraint, after the arm over
     /// the constructor beside them, else last, or first without one; `ctor` is the id it held,
     /// which the arms name it by; `of` is the text of the operator inverted.
@@ -88,7 +88,7 @@ pub(in crate::evolve) enum Inverse {
         ctor: CatCtorId,
         name: String,
         text: Spelled,
-        after: Option<CatCtorId>,
+        after: Vec<CatCtorId>,
         joins: Vec<CatSetId>,
         arms: Vec<PlacedArms>,
         of: String,
@@ -134,16 +134,14 @@ pub(in crate::evolve) enum Inverse {
         decls: Vec<Spelled>,
         of: String,
     },
-    /// Apply a logged migration's operators again, as `text`, a `revert` among them naming each
+    /// Apply a logged migration's operators again, each as its text of `texts` spelled with the
+    /// names the model holds as it reaches the operator, a `revert` among them naming each
     /// object the migration removed and the operator inverted created again by its id in
-    /// `again`; `of` is the text of the operator inverted. A name in `text` is spelled as its
-    /// objects are named now when `then`, the names after the inverted operator, names them as
-    /// written, and as written otherwise.
+    /// `again`; `of` is the text of the operator inverted.
     Replay {
         logged: Box<Logged>,
-        text: Spelled,
+        texts: Vec<Spelled>,
         again: Recreated,
-        then: BTreeMap<(Space, u64), String>,
         of: String,
     },
     /// Set a relation's key clause to its text, generator included; `of` is the text of the
