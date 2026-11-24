@@ -1,0 +1,17 @@
+seed 61
+use shop
+use customers
+use invoice
+
+migrate
+  module shop
+  add type Kind = Card | Invoice
+  merge constructor Payment.(Card | Invoice) into Any { kind: Kind }
+    by match
+      | Card c    -> Any { kind: Card }
+      | Invoice i -> Any { kind: Invoice }
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "revert 0002", detail: "the merge into `Any` computes or drops fields, so it has no inverse" } } }
+  module shop
+  revert 0002
+
