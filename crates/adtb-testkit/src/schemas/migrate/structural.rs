@@ -250,13 +250,14 @@ impl Model {
             None
         };
         let steer = want && shape.is_none();
-        let held = if steer && kind == Kind::Merge {
+        let under = !broke && kind == Kind::Merge && rng.below(2) == 0;
+        let held = if (steer || under) && kind == Kind::Merge {
             Some(self.fresh("g"))
         } else {
             None
         };
         let (i, c, d) = match shape.or_else(|| rng.pick_some(&pairs).copied()) {
-            Some(p) if !steer => p,
+            Some(p) if !steer && !under => p,
             _ => {
                 let sums = self.sums();
                 let headed: Vec<usize> = sums
@@ -294,11 +295,14 @@ impl Model {
             }
         };
         if steer {
-            match (held, self.header_key(i)) {
+            match (held.clone(), self.header_key(i)) {
                 (Some(g), _) => out.push(self.defaulted(i, c, &Field::new(&g, Ty::Int))),
                 (None, Some(h)) => out.push(self.unique_in(i, c, h)),
                 (None, None) => {}
             }
+        }
+        if under && let Some(g) = &held {
+            out.push(self.checked(i, c, g.clone()));
         }
         let shape = shape
             .or_else(|| (steer && !self.replaces_under(i, &[c, d], 1, kind)).then_some((i, c, d)));
@@ -349,7 +353,11 @@ impl Model {
             field: field.clone(),
         };
         let states = &self.rel(i).states;
-        let reach = (states[c] != states[d]).then_some(Reach::MergeAcrossStages);
+        let reach = if states[c] != states[d] {
+            Some(Reach::MergeAcrossStages)
+        } else {
+            under.then_some(Reach::MergeUnderCheck)
+        };
         let declared = states[c] == Stage::Declared || states[d] == Stage::Declared;
         let state = if declared {
             Stage::Declared
@@ -472,6 +480,20 @@ impl Model {
         op(Kind::AddDefault, format!("add default {path} = {v}"))
     }
 
+    /// Returns the `add check` of integer field `f` scoped to constructor `c` of relation `i`,
+    /// adding it to the model.
+    fn checked(&mut self, i: usize, c: usize, f: String) -> Op {
+        let at = self.rel(i).target(Some(&vec![c]));
+        let name = self.fresh("k");
+        let text = format!("add check {name} on {at} ({f} >= (-2))");
+        self.s.rels[i].checks.push(Clause {
+            field: f,
+            ctors: Some(vec![c]),
+            name,
+        });
+        data(Kind::AddCheck, text)
+    }
+
     /// Returns a header field of relation `i` past its key that a unique may name.
     fn header_key(&self, i: usize) -> Option<String> {
         let r = self.rel(i);
@@ -512,6 +534,11 @@ impl Model {
                     .all(|n| self.rel(i).ctors.iter().all(|d| d.name != *n))
                 && cs.iter().all(|n| *n != self.rel(i).set_name)
                 && self.replaces_under(i, &[c], cs.len(), Kind::Unnest) == imaged
+                && !self
+                    .rel(i)
+                    .checks
+                    .iter()
+                    .any(|k| k.ctors.as_ref().is_some_and(|ks| ks.contains(&c)))
             {
                 can.push((i, c));
             }

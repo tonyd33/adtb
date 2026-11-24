@@ -805,8 +805,21 @@ rows it covered, or the merge is refused naming it:
 - A default on a field of a merged constructor becomes a default on
   the new constructor's field when every merged constructor has that
   default with the same value, and is refused otherwise.
-- A check or constraint whose scope or row selection names some but
-  not all of the merged constructors is refused.
+- A check whose scope names every merged constructor ranges over the
+  new constructor in their place, each field it names renamed to the
+  field the routing carries it to whole.
+- A check whose scope names some but not all of the merged
+  constructors, and no other constructor, becomes one over the new
+  constructor whose predicate matches on the discriminator: the
+  check's predicate for the constructors its scope named, `true` for
+  the others. `check sub_present on identities.Apple (sub != "")`
+  becomes `check sub_present on identities.Social (match provider |
+  Google -> true | Apple -> sub != "")`. It is refused when no one
+  field of the new constructor tells the merged constructors apart.
+- A check that names a field the routing does not carry whole into one
+  field, a check whose scope names some but not all of the merged
+  constructors and another constructor, and a constraint whose row
+  selection names some but not all of them are refused.
 
 Every named set containing all merged constructors contains the new
 one; a named set containing some but not all of them is refused, and
@@ -842,9 +855,17 @@ declaration order of the first nested constructor in that order. Each
 row becomes the new constructor holding its old value, under the same
 key. Uniques and indexes over a nested constructor's own fields
 re-scope by path: `unique (gid) in Google` becomes
-`unique (login.Google.gid) in Social`. A unique or index over a header
-field of some but not all of the nested constructors, a default on a
-nested constructor, and a check or constraint whose scope or row
+`unique (login.Google.gid) in Social`. A check whose scope names some
+or all of the nested constructors, and no other constructor, becomes
+one over the new constructor whose predicate matches on its field,
+binding each nested constructor's fields by name: the check's
+predicate for the constructors its scope named, `true` for the others.
+`check gid_present on identities.Google (gid != "")` becomes
+`check gid_present on identities.Social (match login | Google { gid }
+-> (gid != "") | Apple { sub } -> true)`. A unique or index over a
+header field of some but not all of the nested constructors, a default
+on a nested constructor, a check whose scope names a nested
+constructor and another constructor, and a constraint whose row
 selection names some but not all of them are refused, naming the
 clause; each has no image that covers exactly the rows it covered.
 Matches over the outer type change shape and are rechecked: a nest

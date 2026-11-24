@@ -629,8 +629,12 @@ impl Cx<'_> {
         op.append(type_spelled(before, &m, t));
         op.push(format!(".{}", into.name.text));
         op.append(arms);
+        let was = before
+            .schema()
+            .map_err(|_| vec![Diag::new(self.span, "the log does not replay")])?;
+        let checks = self.carried_checks_back(at, &was, ty, &names)?;
         Ok(vec![
-            at.restructure(ty, op, Undo::Unnest(ty_id, products), Vec::new())?,
+            at.restructure(ty, op, Undo::Unnest(ty_id, products), checks)?,
             self.placed_back(at, ty, &names)?,
         ])
     }

@@ -5,7 +5,7 @@ use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::element_head;
 use crate::evolve::model::field::Applied;
 use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at};
-use crate::evolve::model::reselect::Mode;
+use crate::evolve::model::reselect::{Edit, Mode, sel_range};
 use crate::evolve::model::run::{Built, Late, Run};
 use crate::evolve::model::*;
 use crate::evolve::{Clause, Resolved, RowMap};
@@ -217,6 +217,7 @@ impl Model {
         );
         let mut edits = Vec::new();
         let f = field.name.text.clone();
+        edits.extend(self.nested_checks(&built, t, &sources, (&n, &f))?);
         let rewrites = self.nest_clauses(&built, t, (&sources, c), &f)?;
         let (arm_edits, written) = self.arm_writes(run, &built, t, (&sources, &sources), arms)?;
         edits.extend(arm_edits);
@@ -226,7 +227,7 @@ impl Model {
             t,
             &sources,
             &[c],
-            Mode::structural("the nest", true, true),
+            Mode::structural("the nest", true, false),
         )?);
         let mut given = carry::Given::new();
         for &s in &sources {
@@ -464,6 +465,87 @@ impl Model {
             rewrites.push(((cl.relation, cl.at, cl.rescoped.is_some()), fs, parts));
         }
         Ok(rewrites)
+    }
+
+    /// Returns the edits that carry each check over the nested `sources` of type `t` to
+    /// constructor `n`, whose one field is `f`, as `built` resolves the declarations: its
+    /// predicate under a match on `f` that binds each nested constructor's fields by name, with
+    /// `true` for those it does not range over. Refuse a check that also ranges over a
+    /// constructor the nest keeps.
+    fn nested_checks(
+        &self,
+        built: &Built,
+        t: u64,
+        sources: &[u64],
+        (n, f): (&str, &str),
+    ) -> Res<Vec<Edit>> {
+        let schema = built.schema();
+        let def = def_in(schema, t);
+        let src_ix: Vec<u32> = sources.iter().map(|&c| ctor_in(schema, c)).collect();
+        let rels: Vec<crate::types::RelId> = crate::evolve::Cx::relations_of(schema, def)
+            .into_iter()
+            .map(|(r, _, _)| r)
+            .collect();
+        let mut edits = Vec::new();
+        for chk in &schema.checks {
+            let Some(cs) = &chk.ctors else { continue };
+            if !rels.contains(&chk.relation) {
+                continue;
+            }
+            let inside = cs.iter().filter(|c| src_ix.contains(c)).count();
+            if inside == 0 {
+                continue;
+            }
+            if inside < cs.len() {
+                return refuse(format!(
+                    "check `{}` has no image under the nest: it ranges over a constructor the nest keeps",
+                    chk.name
+                ));
+            }
+            let j = chk.file.0 as usize;
+            let Some(ast::Decl::Check(cd)) = built.decl(chk.file) else {
+                continue;
+            };
+            let h = format!("module {}\n", self.decls[j].module).len();
+            if let Some(sel) = &cd.on.sel {
+                let idents: Vec<ast::Ident> = sel_idents(sel).into_iter().cloned().collect();
+                let r = sel_range(built.text(chk.file), &idents);
+                edits.push(Edit::new(j, r.start - h..r.end - h, Term::text(n)));
+            }
+            let p = cd.predicate.span;
+            let pred = p.start as usize - h..p.end as usize - h;
+            let body = &built.text(chk.file)[h..][pred.clone()];
+            let arms: Vec<String> = sources
+                .iter()
+                .zip(&src_ix)
+                .map(|(s, c)| {
+                    let ctor = &self.ctors[s];
+                    let fields: Vec<&str> = ctor
+                        .fields
+                        .iter()
+                        .flatten()
+                        .map(|x| self.fields[x].name.as_str())
+                        .collect();
+                    let pattern = if fields.is_empty() {
+                        ctor.name.clone()
+                    } else {
+                        format!("{} {{ {} }}", ctor.name, fields.join(", "))
+                    };
+                    let e = if cs.contains(c) {
+                        format!("({body})")
+                    } else {
+                        "true".to_string()
+                    };
+                    format!("{pattern} -> {e}")
+                })
+                .collect();
+            edits.push(Edit::new(
+                j,
+                pred,
+                Term::text(&format!("match {f} | {}", arms.join(" | "))),
+            ));
+        }
+        Ok(edits)
     }
 
     /// Returns how an unnest of constructor `c` of type `t` into `made`, named `products`, rewrites

@@ -165,13 +165,16 @@ pub enum Reach {
     /// An `add constructor` that a function's match lacks an arm for until a later `redefine
     /// fn` of the migration.
     ArmLater,
+    /// A merge of constructors a check over one of them names.
+    MergeUnderCheck,
 }
 
 impl Reach {
-    pub const ALL: [Reach; 3] = [
+    pub const ALL: [Reach; 4] = [
         Reach::MergeAcrossStages,
         Reach::MovedDownAction,
         Reach::ArmLater,
+        Reach::MergeUnderCheck,
     ];
 }
 

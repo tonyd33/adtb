@@ -118,6 +118,7 @@ fn unimaged(kind: Kind) -> &'static [&'static str] {
             "the nest is refused: * `*` selects `*`, some but not all of its constructors",
             "`*` has no image under the nest",
             "`*` ranges over some but not all of the nested constructors and has no image under the nest",
+            "check `*` has no image under the nest: it ranges over a constructor the nest keeps",
         ],
         Kind::Unnest => &[
             "the unnest is refused: the default of `*` has no image under it",

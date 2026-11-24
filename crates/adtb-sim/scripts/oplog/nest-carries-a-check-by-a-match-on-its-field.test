@@ -1,0 +1,43 @@
+# A nest carries each check over nested constructors to the nesting constructor, its predicate
+# under a match on the nesting field, holding for the rows it held for; a revert puts it back.
+seed 1
+use empty
+
+migrate
+  module app
+  add module app
+  add type Outer = B { x: I64 } | C { x: I64 }
+  add type T { id: Key ts, n: I64 } = A { x: I64 } | B { x: I64 } | C { x: I64 }
+  add relation ts : T key id generate sequence
+  add check both on ts.(B | C) (x > 0)
+  add check one on ts.B (x > n)
+
+migrate
+  module app
+  nest constructor T.(B | C) into N { inner: Outer }
+
+run
+  insert ts.N { n: 1, inner: B { x: 2 } }
+  insert ts.N { n: 5, inner: C { x: 2 } }
+
+error Violated { constraint: "app::one", report: 1 rows, redacted: 0 }
+  insert ts.N { n: 5, inner: B { x: 2 } }
+
+query rowsort
+  from t in ts select t.n
+----
+1
+5
+
+migrate
+  module app
+  revert 0002
+
+query rowsort
+  from t in ts select { n: t.n, x: match t | A a -> a.x | B b -> b.x | C c -> c.x }
+----
+{ n: 1, x: 2 }
+{ n: 5, x: 2 }
+
+error Violated { constraint: "app::one", report: 1 rows, redacted: 0 }
+  insert ts.B { n: 5, x: 2 }

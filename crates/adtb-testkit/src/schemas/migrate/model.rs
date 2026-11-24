@@ -114,7 +114,11 @@ impl Model {
         };
         let check = |k: &Clause| {
             let s = scope(k);
-            joining && meets(&s) && !holds(&s)
+            match kind {
+                Kind::Merge => no_image(&s),
+                Kind::Nest => meets(&s) && !within(&s),
+                _ => joining && meets(&s) && !holds(&s),
+            }
         };
         let constraint = |k: &super::super::Constraint| {
             k.rel == i && joining && meets(&k.ctors) && !holds(&k.ctors)

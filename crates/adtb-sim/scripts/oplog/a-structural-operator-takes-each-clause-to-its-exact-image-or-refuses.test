@@ -49,9 +49,9 @@ migrate refused MigrationRefused { version: 3, reason: Rejected { reason: Schema
   add constraint small = from t in ts.C where t.n > 100 select t
   merge constructor T.(B | C) into M { k: L, x: I64 }
 
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "nest constructor T.(B | C) into N { inner: Outer }", detail: "the nest is refused: check `positive` selects `ts.B`, some but not all of its constructors" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "nest constructor T.(B | C) into N { inner: Outer }", detail: "check `positive` has no image under the nest: it ranges over a constructor the nest keeps" } } }
   module app
-  add check positive on ts.B (x > 0)
+  add check positive on ts.(A1 | B) (x > 0)
   nest constructor T.(B | C) into N { inner: Outer }
 
 migrate
