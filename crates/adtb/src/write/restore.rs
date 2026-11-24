@@ -110,7 +110,7 @@ impl<R: Runtime> Restoring<'_, R> {
                 }
             }
         }
-        let mut viol = Violations::new();
+        let mut viol = Violations::new(&unbounded());
         let tx = db.begin_read(false)?;
         let checked = db
             .admit_grant(
@@ -221,7 +221,7 @@ impl<R: Runtime> Restoring<'_, R> {
                 (Stop::default(), stmt.grant().clone(), unbounded()),
             )?;
             match denial.run(&[], &mut Local::default())?.result.into_inner() {
-                Val::Set(report) => violate(viol, of, &name, report.iter().cloned()),
+                Val::Set(report) => violate(viol, of, &name, report.iter().cloned())?,
                 other => return Err(Broken::DenialNotSet(other).into()),
             }
         }
@@ -258,10 +258,10 @@ fn duplicates<R: Runtime>(
     groups.retain(|_, g| g.len() > 1);
     if id == r.key_index {
         for row in groups.values().filter_map(|g| g.values().next()) {
-            violate_key(viol, name, rel, stmt.key_of(rel, row)?);
+            violate_key(viol, name, rel, stmt.key_of(rel, row)?)?;
         }
     } else {
-        violate(viol, Violator::Unique(id), name, pairs(groups.values()));
+        violate(viol, Violator::Unique(id), name, pairs(groups.values()))?;
     }
     Ok(())
 }

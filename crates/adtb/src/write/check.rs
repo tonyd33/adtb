@@ -180,7 +180,7 @@ impl<R: Runtime> Stmt<'_, R> {
                             reference(r, c, f),
                             &self.field_name(r, c, f),
                             [u.clone()],
-                        );
+                        )?;
                     }
                 }
             }
@@ -193,15 +193,15 @@ impl<R: Runtime> Stmt<'_, R> {
                 continue;
             }
             for (delta, program) in &d.deltas {
-                let params: Vec<(Var, Val)> = delta
+                let params: Vec<(Var, Held<Val>)> = delta
                     .inputs
                     .iter()
-                    .map(|i| (i.var, Val::set(input_rows(i, set))))
-                    .collect();
+                    .map(|i| Ok((i.var, self.input_rows(i, set)?)))
+                    .collect::<Result<_, Error>>()?;
                 let idle = delta.trigger.is_some_and(|t| {
                     params
                         .iter()
-                        .any(|(v, rows)| *v == t && matches!(rows, Val::Set(s) if s.is_empty()))
+                        .any(|(v, rows)| *v == t && matches!(&**rows, Val::Set(s) if s.is_empty()))
                 });
                 if idle && !cfg!(any(test, feature = "testing")) {
                     continue;
@@ -213,7 +213,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     params
                         .iter()
                         .find(|(p, _)| *p == v)
-                        .map(|(_, rows)| rows.clone())
+                        .map(|(_, rows)| Val::clone(rows))
                 })?;
                 match exec::execute(self.db.rt.clone(), bound, call)?.into_inner() {
                     Val::Set(report) if idle => {
@@ -229,7 +229,7 @@ impl<R: Runtime> Stmt<'_, R> {
                             Violator::Denial(d.of()),
                             &d.name,
                             report.iter().cloned(),
-                        );
+                        )?;
                     }
                     other => {
                         return Err(Broken::DenialNotSet(other).into());
@@ -240,6 +240,25 @@ impl<R: Runtime> Stmt<'_, R> {
         Ok(())
     }
 
+    /// Returns the rows of change set `set` that `input` names, held in the statement's rows'
+    /// grant.
+    fn input_rows(&self, input: &Input, set: &ChangeSet) -> Result<Held<Val>, Error> {
+        let mut out: Held<BTreeSet<Val>> = self.rows_in().held();
+        for c in &input.ctors {
+            if input.part != Part::Deleted {
+                for v in ChangeSet::of(set.plus(), input.rel, *c) {
+                    out.insert(v.clone())?;
+                }
+            }
+            if input.part != Part::Inserted {
+                for v in ChangeSet::of(set.minus(), input.rel, *c) {
+                    out.insert(v.clone())?;
+                }
+            }
+        }
+        Ok(out.into_value()?)
+    }
+
     /// Check the references and newtype domains of every row `set` inserts.
     pub fn check_rows(&self, set: &ChangeSet, viol: &mut Violations) -> Result<(), Error> {
         for ((r, c), n) in set.plus() {
@@ -248,7 +267,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     && !self.reaches(f, &k)?
                 {
                     let name = self.field_name(*r, *c, f);
-                    violate(viol, reference(*r, *c, f), &name, [n.clone()]);
+                    violate(viol, reference(*r, *c, f), &name, [n.clone()])?;
                 }
             }
         }
@@ -278,7 +297,7 @@ impl<R: Runtime> Stmt<'_, R> {
                             .truth()?
                         {
                             let name = domain_name(schema, *def);
-                            violate(viol, Violator::Domain(*def), &name, [row.clone()]);
+                            violate(viol, Violator::Domain(*def), &name, [row.clone()])?;
                         }
                     }
                     self.check_domains(row, v, &base.subst(args), viol)
@@ -317,18 +336,4 @@ fn reference(r: RelId, c: u32, f: &RefField) -> Violator {
 fn domain_name(schema: &Schema, t: TypeId) -> String {
     let d = schema.ty(t);
     format!("{}::{}.domain", schema.module(d.module).name, d.name)
-}
-
-/// Returns the rows of change set `set` that `input` names.
-fn input_rows(input: &Input, set: &ChangeSet) -> BTreeSet<Val> {
-    let mut out = BTreeSet::new();
-    for c in &input.ctors {
-        if input.part != Part::Deleted {
-            out.extend(ChangeSet::of(set.plus(), input.rel, *c).cloned());
-        }
-        if input.part != Part::Inserted {
-            out.extend(ChangeSet::of(set.minus(), input.rel, *c).cloned());
-        }
-    }
-    out
 }

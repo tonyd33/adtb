@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
-use crate::exec::{Val, to_stored};
+use crate::exec::{Arena, Footprint, Grant, Held, Val, to_stored};
 use crate::heap::{self, Flags, Heap, Refused, Slots, Superseded, Unencodable, WriteTarget};
 use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Logged, Probe, Reader, Write, Xid};
@@ -30,18 +31,55 @@ fn undo_failure(e: heap::Error) -> Error {
 /// A heap change a failed statement takes back, with the heap it changed.
 pub type Undo = (HeapId, heap::Undo);
 
+/// The heap changes a statement takes back if it fails, charged to a grant.
+#[derive(Debug)]
+pub struct UndoLog {
+    list: Vec<Undo>,
+    arena: Arena,
+}
+
+impl UndoLog {
+    pub fn new(grant: &Arc<Grant>) -> UndoLog {
+        UndoLog {
+            list: Vec::new(),
+            arena: grant.arena(),
+        }
+    }
+
+    /// Charge room for `n` more changes. Returns the list a heap write records them in.
+    ///
+    /// Preconditions: the heap write whose changes the list records has not been made.
+    pub fn room(&mut self, n: usize) -> Result<&mut Vec<Undo>, Error> {
+        self.arena.grow(n * size_of::<Undo>())?;
+        Ok(&mut self.list)
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, Undo> {
+        self.list.iter()
+    }
+
+    /// Returns every change, newest first, leaving the log empty.
+    fn drain_newest(&mut self) -> impl Iterator<Item = Undo> {
+        std::mem::take(&mut self.list).into_iter().rev()
+    }
+}
+
+impl Footprint for Written<'_> {
+    fn footprint(&self) -> usize {
+        size_of::<Self>()
+    }
+}
+
 /// The rows of a statement sharing a key of a unique index, by relation, index and encoded key,
 /// with the unique's name.
-type Groups = BTreeMap<(RelId, IndexId, Vec<u8>), (String, BTreeMap<Val, Val>)>;
+type Groups = Held<BTreeMap<(RelId, IndexId, Vec<u8>), (String, BTreeMap<Val, Val>)>>;
 
 /// A version the statement wrote that needs entries in the indexes over its constructor.
-struct Written {
+struct Written<'s> {
     rel: RelId,
     ctor: u32,
     tid: Tid,
-    row: Val,
-    /// The row as its heap stores it.
-    stored: Vec<Value>,
+    row: &'s Val,
 }
 
 impl<R: Runtime> Stmt<'_, R> {
@@ -179,17 +217,14 @@ impl<R: Runtime> Stmt<'_, R> {
     /// Postconditions: the statement's reads see every row `set` inserts, two rows of one key
     /// included, and none it deletes.
     pub fn apply(&self, set: &Admitted, viol: &mut Violations) -> Result<(), Error> {
-        type Pair = (Option<(u32, Val)>, Vec<(u32, Val)>);
+        type Pair<'s> = (Option<(u32, &'s Val)>, Vec<(u32, &'s Val)>);
         let (plus, minus) = (set.plus(), set.minus());
-        let mut ops: BTreeMap<(RelId, Val), Pair> = BTreeMap::new();
+        let mut ops: Held<BTreeMap<(RelId, Val), Pair>> = self.rows_in().held();
         for ((r, c), v) in minus {
-            ops.entry((*r, self.key_of(*r, v)?)).or_default().0 = Some((*c, v.clone()));
+            ops.alter((*r, self.key_of(*r, v)?), |p| p.0 = Some((*c, v)))?;
         }
         for ((r, c), v) in plus {
-            ops.entry((*r, self.key_of(*r, v)?))
-                .or_default()
-                .1
-                .push((*c, v.clone()));
+            ops.alter((*r, self.key_of(*r, v)?), |p| p.1.push((*c, v)))?;
         }
         if ops.is_empty() {
             return Ok(());
@@ -197,24 +232,24 @@ impl<R: Runtime> Stmt<'_, R> {
         self.wait_for_rebuilds(ops.keys().map(|(r, _)| *r))?;
         let xid = self.tx.writer()?;
         let pager = &self.db.pager;
-        let mut written = Vec::new();
-        for ((rel, key), (old, news)) in &ops {
+        let mut written: Held<Vec<Written>> = self.rows_in().held();
+        for ((rel, key), (old, news)) in ops.iter() {
             let r = self.rel(*rel);
             if old.is_none() && news.is_empty() {
                 continue;
             }
-            let target = |(c, row): &(u32, Val)| self.writable(*rel, key, *c, row);
+            let target = |(c, row): &(u32, &Val)| self.writable(*rel, key, *c, row);
             let mut write = || -> Result<(), Error> {
                 match (old, news.first()) {
                     (None, None) => {}
                     (Some(old), None) => {
                         let (c, tid) = target(old)?;
                         let heap = r.ctors[c as usize].heap;
-                        let old = (self.heap(heap).delete(pager, tid, xid)).record(
-                            &mut self.undo.borrow_mut(),
-                            heap,
-                            heap,
-                        )?;
+                        let mut undo = self.undo.borrow_mut();
+                        let room = undo.room(1)?;
+                        let old =
+                            (self.heap(heap).delete(pager, tid, xid)).record(room, heap, heap)?;
+                        drop(undo);
                         self.superseded(old)?;
                     }
                     (Some(old @ (c, _)), Some((d, n))) if c == d => {
@@ -223,6 +258,8 @@ impl<R: Runtime> Stmt<'_, R> {
                         let row = self.stored(heap, n)?;
                         let h = self.heap(heap);
                         let mut judge = self.db.session.txns.judge_now(pager, h.id().0);
+                        let mut undo = self.undo.borrow_mut();
+                        let room = undo.room(2)?;
                         let (up, old) = h
                             .update_pruning(
                                 pager,
@@ -232,7 +269,8 @@ impl<R: Runtime> Stmt<'_, R> {
                                 r.heap_only_fields(c),
                                 &mut judge,
                             )
-                            .record(&mut self.undo.borrow_mut(), heap, heap)?;
+                            .record(room, heap, heap)?;
+                        drop(undo);
                         self.superseded(old)?;
                         self.inserted_into(heap)?;
                         if !up.heap_only {
@@ -240,9 +278,8 @@ impl<R: Runtime> Stmt<'_, R> {
                                 rel: *rel,
                                 ctor: c,
                                 tid: up.tid,
-                                row: n.clone(),
-                                stored: row,
-                            });
+                                row: n,
+                            })?;
                         }
                     }
                     (Some(old), Some((d, n))) => {
@@ -252,27 +289,29 @@ impl<R: Runtime> Stmt<'_, R> {
                         let from = r.ctors[c as usize].heap;
                         let into = self.heap(to);
                         let mut judge = self.db.session.txns.judge_now(pager, into.id().0);
+                        let mut undo = self.undo.borrow_mut();
+                        let room = undo.room(2)?;
                         let (at, old) = self
                             .heap(from)
                             .retag_pruning(pager, tid, xid, into, &row, &mut judge)
-                            .record(&mut self.undo.borrow_mut(), from, to)?;
+                            .record(room, from, to)?;
+                        drop(undo);
                         self.superseded(old)?;
                         self.inserted_into(to)?;
                         written.push(Written {
                             rel: *rel,
                             ctor: *d,
                             tid: at,
-                            row: n.clone(),
-                            stored: row,
-                        });
+                            row: n,
+                        })?;
                     }
-                    (None, Some((d, n))) => written.push(self.insert(*rel, *d, n, xid)?),
+                    (None, Some((d, n))) => written.push(self.insert(*rel, *d, n, xid)?)?,
                 }
                 Ok(())
             };
             write()?;
             for (d, n) in news.iter().skip(1) {
-                written.push(self.insert(*rel, *d, n, xid)?);
+                written.push(self.insert(*rel, *d, n, xid)?)?;
             }
         }
         for ((r, _), v) in plus {
@@ -284,33 +323,35 @@ impl<R: Runtime> Stmt<'_, R> {
                 self.db.advance_sequence(*r, k)?;
             }
         }
-        let mut groups = Groups::new();
-        for w in &written {
+        let mut groups: Groups = self.rows_in().held();
+        for w in written.iter() {
             self.entries(w, viol, &mut groups)?;
         }
-        for ((_, ix, _), (name, group)) in &groups {
-            violate(viol, Violator::Unique(*ix), name, pairs([group]));
+        for ((_, ix, _), (name, group)) in groups.iter() {
+            violate(viol, Violator::Unique(*ix), name, pairs([group]))?;
         }
         Ok(())
     }
 
     /// Insert row `n` of constructor `d` of `rel` as a new version written by `xid`.
-    fn insert(&self, rel: RelId, d: u32, n: &Val, xid: Xid) -> Result<Written, Error> {
+    fn insert<'s>(&self, rel: RelId, d: u32, n: &'s Val, xid: Xid) -> Result<Written<'s>, Error> {
         let heap = self.rel(rel).ctors[d as usize].heap;
         let row = self.stored(heap, n)?;
         let h = self.heap(heap);
         let mut judge = self.db.session.txns.judge_now(&self.db.pager, h.id().0);
+        let mut undo = self.undo.borrow_mut();
+        let room = undo.room(1)?;
         let tid = h
             .insert_pruning(&self.db.pager, xid, &row, &mut judge)
-            .record(&mut self.undo.borrow_mut(), heap, heap)?;
+            .record(room, heap, heap)?;
+        drop(undo);
         self.db.session.steps.at(Step::WriteInserted);
         self.inserted_into(heap)?;
         Ok(Written {
             rel,
             ctor: d,
             tid,
-            row: n.clone(),
-            stored: row,
+            row: n,
         })
     }
 
@@ -321,7 +362,7 @@ impl<R: Runtime> Stmt<'_, R> {
     /// - A refusal of the page of a version the statement wrote that is not there as the
     ///   statement's.
     pub fn undo(&self) -> Result<(), Error> {
-        for (heap, u) in self.undo.borrow_mut().drain(..).rev() {
+        for (heap, u) in self.undo.borrow_mut().drain_newest() {
             self.db.session.steps.at(Step::TakeBack);
             (self.heap(heap).take_back(&self.db.pager, u)).map_err(undo_failure)?;
         }
@@ -341,9 +382,10 @@ impl<R: Runtime> Stmt<'_, R> {
         let reader = self.reader_as(xid);
         let pager = &self.db.pager;
         let own = self.heap(r.ctors[w.ctor as usize].heap).id().0;
+        let stored_row = self.stored(r.ctors[w.ctor as usize].heap, w.row)?;
         for (id, ix) in &r.indexes {
             let types = self.store.key_types(*id)?;
-            let Some(key) = ix.keys.key(w.ctor, &w.stored, &types)? else {
+            let Some(key) = ix.keys.key(w.ctor, &stored_row, &types)? else {
                 continue;
             };
             let stored = &self.db.bindings.indexes()[id];
@@ -414,21 +456,22 @@ impl<R: Runtime> Stmt<'_, R> {
                     break latch;
                 }
                 if ix.desc.id == r.key_index {
-                    let key = self.key_of(w.rel, &w.row)?;
-                    violate_key(viol, name, w.rel, key);
+                    let key = self.key_of(w.rel, w.row)?;
+                    violate_key(viol, name, w.rel, key)?;
                 } else {
-                    let (_, group) = groups
-                        .entry((w.rel, *id, encoded.clone()))
-                        .or_insert_with(|| (name.clone(), BTreeMap::new()));
-                    group.insert(self.key_of(w.rel, &w.row)?, w.row.clone());
+                    let mut rows = vec![(self.key_of(w.rel, w.row)?, w.row.clone())];
                     for (c, heap, tid) in conflicts {
                         let v = self
                             .heap(heap)
                             .read(pager, tid)?
                             .expect("a conflicting version is there");
                         let row = self.row(w.rel, c, &v.row)?;
-                        group.insert(self.key_of(w.rel, &row)?, row);
+                        rows.push((self.key_of(w.rel, &row)?, row));
                     }
+                    groups.alter((w.rel, *id, encoded.clone()), |(n, group)| {
+                        n.clone_from(name);
+                        group.extend(rows);
+                    })?;
                 }
                 break latch;
             };

@@ -16,7 +16,7 @@ use crate::exec::{self, Footprint, Held, Val, from_stored_row, to_key};
 use crate::plan::IndexId;
 use crate::runtime::Runtime;
 
-use super::apply::Undo;
+use super::apply::UndoLog;
 use super::change::ChangeSet;
 use super::fresh::{self, Occurrences};
 use super::input::{self, Input, Local, is_temp, temp_key};
@@ -106,7 +106,7 @@ pub struct Stmt<'a, R: Runtime> {
     pub store: Arc<exec::Store<R>>,
     drawn: RefCell<Held<BTreeMap<(Arena, Val), Val>>>,
     load: Cell<Option<i64>>,
-    pub undo: RefCell<Vec<Undo>>,
+    pub undo: RefCell<UndoLog>,
     plans: RefCell<HashMap<PlanKey, Arc<exec::Program>>>,
 }
 
@@ -157,9 +157,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             grant,
             store: db.store(tx),
             drawn: RefCell::new(rows_in.held()),
+            undo: RefCell::new(UndoLog::new(&rows_in)),
             rows_in,
             load: Cell::default(),
-            undo: RefCell::default(),
             plans: RefCell::default(),
         })
     }
@@ -195,11 +195,11 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             stop: super::Stop::default(),
             spill: exec::Spill::new(db.rt.clone(), grant.clone(), db.options.spill_bytes),
             drawn: RefCell::new(grant.held()),
+            undo: RefCell::new(UndoLog::new(&grant)),
             rows_in: grant.clone(),
             grant,
             store: db.store(tx),
             load: Cell::default(),
-            undo: RefCell::default(),
             plans: RefCell::default(),
         }
     }
@@ -756,13 +756,13 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     pub(super) fn settle(&self, set: ChangeSet) -> Result<(Counts, Counts), Error> {
         self.check_open(&set)?;
         let set = self.check_sizes(set)?;
-        let mut viol = Violations::new();
+        let mut viol = Violations::new(&self.rows_in);
         let mut keys: Held<BTreeSet<(RelId, Val)>> = self.rows_in.held();
         for ((r, _), v) in set.plus() {
             let k = self.key_of(*r, v)?;
             if !keys.insert((*r, k.clone()))? {
                 let name = format!("{}.key", self.rel(*r).qualified);
-                violate_key(&mut viol, &name, *r, k);
+                violate_key(&mut viol, &name, *r, k)?;
             }
         }
         drop(keys);

@@ -387,6 +387,74 @@ impl Footprint for adtb_lang::types::RelId {
     }
 }
 
+impl Footprint for crate::plan::IndexId {
+    fn footprint(&self) -> usize {
+        size_of::<Self>()
+    }
+}
+
+impl<T> Footprint for &T {
+    fn footprint(&self) -> usize {
+        size_of::<Self>()
+    }
+}
+
+impl Footprint for u8 {
+    fn footprint(&self) -> usize {
+        size_of::<u8>()
+    }
+}
+
+impl Footprint for String {
+    fn footprint(&self) -> usize {
+        size_of::<String>() + self.len()
+    }
+}
+
+impl<A: Footprint, B: Footprint, C: Footprint> Footprint for (A, B, C) {
+    fn footprint(&self) -> usize {
+        self.0.footprint() + self.1.footprint() + self.2.footprint()
+    }
+}
+
+impl<T: Footprint> Footprint for Option<T> {
+    fn footprint(&self) -> usize {
+        self.as_ref().map_or(0, Footprint::footprint)
+    }
+}
+
+impl<T: Footprint> Footprint for Vec<T> {
+    fn footprint(&self) -> usize {
+        size_of::<Self>() + self.iter().map(Footprint::footprint).sum::<usize>()
+    }
+}
+
+impl<K: Footprint, V: Footprint> Footprint for BTreeMap<K, V> {
+    fn footprint(&self) -> usize {
+        size_of::<Self>()
+            + self
+                .iter()
+                .map(|(k, v)| k.footprint() + v.footprint())
+                .sum::<usize>()
+    }
+}
+
+impl Footprint for crate::key::Value {
+    fn footprint(&self) -> usize {
+        use crate::key::Value as V;
+        size_of::<V>()
+            + match self {
+                V::Text(t) => t.len(),
+                V::Bytes(b) | V::SortKey(b) => b.len(),
+                V::ZonedDateTime { zone, .. } => zone.len(),
+                V::Record(fs) | V::Sum { fields: fs, .. } => {
+                    fs.iter().map(Footprint::footprint).sum()
+                }
+                _ => 0,
+            }
+    }
+}
+
 /// A collection whose items are charged to a grant before they are held and returned to it
 /// as they leave.
 #[derive(Debug)]
@@ -544,6 +612,34 @@ impl<T: Ord + Footprint> Held<BTreeSet<T>> {
 }
 
 impl<K: Ord + Footprint, V: Footprint> Held<BTreeMap<K, V>> {
+    /// Apply `f` to the value `k` maps to, or to a default one, charging the grant for what the
+    /// entry grows by before it is held and returning what it shrinks by. Fails with the
+    /// statement limit, dropping the entry, when the grant has too little left.
+    pub fn alter(&mut self, k: K, f: impl FnOnce(&mut V)) -> Result<(), Error>
+    where
+        V: Default,
+    {
+        let (mut v, was) = match self.items.remove(&k) {
+            Some(v) => {
+                let n = k.footprint() + v.footprint();
+                (v, n)
+            }
+            None => (V::default(), 0),
+        };
+        f(&mut v);
+        let now = k.footprint() + v.footprint();
+        if now > was {
+            if let Err(e) = self.arena.grow(now - was) {
+                self.arena.release(was);
+                return Err(e);
+            }
+        } else {
+            self.arena.release(was - now);
+        }
+        self.items.insert(k, v);
+        Ok(())
+    }
+
     /// Map `k` to `v`, returning to the grant what the value `k` mapped to and the replaced key
     /// were charged.
     pub fn insert(&mut self, k: K, v: V) -> Result<(), Error> {
