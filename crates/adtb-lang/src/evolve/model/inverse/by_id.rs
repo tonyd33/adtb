@@ -219,7 +219,7 @@ impl Inverse {
 
     /// Returns each object the step names by id outside its texts, with the text of the operator
     /// inverted.
-    fn named(&self) -> (Vec<Obj>, &str) {
+    pub(super) fn named(&self) -> (Vec<Obj>, &str) {
         let shared = |x: &u64| (Space::Shared, *x);
         match self {
             Inverse::Rename { object, of, .. } => (vec![*object], of),

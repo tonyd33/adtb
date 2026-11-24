@@ -1,0 +1,36 @@
+seed 5
+
+migrate
+  module app
+  add module app
+  add type O = { id: Key os, n: I64 }
+  add relation os : O key id generate sequence
+
+migrate
+  module app
+  add type W = { id: Key r }
+  drop type W
+  add type T = { id: Key r, a: I64 }
+  add relation r : T key id generate sequence
+
+reopen
+
+migrate
+  module app
+  revert 0002
+
+reopen
+
+migrate
+  module app
+  add type W = { id: Key r }
+  add type T = { id: Key r, a: I64 }
+  add relation r : T key id generate sequence
+
+run
+  insert r { a: 1 }
+
+query
+  from x in r select x.a
+----
+1

@@ -6,9 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::draw::{Draw, Keys};
-use super::{
-    Action, Case, Field, SEARCH_REVERT_DROPPED_WAITING, Schema, Scope, Stage, Ty, literal,
-};
+use super::{Action, Case, Field, Schema, Scope, Stage, Ty, literal};
 use crate::Rng;
 
 mod model;
@@ -320,10 +318,7 @@ impl Migration {
     /// Returns whether a `revert` of the migration, right after it, restores the data and
     /// schema before it, each operator drawn where no switch steers a known finding.
     pub fn exact(&self) -> bool {
-        self.ops.iter().all(|o| {
-            let dropped = o.reach == Some(Reach::DroppedWaiting);
-            !o.broken && o.kind.exact() && (SEARCH_REVERT_DROPPED_WAITING || !dropped)
-        })
+        self.ops.iter().all(|o| !o.broken && o.kind.exact())
     }
 
     /// Returns the rows the migration leaves of `rows`, those of the case it was drawn over, or

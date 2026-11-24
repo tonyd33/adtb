@@ -429,6 +429,60 @@ impl Replayed {
     }
 }
 
+/// Drop from `steps`, the inverses of the operators of a migration that pass through `states`,
+/// the inverse of each operator that adds or removes only objects the migration both adds and
+/// drops, when every operator adding or removing such an object is dropped too, and each step
+/// naming by id only such objects.
+fn cancel_transient(steps: &mut [Undoing], states: &[Source]) {
+    let ends = [states.first(), states.last()];
+    let lasting: BTreeSet<Obj> = ends
+        .into_iter()
+        .flatten()
+        .flat_map(|s| holding(&s.ids))
+        .collect();
+    let mut transient: BTreeSet<Obj> = states
+        .iter()
+        .flat_map(|s| holding(&s.ids))
+        .filter(|o| !lasting.contains(o))
+        .collect();
+    let touched: Vec<BTreeSet<Obj>> = states
+        .windows(2)
+        .map(|pair| {
+            holding(&pair[0].ids)
+                .symmetric_difference(&holding(&pair[1].ids))
+                .copied()
+                .collect()
+        })
+        .collect();
+    let cancelled =
+        |t: &BTreeSet<Obj>, transient: &BTreeSet<Obj>| !t.is_empty() && t.is_subset(transient);
+    loop {
+        let kept: BTreeSet<Obj> = touched
+            .iter()
+            .filter(|t| !cancelled(t, &transient))
+            .flatten()
+            .copied()
+            .collect();
+        let before = transient.len();
+        transient.retain(|o| !kept.contains(o));
+        if transient.len() == before {
+            break;
+        }
+    }
+    if transient.is_empty() {
+        return;
+    }
+    for ((step, _), t) in steps.iter_mut().zip(&touched) {
+        if cancelled(t, &transient) {
+            step.clear();
+        }
+        step.retain(|inv| {
+            let (named, _) = inv.named();
+            named.is_empty() || !named.iter().all(|o| transient.contains(o))
+        });
+    }
+}
+
 /// The inverse of a migration of the log as a revert applies it: the steps of each run of its
 /// operators, the objects of the source after it, the relation variables the steps add back,
 /// and for each fill of the revert the key of the field an inverse took it for.
@@ -527,6 +581,7 @@ impl Cx<'_> {
             }
             steps.push((step, removed(before, state)));
         }
+        cancel_transient(&mut steps, &states);
         if self.accepting && !self.replaying {
             self.untaken(migration, &fills)?;
         }
