@@ -197,6 +197,22 @@ const UNREACHED: &[(Fault, Kind, Option<Consumer>, &str)] = &[
     ),
 ];
 
+/// The kinds a lost write of a case never leaves blank, with why: the first write-out of every
+/// page of them a sequence uses is the create's, which no case faults.
+const NEVER_BLANK: &[(Kind, &str)] = &[
+    (
+        Kind::CommitLog,
+        "the create writes the one status page a sequence uses, which holds the status of 32 \
+         thousand ids while a sequence assigns some thousands",
+    ),
+    (Kind::DamageList, "the pager's create writes the list page"),
+    (
+        Kind::Bitmap,
+        "the create writes the bitmap page of the one group a sequence's file spans",
+    ),
+    (Kind::Marks, "the pager's create writes the marks' page"),
+];
+
 /// Returns the classes of damage the table is asked of for a page `fault` hits: none for a tear,
 /// which lands whole or is a lost write.
 fn classes(fault: Fault) -> &'static [Class] {
@@ -488,6 +504,9 @@ fn shard(fault: Fault) -> String {
             1,
         );
     }
+    if fault == Fault::Recycled && tier.every_row {
+        blank_reached(&found);
+    }
     let text = report(fault, &found, &tier);
     if fault == Fault::Torn {
         return format!(
@@ -496,6 +515,33 @@ fn shard(fault: Fault) -> String {
         );
     }
     text
+}
+
+/// Fail unless each kind a lost write can leave blank has a case whose page a read through its
+/// structure met blank, and no kind listed in [`NEVER_BLANK`] was left blank.
+fn blank_reached(found: &Searched) {
+    let listed = |k: &Kind| NEVER_BLANK.iter().any(|(n, _)| n == k);
+    let blank = |k: Kind| found.blank.get(&k).copied().unwrap_or_default();
+    let unmet: Vec<Kind> = KINDS
+        .into_iter()
+        .filter(|k| !listed(k) && blank(*k).1 == 0)
+        .collect();
+    assert_eq!(
+        Vec::<Kind>::new(),
+        unmet,
+        "Recycled: kinds no case left blank with a read through its structure meeting it; blank \
+         and met {:?}",
+        found.blank
+    );
+    let came: Vec<Kind> = KINDS
+        .into_iter()
+        .filter(|k| listed(k) && blank(*k).0 > 0)
+        .collect();
+    assert_eq!(
+        Vec::<Kind>::new(),
+        came,
+        "Recycled: kinds listed as never blank were left blank; drop their entries"
+    );
 }
 
 /// Rerun every single-fault known failure of `fault`.
@@ -615,6 +661,9 @@ struct Searched {
     settled: usize,
     /// The cases whose planned read failures struck again after a restart.
     failed_after_restart: usize,
+    /// The cases of each kind that left their page blank, and of those the cases a read of the
+    /// page through its structure met.
+    blank: BTreeMap<Kind, (usize, usize)>,
     /// For a tear, the write-outs of each kind in the sequences searched, and those a tear splits.
     tearable: BTreeMap<Kind, (usize, usize)>,
 }
@@ -641,6 +690,17 @@ impl Searched {
         self.settled += usize::from(outcome.verdicts.settled);
         if outcome.failed_after_restart {
             self.failed_after_restart += 1;
+        }
+        if outcome.blank {
+            let through = [
+                Consumer::Catalog,
+                Consumer::Read,
+                Consumer::Verify,
+                Consumer::Dump,
+            ];
+            let met = through.iter().any(|c| outcome.verdicts.met.contains(c));
+            let n = self.blank.entry(kind).or_default();
+            *n = (n.0 + 1, n.1 + usize::from(met));
         }
         for c in &outcome.verdicts.reached {
             *self.reached.entry((kind, *c)).or_default() += 1;
@@ -850,6 +910,7 @@ fn search(fault: Fault, kinds: Vec<Kind>, tier: &Tier, concurrent: bool) -> Sear
         walked: 0,
         settled: 0,
         failed_after_restart: 0,
+        blank: BTreeMap::new(),
         tearable: BTreeMap::new(),
     };
     let done = |kind: Kind, s: &Searched| {
@@ -960,7 +1021,7 @@ fn report(fault: Fault, s: &Searched, tier: &Tier) -> String {
     }
     let mut text = format!(
         "{fault:?}: cases {:?}, reached {:?}, walks compared {}, settles compared {}, steered {:?}, \
-         endings {:?}, failed opens {:?}, stated rows asked {} of {}\n",
+         endings {:?}, failed opens {:?}, stated rows asked {} of {}, blank and met {:?}\n",
         s.cases,
         s.reached,
         s.walked,
@@ -969,7 +1030,8 @@ fn report(fault: Fault, s: &Searched, tier: &Tier) -> String {
         s.endings,
         s.failed_opens,
         s.rows.len(),
-        rows_of(fault).count()
+        rows_of(fault).count(),
+        s.blank
     );
     text += &format!("{fault:?} asked {:?}\n", s.rows);
     for row in rows_of(fault) {

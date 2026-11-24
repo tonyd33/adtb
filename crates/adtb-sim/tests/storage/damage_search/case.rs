@@ -487,6 +487,8 @@ pub struct Outcome {
     /// Whether the faulted run of a pair ended with a page torn whose retained log holds an image
     /// of it after a settled record of it.
     pub torn_settle: bool,
+    /// Whether the faulted run left the first fault's page blank in the file.
+    pub blank: bool,
     pub verdicts: Verdicts,
 }
 
@@ -587,6 +589,7 @@ fn run_all(plan: &Plan, points: &[Point]) -> Option<Outcome> {
             .position(|n| *n > 0)
             .is_some_and(|first| ran.failed_reads[first + 1..].iter().any(|n| *n > 0)),
         torn_settle: paired && torn_settle(&ran.files),
+        blank: world::page(&ran.files, damaged[0]).iter().all(|b| *b == 0),
         verdicts,
     })
 }
