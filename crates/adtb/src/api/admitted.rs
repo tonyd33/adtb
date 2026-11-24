@@ -28,6 +28,14 @@ impl Admitted {
         &self.prepared
     }
 
+    /// Returns the call as a bulk load's, its rows held outside its grant.
+    pub(super) fn loading(self) -> Admitted {
+        Admitted {
+            leave: Leave::loading(),
+            ..self
+        }
+    }
+
     pub(super) fn entry(&self) -> Entry {
         self.entry
     }

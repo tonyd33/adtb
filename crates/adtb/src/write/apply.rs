@@ -182,18 +182,14 @@ impl<R: Runtime> Stmt<'_, R> {
         type Pair = (Option<(u32, Val)>, Vec<(u32, Val)>);
         let (plus, minus) = (set.plus(), set.minus());
         let mut ops: BTreeMap<(RelId, Val), Pair> = BTreeMap::new();
-        for ((r, c), rows) in minus {
-            for v in rows {
-                ops.entry((*r, self.key_of(*r, v)?)).or_default().0 = Some((*c, v.clone()));
-            }
+        for ((r, c), v) in minus {
+            ops.entry((*r, self.key_of(*r, v)?)).or_default().0 = Some((*c, v.clone()));
         }
-        for ((r, c), rows) in plus {
-            for v in rows {
-                ops.entry((*r, self.key_of(*r, v)?))
-                    .or_default()
-                    .1
-                    .push((*c, v.clone()));
-            }
+        for ((r, c), v) in plus {
+            ops.entry((*r, self.key_of(*r, v)?))
+                .or_default()
+                .1
+                .push((*c, v.clone()));
         }
         if ops.is_empty() {
             return Ok(());
@@ -279,15 +275,13 @@ impl<R: Runtime> Stmt<'_, R> {
                 written.push(self.insert(*rel, *d, n, xid)?);
             }
         }
-        for ((r, _), rows) in plus {
+        for ((r, _), v) in plus {
             let rel = self.rel(*r);
             if rel.generate != Some(Generator::Sequence) || !rel.single_key {
                 continue;
             }
-            for v in rows {
-                if let Val::Int(k) = self.key_of(*r, v)? {
-                    self.db.advance_sequence(*r, k)?;
-                }
+            if let Val::Int(k) = self.key_of(*r, v)? {
+                self.db.advance_sequence(*r, k)?;
             }
         }
         let mut groups = Groups::new();

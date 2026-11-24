@@ -1,0 +1,29 @@
+# A statement whose rows pass its memory grant and also share a key is refused for the grant: a
+# limit may refuse a statement at any step, and the write holds its change set before it checks a
+# key. Under the default grant the same statement is refused for the key.
+migrate
+  module app
+  add module app
+  add type Post = { id: Key posts, body: Text }
+  add relation posts : Post key id generate sequence
+
+option query_memory_bytes 8192
+reopen
+
+error StatementLimit { limit: Memory { bytes: 8192 } }
+  insert posts from (
+    from a in [0, 1, 2], b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], c in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    select { id: posts.key(1), body: "post" ++ print(a * 100 + b * 10 + c + 1) })
+
+option query_memory_bytes default
+reopen
+
+error KeyViolation { relation: "app::posts", key: "posts.key(1)" }
+  insert posts from (
+    from a in [0, 1, 2], b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], c in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    select { id: posts.key(1), body: "post" ++ print(a * 100 + b * 10 + c + 1) })
+
+query
+  count(p for p in posts)
+----
+0

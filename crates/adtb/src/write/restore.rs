@@ -15,7 +15,9 @@ use crate::runtime::Runtime;
 use crate::storage::Pid;
 
 use super::admit::Admitted;
+use super::change::ChangeSet;
 use super::eval::Stmt;
+use super::grant::unbounded;
 use super::reindex::Scan;
 use super::schema::Indexed;
 use super::violation::{Violations, Violator, pairs, refuse, violate, violate_key};
@@ -53,7 +55,13 @@ impl<R: Runtime> Restoring<'_, R> {
             )
             .map(|grant| Stmt::reader(self.db, &tx, grant))
             .and_then(|stmt| {
-                stmt.check_sizes(rows, Rows::new())
+                let mut set = ChangeSet::new(&unbounded());
+                for ((r, _), rows) in rows {
+                    for row in rows {
+                        set.insert(r, row)?;
+                    }
+                }
+                stmt.check_sizes(set)
                     .and_then(|set| self.insert(&stmt, &tx, &set))
             });
         match written {
@@ -65,25 +73,23 @@ impl<R: Runtime> Restoring<'_, R> {
     fn insert(&self, stmt: &Stmt<'_, R>, tx: &Txn, set: &Admitted) -> Result<(), Error> {
         let db = self.db;
         let xid = tx.writer()?;
-        for ((r, c), rows) in set.plus() {
+        let mut most: BTreeMap<RelId, i64> = BTreeMap::new();
+        for ((r, c), row) in set.plus() {
             let heap = stmt.rel(*r).ctors[*c as usize].heap;
-            let mut most = None;
-            for row in rows {
-                let stored = stmt.stored(heap, row)?;
-                let h = &db.bindings.heaps()[&heap].heap;
-                let mut judge = db.session.txns.judge_now(&db.pager, h.id().0);
-                h.insert_pruning(&db.pager, xid, &stored, &mut judge)
-                    .kept(self)?;
-                if let Val::Int(k) = stmt.key_of(*r, row)? {
-                    most = most.max(Some(k));
-                }
+            let stored = stmt.stored(heap, row)?;
+            let h = &db.bindings.heaps()[&heap].heap;
+            let mut judge = db.session.txns.judge_now(&db.pager, h.id().0);
+            h.insert_pruning(&db.pager, xid, &stored, &mut judge)
+                .kept(self)?;
+            if let Val::Int(k) = stmt.key_of(*r, row)? {
+                let m = most.entry(*r).or_insert(k);
+                *m = (*m).max(k);
             }
-            let rel = stmt.rel(*r);
-            if let Some(k) = most
-                && rel.generate == Some(Generator::Sequence)
-                && rel.single_key
-            {
-                db.advance_sequence(*r, k)?;
+        }
+        for (r, k) in most {
+            let rel = stmt.rel(r);
+            if rel.generate == Some(Generator::Sequence) && rel.single_key {
+                db.advance_sequence(r, k)?;
             }
         }
         Ok(())
@@ -182,11 +188,11 @@ impl<R: Runtime> Restoring<'_, R> {
     ) -> Result<(), Error> {
         let db = self.db;
         for r in rels {
-            let mut rows = Rows::new();
-            for (c, row) in stmt.rows(*r, None)? {
-                rows.entry((*r, c)).or_default().insert(row);
+            let mut set = ChangeSet::new(&unbounded());
+            for (_, row) in stmt.rows(*r, None)? {
+                set.insert(*r, row)?;
             }
-            stmt.check_rows(&rows, viol)?;
+            stmt.check_rows(&set, viol)?;
         }
         let schema = &*db.schema;
         let mut terms = db.normal.terms().clone();
@@ -212,9 +218,9 @@ impl<R: Runtime> Restoring<'_, R> {
                 text,
                 t,
                 db.options,
-                (Stop::default(), stmt.grant().clone()),
+                (Stop::default(), stmt.grant().clone(), unbounded()),
             )?;
-            match denial.run(&[], &mut Local::default())?.result {
+            match denial.run(&[], &mut Local::default())?.result.into_inner() {
                 Val::Set(report) => violate(viol, of, &name, report.iter().cloned()),
                 other => return Err(Broken::DenialNotSet(other).into()),
             }

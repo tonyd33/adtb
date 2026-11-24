@@ -523,11 +523,11 @@ impl<R: Runtime> Engine<R> {
             let ctor = &text.schema.ty(rel.elem_def).ctors()[c as usize].name;
             format!("{}.{ctor}", rel.name)
         };
-        for ((r, c), vs) in &o.deleted {
-            sizes.entry(name(*r, *c)).or_default().0 += vs.len();
+        for ((r, c), n) in &o.deleted {
+            sizes.entry(name(*r, *c)).or_default().0 += n;
         }
-        for ((r, c), vs) in &o.inserted {
-            sizes.entry(name(*r, *c)).or_default().1 += vs.len();
+        for ((r, c), n) in &o.inserted {
+            sizes.entry(name(*r, *c)).or_default().1 += n;
         }
         let line: Vec<String> = sizes
             .iter()

@@ -1,0 +1,38 @@
+# An upsert whose rows each meet a row of their key, more than its statement's memory grant holds,
+# is refused for the grant and changes nothing, and updates every row under the default grant.
+migrate
+  module app
+  add module app
+  add type Post = { id: Key posts, body: Text }
+  add relation posts : Post key id generate sequence
+
+run
+  insert posts from (
+    from a in [0, 1, 2], b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], c in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    select { id: posts.key(a * 100 + b * 10 + c + 1), body: "post" ++ print(a * 100 + b * 10 + c + 1) })
+
+option query_memory_bytes 8192
+reopen
+
+error StatementLimit { limit: Memory { bytes: 8192 } }
+  insert posts from (from p in posts select { id: key p, body: "new" })
+  unless conflict on key
+  else update old set { old with body: new.body }
+
+option query_memory_bytes default
+reopen
+
+query
+  count(p for p in posts where p.body == "new")
+----
+0
+
+run
+  insert posts from (from p in posts select { id: key p, body: "new" })
+  unless conflict on key
+  else update old set { old with body: new.body }
+
+query
+  count(p for p in posts where p.body == "new")
+----
+300

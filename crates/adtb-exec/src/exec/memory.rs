@@ -429,15 +429,6 @@ impl<C> Held<C> {
     pub fn into_inner(self) -> C {
         self.items
     }
-
-    pub fn grant(&self) -> &Arc<Grant> {
-        self.arena.grant()
-    }
-
-    /// Returns an empty collection of the same grant.
-    pub fn sibling<D: Default>(&self) -> Held<D> {
-        self.grant().held()
-    }
 }
 
 impl<T: Footprint> Held<T> {

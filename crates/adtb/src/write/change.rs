@@ -1,15 +1,87 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
+use std::sync::Arc;
 
 use adtb_lang::capability::RootKind;
 use adtb_lang::schema::OnDelete;
 use adtb_lang::types::RelId;
 
-use crate::exec::{Held, Val};
+use crate::exec::{Grant, Held, Val};
 use crate::runtime::Runtime;
 
 use super::eval::{Arena, Eff, Effects, Env, Stmt};
 use super::schema::RefField;
-use super::{Error, Outcome, Rows};
+use super::{Counts, Error};
+
+/// A row of a change set, by relation and constructor.
+pub type Row = ((RelId, u32), Val);
+
+/// The rows a statement inserts and deletes, held in a grant.
+#[derive(Debug)]
+pub struct ChangeSet {
+    plus: Held<BTreeSet<Row>>,
+    minus: Held<BTreeSet<Row>>,
+}
+
+impl ChangeSet {
+    pub fn new(grant: &Arc<Grant>) -> ChangeSet {
+        ChangeSet {
+            plus: grant.held(),
+            minus: grant.held(),
+        }
+    }
+
+    /// Add row `v` of `rel` to the rows inserted.
+    pub fn insert(&mut self, rel: RelId, v: Val) -> Result<(), Error> {
+        self.plus.insert(((rel, v.ctor_of()?), v))?;
+        Ok(())
+    }
+
+    /// Add row `v` of `rel` to the rows deleted.
+    pub fn delete(&mut self, rel: RelId, v: Val) -> Result<(), Error> {
+        self.minus.insert(((rel, v.ctor_of()?), v))?;
+        Ok(())
+    }
+
+    /// Drop each row both inserted and deleted from both.
+    pub fn normalise(&mut self) {
+        let minus = &self.minus;
+        let both = self.plus.split_off_where(|r| minus.contains(r));
+        for r in both.iter() {
+            self.minus.remove(r);
+        }
+    }
+
+    pub fn plus(&self) -> &BTreeSet<Row> {
+        &self.plus
+    }
+
+    pub fn minus(&self) -> &BTreeSet<Row> {
+        &self.minus
+    }
+
+    /// Returns the rows of constructor `c` of `rel` that `rows` holds.
+    pub fn of(rows: &BTreeSet<Row>, rel: RelId, c: u32) -> impl Iterator<Item = &Val> {
+        let from = Bound::Included(((rel, c), Val::Int(i64::MIN)));
+        let to = match c.checked_add(1) {
+            Some(d) => Bound::Excluded(((rel, d), Val::Int(i64::MIN))),
+            None => Bound::Unbounded,
+        };
+        rows.range((from, to)).map(|(_, v)| v)
+    }
+
+    /// Returns how many rows of each constructor it inserts, then deletes.
+    pub fn counts(&self) -> (Counts, Counts) {
+        let count = |rows: &BTreeSet<Row>| {
+            let mut out = Counts::new();
+            for (rc, _) in rows {
+                *out.entry(*rc).or_default() += 1;
+            }
+            out
+        };
+        (count(&self.plus), count(&self.minus))
+    }
+}
 
 /// The rows a statement's deletes remove.
 struct Deleted {
@@ -29,18 +101,19 @@ impl<R: Runtime> Stmt<'_, R> {
 
     /// Derive the delete actions of the written effects, form the statement's change set,
     /// apply it, and check it at the statement boundary.
-    pub(super) fn boundary(&self, written: Effects, result: Val) -> Result<Outcome, Error> {
+    pub(super) fn boundary(&self, written: Effects) -> Result<(Counts, Counts), Error> {
         let deleted = self.deleted(&written)?;
-        let (plus, minus) = self.change_set(written, &deleted)?;
-        self.settle(plus, minus, result)
+        let set = self.change_set(written, &deleted)?;
+        drop(deleted);
+        self.settle(set)
     }
 
     /// Returns the rows the written effects delete, with every row a cascade deletes.
     fn deleted(&self, written: &Effects) -> Result<Deleted, Error> {
-        let mut minus_written: Held<BTreeSet<(RelId, Val)>> = self.grant().held();
-        let mut kept_keys: Held<BTreeSet<(RelId, Val)>> = self.grant().held();
-        let mut removed: Held<BTreeSet<(RelId, Val)>> = self.grant().held();
-        for e in written {
+        let mut minus_written: Held<BTreeSet<(RelId, Val)>> = self.rows_in().held();
+        let mut kept_keys: Held<BTreeSet<(RelId, Val)>> = self.rows_in().held();
+        let mut removed: Held<BTreeSet<(RelId, Val)>> = self.rows_in().held();
+        for e in written.iter() {
             match e {
                 Eff::Del(r, v) => {
                     minus_written.insert((*r, v.clone()))?;
@@ -55,17 +128,17 @@ impl<R: Runtime> Stmt<'_, R> {
                 }
             }
         }
-        let mut gone: Held<BTreeSet<(RelId, Val)>> = self.grant().held();
+        let mut gone: Held<BTreeSet<(RelId, Val)>> = self.rows_in().held();
         for k in removed {
             if !kept_keys.contains(&k) {
                 gone.insert(k)?;
             }
         }
         drop(kept_keys);
-        let mut pre_rows: Held<BTreeMap<(RelId, Val), Val>> = self.grant().held();
+        let mut pre_rows: Held<BTreeMap<(RelId, Val), Val>> = self.rows_in().held();
         loop {
             let targets: BTreeSet<RelId> = gone.iter().map(|(r, _)| *r).collect();
-            let mut more: Held<Vec<(RelId, Val)>> = self.grant().held();
+            let mut more: Held<Vec<(RelId, Val)>> = self.rows_in().held();
             for (r, fields) in self.referrers(&targets) {
                 if !fields
                     .iter()
@@ -105,13 +178,23 @@ impl<R: Runtime> Stmt<'_, R> {
 
     /// Returns the rows the statement inserts and deletes: the written effects, the clears and
     /// retags of the rows that refer to a deleted one, and the deleted rows.
-    fn change_set(&self, written: Effects, deleted: &Deleted) -> Result<(Rows, Rows), Error> {
+    fn change_set(&self, written: Effects, deleted: &Deleted) -> Result<ChangeSet, Error> {
         let Deleted {
             minus_written,
             gone,
             pre_rows,
         } = deleted;
-        let mut all = written;
+        let mut set = ChangeSet::new(self.rows_in());
+        for e in written {
+            match e {
+                Eff::Ins(r, v) => self.kept(&mut set, gone, r, v)?,
+                Eff::Del(r, v) => set.delete(r, v)?,
+                Eff::Rep(r, v, n) => {
+                    set.delete(r, v)?;
+                    self.kept(&mut set, gone, r, n)?;
+                }
+            }
+        }
         let targets: BTreeSet<RelId> = gone.iter().map(|(r, _)| *r).collect();
         for (r, fields) in self.referrers(&targets) {
             for (_, (c, u)) in self.referring(r, &fields, gone)? {
@@ -146,22 +229,8 @@ impl<R: Runtime> Stmt<'_, R> {
                 } else {
                     continue;
                 };
-                all.insert(Eff::Rep(r, u, new));
-            }
-        }
-        let mut plus = Rows::new();
-        let mut minus = Rows::new();
-        for e in &all {
-            match e {
-                Eff::Ins(r, v) | Eff::Rep(r, _, v) => {
-                    if !gone.contains(&(*r, self.key_of(*r, v)?)) {
-                        add(&mut plus, *r, v.clone())?;
-                    }
-                }
-                Eff::Del(..) => {}
-            }
-            if let Eff::Del(r, v) | Eff::Rep(r, v, _) = e {
-                add(&mut minus, *r, v.clone())?;
+                set.delete(r, u)?;
+                self.kept(&mut set, gone, r, new)?;
             }
         }
         for (r, k) in gone.iter() {
@@ -170,31 +239,26 @@ impl<R: Runtime> Stmt<'_, R> {
                 None => self.by_key(*r, k)?.map(|(_, _, u)| u),
             };
             if let Some(u) = row {
-                add(&mut minus, *r, u)?;
+                set.delete(*r, u)?;
             }
         }
-        normalise(&mut plus, &mut minus);
-        Ok((plus, minus))
+        set.normalise();
+        Ok(set)
     }
-}
 
-pub(super) fn add(rows: &mut Rows, rel: RelId, v: Val) -> Result<(), Error> {
-    rows.entry((rel, v.ctor_of()?)).or_default().insert(v);
-    Ok(())
-}
-
-pub(super) fn normalise(plus: &mut Rows, minus: &mut Rows) {
-    for (rc, p) in plus.iter_mut() {
-        if let Some(m) = minus.get_mut(rc) {
-            let both: Vec<Val> = p.intersection(m).cloned().collect();
-            for v in both {
-                p.remove(&v);
-                m.remove(&v);
-            }
+    /// Add row `v` of `rel` to the rows `set` inserts unless its key is in `gone`.
+    fn kept(
+        &self,
+        set: &mut ChangeSet,
+        gone: &BTreeSet<(RelId, Val)>,
+        rel: RelId,
+        v: Val,
+    ) -> Result<(), Error> {
+        if !gone.contains(&(rel, self.key_of(rel, &v)?)) {
+            set.insert(rel, v)?;
         }
+        Ok(())
     }
-    plus.retain(|_, rows| !rows.is_empty());
-    minus.retain(|_, rows| !rows.is_empty());
 }
 
 /// Returns `v`, the new value of a row of constructor `from`, with each field of `clears`, the

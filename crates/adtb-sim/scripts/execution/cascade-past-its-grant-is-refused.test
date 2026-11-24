@@ -1,5 +1,5 @@
 # A delete whose cascade holds more rows than its statement's memory grant is refused for the
-# grant, and deletes every referrer under the default grant.
+# grant and changes nothing, and deletes every referrer under the default grant.
 migrate
   module app
   add module app
@@ -23,6 +23,16 @@ error StatementLimit { limit: Memory { bytes: 8192 } }
 
 option query_memory_bytes default
 reopen
+
+query
+  count(u for u in users)
+----
+1
+
+query
+  count(p for p in posts)
+----
+300
 
 run
   delete u in users

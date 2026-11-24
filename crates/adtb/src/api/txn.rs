@@ -168,6 +168,27 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         params: &[(&str, Ty, Val)],
         opts: &TxnCallOptions,
     ) -> Result<Vec<DynRows>, Error> {
+        self.call_text(text, params, opts, false)
+    }
+
+    /// Run `text` as [`Txn::query_text`] does, as a bulk load: the rows it touches are held
+    /// outside its grant.
+    pub(super) fn load_text(
+        &mut self,
+        text: &str,
+        params: &[(&str, Ty, Val)],
+        opts: &TxnCallOptions,
+    ) -> Result<Vec<DynRows>, Error> {
+        self.call_text(text, params, opts, true)
+    }
+
+    fn call_text(
+        &mut self,
+        text: &str,
+        params: &[(&str, Ty, Val)],
+        opts: &TxnCallOptions,
+        load: bool,
+    ) -> Result<Vec<DynRows>, Error> {
         let e = &self.engine.enter()?;
         let compiled = self.temps.as_ref().unwrap_or(&e.compiled);
         let p = Prepared::new(
@@ -197,6 +218,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             CALL_BYTES + text.len() + p.bytes(),
         );
         let admitted = e.admit_program(p, &queued, Authority::Owner)?;
+        let admitted = if load { admitted.loading() } else { admitted };
         let rows = self.run(e, &admitted, opts, || {})?;
         self.temps = Some(compiled);
         Ok(rows)

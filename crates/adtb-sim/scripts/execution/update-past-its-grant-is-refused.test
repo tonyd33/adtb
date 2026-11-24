@@ -1,0 +1,34 @@
+# An update of more rows than its statement's memory grant holds is refused for the grant and
+# changes nothing, and updates every row under the default grant.
+migrate
+  module app
+  add module app
+  add type Post = { id: Key posts, body: Text }
+  add relation posts : Post key id generate sequence
+
+run
+  insert posts from (
+    from a in [0, 1, 2], b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], c in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    select { id: posts.key(a * 100 + b * 10 + c + 1), body: "post" ++ print(a * 100 + b * 10 + c + 1) })
+
+option query_memory_bytes 8192
+reopen
+
+error StatementLimit { limit: Memory { bytes: 8192 } }
+  update p in posts set { p with body: p.body ++ "!" }
+
+option query_memory_bytes default
+reopen
+
+query
+  count(p for p in posts where ends_with(p.body, "!"))
+----
+0
+
+run
+  update p in posts set { p with body: p.body ++ "!" }
+
+query
+  count(p for p in posts where ends_with(p.body, "!"))
+----
+300

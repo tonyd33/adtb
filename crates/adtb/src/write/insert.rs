@@ -4,7 +4,7 @@ use adtb_lang::kernel::{Conflict, Kind, Tm, Var};
 use adtb_lang::types::{RelId, Ty};
 
 use crate::exec::types::ctors;
-use crate::exec::{self, Held, Val};
+use crate::exec::{self, Footprint, Held, Val};
 use crate::runtime::Runtime;
 
 use super::eval::{Eff, Effects, Env, Stmt, bind};
@@ -17,6 +17,12 @@ pub struct Rejected {
     source: String,
     raw: String,
     reason: String,
+}
+
+impl Footprint for Rejected {
+    fn footprint(&self) -> usize {
+        size_of::<Rejected>() + self.source.len() + self.raw.len() + self.reason.len()
+    }
 }
 
 impl<R: Runtime> Stmt<'_, R> {
@@ -35,11 +41,13 @@ impl<R: Runtime> Stmt<'_, R> {
                 return Err(Broken::RejectsWraps(TermKind(k.clone())).into());
             }
         };
-        let mut rejected = Vec::new();
+        let mut rejected: Held<Vec<Rejected>> = self.rows_in().held();
         let rows = self.records(rows, env, Some(&mut rejected))?;
         let bound = match self.terms().kind(insert) {
             Kind::Insert(r, _) => {
-                out.extend(rows.iter().map(|v| Eff::Ins(*r, v.clone())));
+                for v in rows.iter() {
+                    out.insert(Eff::Ins(*r, v.clone()))?;
+                }
                 rows.into_value()?
             }
             _ => self.upsert(insert, rows, env, out)?,
@@ -47,7 +55,7 @@ impl<R: Runtime> Stmt<'_, R> {
         if !rejected.is_empty() {
             let load = self.load(into)?;
             for j in rejected {
-                out.insert(Eff::Ins(into, self.rejected_row(into, load, j)?));
+                out.insert(Eff::Ins(into, self.rejected_row(into, load, j)?))?;
             }
         }
         Ok(bound)
@@ -63,7 +71,7 @@ impl<R: Runtime> Stmt<'_, R> {
         &self,
         rows: Tm,
         env: &Env,
-        mut rejected: Option<&mut Vec<Rejected>>,
+        mut rejected: Option<&mut Held<Vec<Rejected>>>,
     ) -> Result<Held<BTreeSet<Val>>, Error> {
         let source = match self.terms().kind(rows) {
             Kind::For(x, src, body) => match self.terms().kind(*src) {
@@ -113,7 +121,7 @@ impl<R: Runtime> Stmt<'_, R> {
                             source: source.clone(),
                             raw: exec::print(self.schema(), &ty, &p)?,
                             reason: detail,
-                        });
+                        })?;
                     }
                     None => {
                         return Err(Error::Rejected(Rejection::BadInput {
@@ -137,7 +145,7 @@ impl<R: Runtime> Stmt<'_, R> {
         scan: Var,
         (x, body): (Var, Tm),
         env: &Env,
-        mut rejected: Option<&mut Vec<Rejected>>,
+        mut rejected: Option<&mut Held<Vec<Rejected>>>,
     ) -> Result<Held<BTreeSet<Val>>, Error> {
         let records = self.scan_records(scan)?;
         let mut out: Held<BTreeSet<Val>> = self.grant().held();
@@ -162,7 +170,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     source: r.source,
                     raw: r.raw,
                     reason,
-                }),
+                })?,
                 None => {
                     return Err(Error::Rejected(Rejection::BadInput {
                         source: r.source,
@@ -253,7 +261,7 @@ impl<R: Runtime> Stmt<'_, R> {
         for n in rows {
             let olds = self.conflicts(rel, on, &n)?;
             if olds.is_empty() {
-                out.insert(Eff::Ins(rel, n.clone()));
+                out.insert(Eff::Ins(rel, n.clone()))?;
                 bound.insert(n)?;
                 continue;
             }
@@ -264,16 +272,16 @@ impl<R: Runtime> Stmt<'_, R> {
                 } = &self.terms().var_info(old).ty
                     && !visible.contains(&o.ctor_of()?)
                 {
-                    out.insert(Eff::Ins(rel, n.clone()));
+                    out.insert(Eff::Ins(rel, n.clone()))?;
                     bound.insert(n.clone())?;
                     continue;
                 }
-                let mut ew = Effects::new();
+                let mut ew: Effects = self.rows_in().held();
                 let inner = bind(&bind(env, old, o.clone()), new, n.clone());
                 self.write(otherwise, &inner, &mut ew)?;
                 let k = self.key_of(rel, &o)?;
                 let mut wrote = false;
-                for e in &ew {
+                for e in ew.iter() {
                     if let Eff::Rep(r, _, v) | Eff::Ins(r, v) = e
                         && *r == rel
                         && self.key_of(rel, v)? == k
@@ -285,7 +293,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 if !wrote {
                     bound.insert(o)?;
                 }
-                out.extend(ew);
+                out.append(ew);
             }
         }
         if single {

@@ -112,13 +112,34 @@ pub(crate) use sequence::full_counter_page;
 /// The rows of each constructor relation, by relation and constructor.
 pub type Rows = BTreeMap<(RelId, u32), BTreeSet<Val>>;
 
+/// How many rows of each constructor relation, by relation and constructor.
+pub type Counts = BTreeMap<(RelId, u32), usize>;
+
 /// What a statement that succeeds returns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outcome {
     pub result: Val,
-    /// The normalised change set.
-    pub inserted: Rows,
-    pub deleted: Rows,
+    /// The rows of the normalised change set.
+    pub inserted: Counts,
+    pub deleted: Counts,
+}
+
+/// What a statement that succeeds returns while its call runs, its result held in the call's
+/// grant.
+struct Done {
+    result: exec::Held<Val>,
+    inserted: Counts,
+    deleted: Counts,
+}
+
+impl Done {
+    fn outcome(self) -> Outcome {
+        Outcome {
+            result: self.result.into_inner(),
+            inserted: self.inserted,
+            deleted: self.deleted,
+        }
+    }
 }
 
 /// The item of a [`Database::statements`] call that failed, and why.
@@ -275,17 +296,41 @@ pub struct Text<'a> {
 /// Leave to run statements: that of a call the admission gate admitted, or the engine's own,
 /// for no caller.
 #[derive(Debug)]
-pub struct Leave(());
+pub struct Leave(RowsIn);
+
+/// Where a call's statements hold the rows they touch.
+#[derive(Clone, Copy, Debug)]
+enum RowsIn {
+    Grant,
+    /// Hold the rows in a grant of no limit: a change set cannot spill the rows of a bulk load or a
+    /// file scan's insert, and the engine's own statements answer to no caller's grant.
+    Unbounded,
+}
 
 impl Leave {
     /// Returns the leave of a call the admission gate admitted.
     pub(crate) fn admitted() -> &'static Leave {
-        &Leave(())
+        &Leave(RowsIn::Grant)
     }
 
-    /// Returns the leave of statements the engine runs itself, for no caller.
+    /// Returns the leave of a bulk load the admission gate admitted, its rows held outside its
+    /// grant.
+    pub(crate) fn loading() -> &'static Leave {
+        &Leave(RowsIn::Unbounded)
+    }
+
+    /// Returns the leave of statements the engine runs itself, for no caller, their rows held
+    /// outside their grant.
     pub(crate) fn system() -> &'static Leave {
-        &Leave(())
+        &Leave(RowsIn::Unbounded)
+    }
+
+    /// Returns the grant the rows of a call under `grant` are held in.
+    fn rows(&self, grant: &Arc<exec::Grant>) -> Arc<exec::Grant> {
+        match self.0 {
+            RowsIn::Grant => grant.clone(),
+            RowsIn::Unbounded => grant::unbounded(),
+        }
     }
 }
 
@@ -779,14 +824,14 @@ impl<R: Runtime> Database<R> {
     /// the next item does.
     pub fn statements_with(
         &self,
-        _leave: &Leave,
+        leave: &Leave,
         tx: &Txn,
         text: Text<'_>,
         local: &mut Local,
         bounds: Bounds,
         between: &mut Between<'_>,
     ) -> Result<Vec<Outcome>, Failed> {
-        match self.run_items(tx, text, local, bounds, between) {
+        match self.run_items(leave, tx, text, local, (bounds, between)) {
             Err(
                 f @ Failed {
                     error: Error::Blocked { .. },
@@ -799,17 +844,19 @@ impl<R: Runtime> Database<R> {
 
     fn run_items(
         &self,
+        leave: &Leave,
         tx: &Txn,
         text: Text<'_>,
         local: &mut Local,
-        bounds: Bounds,
-        between: &mut Between<'_>,
+        (bounds, between): (Bounds, &mut Between<'_>),
     ) -> Result<Vec<Outcome>, Failed> {
         let _writing = tx.xid.map(|_| Writing::enter());
         self.admit(&text).map_err(|error| Failed::new(0, error))?;
         let (bounds, _peak) = self
             .granted(tx, bounds)
             .map_err(|error| Failed::new(0, error))?;
+        let rows = (self.grant_of(tx, &bounds)).map_err(|error| Failed::new(0, error))?;
+        let rows = leave.rows(&rows);
         let mut ran = Vec::with_capacity(text.items.len());
         let mut out = Vec::with_capacity(text.items.len());
         let before = local.clone();
@@ -817,7 +864,7 @@ impl<R: Runtime> Database<R> {
         for item in 0..=text.items.len() {
             let done = between(item, local).and_then(|()| match text.items.get(item) {
                 Some(t) => {
-                    let s = self.stmt(tx, text, *t, item, &bounds, started)?;
+                    let s = self.stmt(tx, text, *t, item, (&bounds, Some(&rows)), started)?;
                     let o = s.run(text.params, local);
                     ran.push(s);
                     o.map(|o| out.push(o))
@@ -829,6 +876,7 @@ impl<R: Runtime> Database<R> {
                 return Err(self.taken_back(tx, &ran, Failed::new(item, error)));
             }
         }
+        let out: Vec<Outcome> = out.into_iter().map(Done::outcome).collect();
         for o in &out {
             self.record_written(&mut tx.written.borrow_mut(), o);
             self.record_changed(&mut tx.held.changed.borrow_mut(), o);
@@ -860,13 +908,14 @@ impl<R: Runtime> Database<R> {
         let (bounds, _peak) = self
             .granted(tx, bounds)
             .map_err(|error| Failed::new(0, error))?;
+        let rows = (self.grant_of(tx, &bounds)).map_err(|error| Failed::new(0, error))?;
         let before = local.clone();
         let mut ran = Vec::with_capacity(text.items.len());
         let mut out = Vec::with_capacity(text.items.len());
         let started = self.rt.now();
         for (item, t) in text.items.iter().enumerate() {
             let o = self
-                .stmt(tx, text, *t, item, &bounds, started)
+                .stmt(tx, text, *t, item, (&bounds, Some(&rows)), started)
                 .and_then(|s| {
                     let o = s.run(text.params, local);
                     ran.push(s);
@@ -884,13 +933,13 @@ impl<R: Runtime> Database<R> {
         let item = text.items.len();
         self.take_back(tx, &ran, false)
             .map_err(|error| Failed::undone(item, error))?;
-        Ok(out)
+        Ok(out.into_iter().map(Done::outcome).collect())
     }
 
     /// Returns the operators of term `t` of `text` as a statement of `tx` would run it.
     pub fn explain(&self, tx: &Txn, text: Text<'_>, t: Tm) -> Result<Node, Error> {
         let explained = self
-            .stmt(tx, text, t, 0, &Bounds::default(), self.rt.now())?
+            .stmt(tx, text, t, 0, (&Bounds::default(), None), self.rt.now())?
             .explain();
         tx.noted(explained)
     }
@@ -917,15 +966,16 @@ impl<R: Runtime> Database<R> {
         one.vacuum(rel, &stop).map(Some)
     }
 
-    /// Returns term `t`, item `item` of `text`, as a statement of `tx` bounded by `bounds`, in
-    /// a run of the statements that started at `started`.
+    /// Returns term `t`, item `item` of `text`, as a statement of `tx` bounded by `bounds`,
+    /// holding the rows it touches in `rows`, else in its grant, in a run of the statements that
+    /// started at `started`.
     fn stmt<'a>(
         &'a self,
         tx: &'a Txn,
         text: Text<'a>,
         t: Tm,
         item: usize,
-        bounds: &Bounds,
+        (bounds, rows): (&Bounds, Option<&Arc<exec::Grant>>),
         started: Instant,
     ) -> Result<eval::Stmt<'a, R>, Error> {
         let options = exec::Options {
@@ -956,7 +1006,8 @@ impl<R: Runtime> Database<R> {
             (bounds.suspend && bounds.polls_from.is_none_or(|from| item < from)).then_some(rerun),
         );
         let grant = self.grant_of(tx, bounds)?;
-        eval::Stmt::new(self, tx, text, t, options, (stop, grant))
+        let rows = rows.cloned().unwrap_or_else(|| grant.clone());
+        eval::Stmt::new(self, tx, text, t, options, (stop, grant, rows))
     }
 
     /// Take back the statements of `ran` when the class of `failed` takes them back. Returns

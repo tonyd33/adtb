@@ -1,0 +1,49 @@
+# A delete whose clears rewrite more rows than its statement's memory grant holds is refused for
+# the grant and changes nothing, though a read of those rows fits the grant, and clears every
+# referrer under the default grant.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, n: I64 }
+  add relation users : User key id generate sequence
+  add type Post = { id: Key posts, owner: Option (Key users) on delete clear, body: Text }
+  add relation posts : Post key id generate sequence
+
+run
+  insert users { id: users.key(1), n: 1 }
+  insert posts from (
+    from a in [0, 1, 2], b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], c in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    select { id: posts.key(a * 100 + b * 10 + c + 1), owner: Some { value: users.key(1) },
+             body: "post" ++ print(a * 100 + b * 10 + c + 1) })
+
+option query_memory_bytes 8192
+reopen
+
+query
+  count(p for p in posts where p.owner == Some { value: users.key(1) })
+----
+300
+
+error StatementLimit { limit: Memory { bytes: 8192 } }
+  delete u in users
+
+query
+  count(u for u in users)
+----
+1
+
+query
+  count(p for p in posts where p.owner == Some { value: users.key(1) })
+----
+300
+
+option query_memory_bytes default
+reopen
+
+run
+  delete u in users
+
+query
+  count(p for p in posts where p.owner == None)
+----
+300

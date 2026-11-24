@@ -12,18 +12,17 @@ use adtb_lang::schema::{Committed, Generator, Schema, Stage};
 use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::exec::types::ctors;
-use crate::exec::{self, Held, Val, from_stored_row, to_key};
+use crate::exec::{self, Footprint, Held, Val, from_stored_row, to_key};
 use crate::plan::IndexId;
 use crate::runtime::Runtime;
 
 use super::apply::Undo;
+use super::change::ChangeSet;
 use super::fresh::{self, Occurrences};
 use super::input::{self, Input, Local, is_temp, temp_key};
 use super::schema::{RefField, Rel};
-use super::{Broken, Database, Error, Outcome, Rejection, Rows, TermKind, Txn};
-
-use super::change::{add, normalise};
 use super::violation::{Violations, refuse, violate_key};
+use super::{Broken, Counts, Database, Done, Error, Rejection, TermKind, Txn};
 
 pub type Env = BTreeMap<Var, Val>;
 
@@ -43,7 +42,17 @@ impl Eff {
     }
 }
 
-pub type Effects = BTreeSet<Eff>;
+impl Footprint for Eff {
+    fn footprint(&self) -> usize {
+        match self {
+            Eff::Ins(r, v) | Eff::Del(r, v) => r.footprint() + v.footprint(),
+            Eff::Rep(r, v, n) => r.footprint() + v.footprint() + n.footprint(),
+        }
+    }
+}
+
+/// The effects of a statement's writes, held in the grant of its rows.
+pub type Effects = Held<BTreeSet<Eff>>;
 
 /// Rows of a relation by key, each with its constructor, held in a statement's grant.
 pub type Referring = Held<BTreeMap<Val, (u32, Val)>>;
@@ -54,6 +63,12 @@ pub enum Arena {
     Statement,
     /// The normal program, in a root of the kind given.
     Program(RootKind),
+}
+
+impl Footprint for Arena {
+    fn footprint(&self) -> usize {
+        size_of::<Arena>()
+    }
 }
 
 /// A term planned with the variables bound around it.
@@ -84,10 +99,12 @@ pub struct Stmt<'a, R: Runtime> {
     pub stop: super::Stop,
     /// The grant the statement's reads and executions take their memory from.
     grant: Arc<exec::Grant>,
+    /// The grant the statement holds the rows it touches in: its call's, or one of no limit.
+    rows_in: Arc<exec::Grant>,
     /// The spill file of the statement's own reads.
     spill: exec::Spill<R>,
     pub store: Arc<exec::Store<R>>,
-    drawn: RefCell<BTreeMap<(Arena, Val), Val>>,
+    drawn: RefCell<Held<BTreeMap<(Arena, Val), Val>>>,
     load: Cell<Option<i64>>,
     pub undo: RefCell<Vec<Undo>>,
     plans: RefCell<HashMap<PlanKey, Arc<exec::Program>>>,
@@ -100,7 +117,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         text: super::Text<'a>,
         root: Tm,
         options: exec::Options,
-        (stop, grant): (super::Stop, Arc<exec::Grant>),
+        (stop, grant, rows): (super::Stop, Arc<exec::Grant>, Arc<exec::Grant>),
     ) -> Result<Self, Error> {
         let schema = text.schema;
         let mut terms = text.terms.clone();
@@ -114,6 +131,12 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             .chain(inputs.keys().copied())
             .collect();
         let terms = ValidTerms::new(schema, terms, &[(root, free)]).map_err(Broken::IllTyped)?;
+        let scans_files = (inputs.values()).any(|i| matches!(i, Input::File { .. }));
+        let rows_in = if scans_files {
+            super::grant::unbounded()
+        } else {
+            rows
+        };
         Ok(Stmt {
             db,
             tx,
@@ -133,7 +156,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             spill: exec::Spill::new(db.rt.clone(), grant.clone(), options.spill_bytes),
             grant,
             store: db.store(tx),
-            drawn: RefCell::default(),
+            drawn: RefCell::new(rows_in.held()),
+            rows_in,
             load: Cell::default(),
             undo: RefCell::default(),
             plans: RefCell::default(),
@@ -143,6 +167,11 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     /// Returns the grant the statement's reads and executions take their memory from.
     pub(super) fn grant(&self) -> &Arc<exec::Grant> {
         &self.grant
+    }
+
+    /// Returns the grant the statement holds the rows it touches in.
+    pub(super) fn rows_in(&self) -> &Arc<exec::Grant> {
+        &self.rows_in
     }
 
     /// Returns a statement that only reads, under `grant`.
@@ -165,9 +194,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             options: db.options,
             stop: super::Stop::default(),
             spill: exec::Spill::new(db.rt.clone(), grant.clone(), db.options.spill_bytes),
+            drawn: RefCell::new(grant.held()),
+            rows_in: grant.clone(),
             grant,
             store: db.store(tx),
-            drawn: RefCell::default(),
             load: Cell::default(),
             undo: RefCell::default(),
             plans: RefCell::default(),
@@ -193,60 +223,75 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     ///
     /// On an `Err`, `local` may hold scans of the statement and changes to temp relations of
     /// its writes, and the statement's effects on the file are left for [`undo`](Stmt::undo).
-    pub fn run(&self, params: &[(Var, Val)], local: &mut Local) -> Result<Outcome, Error> {
+    pub(super) fn run(&self, params: &[(Var, Val)], local: &mut Local) -> Result<Done, Error> {
         std::mem::swap(&mut *self.local.borrow_mut(), local);
         let out = self.run_here(params);
         std::mem::swap(&mut *self.local.borrow_mut(), local);
         out
     }
 
-    fn run_here(&self, params: &[(Var, Val)]) -> Result<Outcome, Error> {
+    fn run_here(&self, params: &[(Var, Val)]) -> Result<Done, Error> {
         let mut env: Env = params.iter().cloned().collect();
-        self.bind_inputs(&mut env)?;
-        let mut effects = Effects::new();
+        let _inputs = self.bind_inputs(&mut env)?;
+        let mut effects: Effects = self.rows_in.held();
         let t = self.root;
         let result = match self.terms.kind(t) {
-            Kind::Transact(b, _) => self.block(*b, &env, &mut effects)?.into_inner(),
+            Kind::Transact(b, _) => self.block(*b, &env, &mut effects)?,
             _ if *self.terms.ty(t) == Ty::Change => {
                 self.write(t, &env, &mut effects)?;
-                Val::record(Vec::new())
+                self.grant.hold(Val::record(Vec::new()))?
             }
             _ => {
-                return Ok(Outcome {
-                    result: self.eval(Arena::Statement, t, &env)?.into_inner(),
-                    inserted: Rows::new(),
-                    deleted: Rows::new(),
+                return Ok(Done {
+                    result: self.eval(Arena::Statement, t, &env)?,
+                    inserted: Counts::new(),
+                    deleted: Counts::new(),
                 });
             }
         };
-        let (temps, kept): (Effects, Effects) = effects
-            .into_iter()
-            .partition(|e| is_temp(self.schema, e.rel()));
-        let mut out = self.boundary(kept, result)?;
-        let temps: Vec<&Eff> = temps.iter().collect();
-        self.local.borrow_mut().apply(self.schema, &temps)?;
+        let temps = effects.split_off_where(|e| is_temp(self.schema, e.rel()));
+        let (mut inserted, mut deleted) = self.boundary(effects)?;
+        self.local.borrow_mut().apply(self.schema, temps.iter())?;
+        let mut set = ChangeSet::new(&self.rows_in);
         for e in temps {
-            if let Eff::Ins(r, v) | Eff::Rep(r, _, v) = e {
-                add(&mut out.inserted, *r, v.clone())?;
-            }
-            if let Eff::Del(r, v) | Eff::Rep(r, v, _) = e {
-                add(&mut out.deleted, *r, v.clone())?;
+            match e {
+                Eff::Ins(r, v) => set.insert(r, v)?,
+                Eff::Del(r, v) => set.delete(r, v)?,
+                Eff::Rep(r, v, n) => {
+                    set.delete(r, v)?;
+                    set.insert(r, n)?;
+                }
             }
         }
-        normalise(&mut out.inserted, &mut out.deleted);
-        Ok(out)
+        set.normalise();
+        let (plus, minus) = set.counts();
+        inserted.extend(plus);
+        deleted.extend(minus);
+        Ok(Done {
+            result,
+            inserted,
+            deleted,
+        })
     }
 
     /// Bind in `env` the variable of each read of a temp relation to its rows, and of each file
-    /// scan to its rows when every record converts.
-    fn bind_inputs(&self, env: &mut Env) -> Result<(), Error> {
+    /// scan to its rows when every record converts. Returns the rows bound, held in the grant of
+    /// the statement's rows.
+    fn bind_inputs(&self, env: &mut Env) -> Result<Vec<Held<Val>>, Error> {
         let bound: BTreeSet<Var> = env.keys().copied().collect();
         let mut facts = crate::plan::Facts::default();
+        let mut held = Vec::new();
+        let mut hold = |env: &mut Env, v: Var, rows: BTreeSet<Val>| -> Result<(), Error> {
+            let rows = self.rows_in.hold(Val::set(rows))?;
+            env.insert(v, (*rows).clone());
+            held.push(rows);
+            Ok(())
+        };
         for (v, input) in &self.inputs {
             match input {
                 Input::Temp { rel, ctors } => {
                     let rows = self.local.borrow().rows(*rel, ctors.as_ref())?;
-                    env.insert(*v, Val::set(rows));
+                    hold(env, *v, rows)?;
                 }
                 Input::Volatile { rel, ctors } => {
                     let mut rows = BTreeSet::new();
@@ -256,7 +301,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                             rows.insert(row);
                         }
                     }
-                    env.insert(*v, Val::set(rows));
+                    hold(env, *v, rows)?;
                 }
                 Input::File { format, path, row } => {
                     if !facts.free(&self.terms, *path).is_subset(&bound) {
@@ -295,15 +340,13 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                         Some(why) => {
                             self.unconverted.borrow_mut().insert(*v, why);
                         }
-                        None => {
-                            env.insert(*v, Val::set(rows));
-                        }
+                        None => hold(env, *v, rows)?,
                     }
                     self.scans.borrow_mut().insert(*v, records);
                 }
             }
         }
-        Ok(())
+        Ok(held)
     }
 
     /// Returns the value of term `t` of arena `a` in `env`, its placeholders filled, held in the
@@ -395,7 +438,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             }
             let (g, r) = occurrences[&occ];
             let v = self.draw(g, r)?;
-            self.drawn.borrow_mut().insert(key, v.clone());
+            self.drawn.borrow_mut().insert(key, v.clone())?;
             Ok(v)
         };
         fresh::fill(v, &mut draw)
@@ -461,14 +504,14 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             Kind::Skip => Ok(()),
             Kind::Insert(r, rows) => {
                 for v in self.records(rows, env, None)? {
-                    out.insert(Eff::Ins(r, v));
+                    out.insert(Eff::Ins(r, v))?;
                 }
                 Ok(())
             }
             Kind::Delete(r, rows) => {
                 for v in self.set(rows, env)? {
                     if self.in_snapshot(r, &v)? {
-                        out.insert(Eff::Del(r, v));
+                        out.insert(Eff::Del(r, v))?;
                     }
                 }
                 Ok(())
@@ -519,14 +562,14 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 let Kind::Lam(x, body) = *self.terms.kind(f) else {
                     return Err(Broken::ReplaceNotLam.into());
                 };
-                let mut news: Held<BTreeSet<Val>> = self.grant.held();
+                let mut news: Held<BTreeSet<Val>> = self.rows_in.held();
                 for v in self.set(rows, env)? {
                     let n = self.eval(Arena::Statement, body, &bind(env, x, v.clone()))?;
                     if self.key_of(r, &n)? != self.key_of(r, &v)? {
                         return Err(Error::Rejected(Rejection::KeyChanged { relation: r }));
                     }
                     if *n != v && self.in_snapshot(r, &v)? {
-                        out.insert(Eff::Rep(r, v, (*n).clone()));
+                        out.insert(Eff::Rep(r, v, (*n).clone()))?;
                     }
                     news.insert(n.into_inner())?;
                 }
@@ -708,41 +751,31 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         Ok(out)
     }
 
-    /// Apply the change set and check it at the statement boundary.
-    pub(super) fn settle(&self, plus: Rows, minus: Rows, result: Val) -> Result<Outcome, Error> {
-        self.check_open(&plus)?;
-        let set = self.check_sizes(plus, minus)?;
+    /// Apply change set `set` and check it at the statement boundary. Returns how many rows of
+    /// each constructor it inserts, then deletes.
+    pub(super) fn settle(&self, set: ChangeSet) -> Result<(Counts, Counts), Error> {
+        self.check_open(&set)?;
+        let set = self.check_sizes(set)?;
         let mut viol = Violations::new();
-        let mut by_key: BTreeMap<(RelId, Val), BTreeSet<Val>> = BTreeMap::new();
-        for ((r, _), rows) in set.plus() {
-            for v in rows {
-                by_key
-                    .entry((*r, self.key_of(*r, v)?))
-                    .or_default()
-                    .insert(v.clone());
+        let mut keys: Held<BTreeSet<(RelId, Val)>> = self.rows_in.held();
+        for ((r, _), v) in set.plus() {
+            let k = self.key_of(*r, v)?;
+            if !keys.insert((*r, k.clone()))? {
+                let name = format!("{}.key", self.rel(*r).qualified);
+                violate_key(&mut viol, &name, *r, k);
             }
         }
-        for ((r, k), rows) in by_key {
-            if rows.len() > 1 {
-                let name = format!("{}.key", self.rel(r).qualified);
-                violate_key(&mut viol, &name, r, k);
-            }
-        }
+        drop(keys);
         self.apply(&set, &mut viol)?;
-        self.check(set.plus(), set.minus(), &mut viol)?;
+        self.check(set.change(), &mut viol)?;
         refuse(viol)?;
-        let (plus, minus) = set.into_rows();
-        Ok(Outcome {
-            result,
-            inserted: plus,
-            deleted: minus,
-        })
+        Ok(set.change().counts())
     }
 
     /// Refuse an inserted or retagged row in a constructor not open for writes, and a stored
     /// value of a value-level constructor not open for writes that the pre-state row of its key
     /// does not hold at the same path.
-    fn check_open(&self, plus: &Rows) -> Result<(), Error> {
+    fn check_open(&self, set: &ChangeSet) -> Result<(), Error> {
         let schema = &self.db.schema;
         if schema.all_enabled() {
             return Ok(());
@@ -751,32 +784,30 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             Stage::Enabled => None,
             s => Some(s),
         };
-        for ((r, c), rows) in plus {
+        for ((r, c), v) in set.plus() {
             let rel = self.rel(*r);
-            for v in rows {
-                let pre = self.by_key(*r, &self.key_of(*r, v)?)?.map(|(_, _, u)| u);
-                if let Some(stage) = closed(schema.stage(*r, *c))
-                    && pre.as_ref().map(Val::ctor_of).transpose()? != Some(*c)
-                {
+            let pre = self.by_key(*r, &self.key_of(*r, v)?)?.map(|(_, _, u)| u);
+            if let Some(stage) = closed(schema.stage(*r, *c))
+                && pre.as_ref().map(Val::ctor_of).transpose()? != Some(*c)
+            {
+                return Err(Error::Rejected(Rejection::NotOpen {
+                    ctor: format!("{}.{}", rel.name, rel.ctors[*c as usize].name),
+                    stage,
+                }));
+            }
+            let mut stored = Vec::new();
+            self.sum_values(v, &rel.elem, &mut Vec::new(), &mut stored)?;
+            for (path, def, ctor, value) in stored {
+                let Some(stage) = closed(schema.value_stage(def, ctor)) else {
+                    continue;
+                };
+                let held = pre.as_ref().and_then(|u| at(u, &path)) == Some(&value);
+                if !held {
+                    let sum = schema.ty(def);
                     return Err(Error::Rejected(Rejection::NotOpen {
-                        ctor: format!("{}.{}", rel.name, rel.ctors[*c as usize].name),
+                        ctor: format!("{}.{}", sum.name, sum.ctors()[ctor as usize].name),
                         stage,
                     }));
-                }
-                let mut stored = Vec::new();
-                self.sum_values(v, &rel.elem, &mut Vec::new(), &mut stored)?;
-                for (path, def, ctor, value) in stored {
-                    let Some(stage) = closed(schema.value_stage(def, ctor)) else {
-                        continue;
-                    };
-                    let held = pre.as_ref().and_then(|u| at(u, &path)) == Some(&value);
-                    if !held {
-                        let sum = schema.ty(def);
-                        return Err(Error::Rejected(Rejection::NotOpen {
-                            ctor: format!("{}.{}", sum.name, sum.ctors()[ctor as usize].name),
-                            stage,
-                        }));
-                    }
                 }
             }
         }

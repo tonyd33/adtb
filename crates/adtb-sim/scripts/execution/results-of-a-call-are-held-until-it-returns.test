@@ -1,0 +1,33 @@
+# The results of a call's items are held in its grant until the call returns: a call of reads that
+# each fit the grant alone is refused for the grant when together they pass it, and its
+# transaction goes on.
+migrate
+  module app
+  add module app
+  add type Post = { id: Key posts, body: Text }
+  add relation posts : Post key id generate sequence
+
+run
+  insert posts from (
+    from b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], c in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    select { id: posts.key(b * 10 + c + 1), body: "post" ++ print(b * 10 + c + 1) })
+
+option query_memory_bytes 16384
+reopen
+
+begin t
+
+in t run
+  from p in posts select p.body
+
+in t error StatementLimit { limit: Memory { bytes: 16384 } }
+  from p in posts select p.body
+  from p in posts select p.body
+  from p in posts select p.body
+
+in t query
+  count(p for p in posts)
+----
+100
+
+rollback t

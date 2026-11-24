@@ -12,11 +12,12 @@ use crate::exec::{self, Held, Val};
 use crate::plan::{self, Catalog};
 use crate::runtime::Runtime;
 
+use super::change::ChangeSet;
 use super::delta::{self, Delta, Input, Part};
 use super::eval::{Arena, Env, Stmt};
 use super::schema::RefField;
 use super::violation::{Violations, Violator, violate};
-use super::{Broken, Error, Rows};
+use super::{Broken, Error};
 
 /// A constraint or check of the schema, as its incremental checks ready to run.
 pub struct Denial {
@@ -157,15 +158,13 @@ impl<R: Runtime> Stmt<'_, R> {
 
     /// Check, after the change set is applied, every constraint it can violate: references,
     /// newtype domains, and the schema's constraints and checks.
-    pub fn check(&self, plus: &Rows, minus: &Rows, viol: &mut Violations) -> Result<(), Error> {
-        self.check_rows(plus, viol)?;
-        let mut moved: Held<BTreeSet<(RelId, Val)>> = self.grant().held();
-        for ((r, c), rows) in minus {
-            for v in rows {
-                let k = self.key_of(*r, v)?;
-                if !self.all_by_key(*r, &k)?.iter().any(|(d, _, _)| d == c) {
-                    moved.insert((*r, k))?;
-                }
+    pub fn check(&self, set: &ChangeSet, viol: &mut Violations) -> Result<(), Error> {
+        self.check_rows(set, viol)?;
+        let mut moved: Held<BTreeSet<(RelId, Val)>> = self.rows_in().held();
+        for ((r, c), v) in set.minus() {
+            let k = self.key_of(*r, v)?;
+            if !self.all_by_key(*r, &k)?.iter().any(|(d, _, _)| d == c) {
+                moved.insert((*r, k))?;
             }
         }
         let targets: BTreeSet<RelId> = moved.iter().map(|(r, _)| *r).collect();
@@ -186,7 +185,9 @@ impl<R: Runtime> Stmt<'_, R> {
                 }
             }
         }
-        let touched: BTreeSet<RelId> = plus.keys().chain(minus.keys()).map(|(r, _)| *r).collect();
+        let touched: BTreeSet<RelId> = (set.plus().iter().chain(set.minus()))
+            .map(|((r, _), _)| *r)
+            .collect();
         for d in &self.db.denials {
             if d.reads.is_disjoint(&touched) {
                 continue;
@@ -195,7 +196,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 let params: Vec<(Var, Val)> = delta
                     .inputs
                     .iter()
-                    .map(|i| (i.var, Val::set(input_rows(i, plus, minus))))
+                    .map(|i| (i.var, Val::set(input_rows(i, set))))
                     .collect();
                 let idle = delta.trigger.is_some_and(|t| {
                     params
@@ -239,25 +240,21 @@ impl<R: Runtime> Stmt<'_, R> {
         Ok(())
     }
 
-    /// Check the references and newtype domains of every row of `plus`.
-    pub fn check_rows(&self, plus: &Rows, viol: &mut Violations) -> Result<(), Error> {
-        for ((r, c), rows) in plus {
+    /// Check the references and newtype domains of every row `set` inserts.
+    pub fn check_rows(&self, set: &ChangeSet, viol: &mut Violations) -> Result<(), Error> {
+        for ((r, c), n) in set.plus() {
             for f in &self.rel(*r).ctors[*c as usize].refs {
-                for n in rows {
-                    if let Some(k) = Self::names(f, n)?
-                        && !self.reaches(f, &k)?
-                    {
-                        let name = self.field_name(*r, *c, f);
-                        violate(viol, reference(*r, *c, f), &name, [n.clone()]);
-                    }
+                if let Some(k) = Self::names(f, n)?
+                    && !self.reaches(f, &k)?
+                {
+                    let name = self.field_name(*r, *c, f);
+                    violate(viol, reference(*r, *c, f), &name, [n.clone()]);
                 }
             }
         }
-        for ((r, _), rows) in plus {
-            for v in rows {
-                let elem = self.rel(*r).elem.clone();
-                self.check_domains(v, v, &elem, viol)?;
-            }
+        for ((r, _), v) in set.plus() {
+            let elem = self.rel(*r).elem.clone();
+            self.check_domains(v, v, &elem, viol)?;
         }
         Ok(())
     }
@@ -322,20 +319,16 @@ fn domain_name(schema: &Schema, t: TypeId) -> String {
     format!("{}::{}.domain", schema.module(d.module).name, d.name)
 }
 
-/// Returns the rows of the change set `input` names.
-fn input_rows(input: &Input, plus: &Rows, minus: &Rows) -> BTreeSet<Val> {
-    let pick = |rows: &Rows| -> Vec<Val> {
-        rows.iter()
-            .filter(|((r, c), _)| *r == input.rel && input.ctors.contains(c))
-            .flat_map(|(_, vs)| vs.iter().cloned())
-            .collect()
-    };
+/// Returns the rows of change set `set` that `input` names.
+fn input_rows(input: &Input, set: &ChangeSet) -> BTreeSet<Val> {
     let mut out = BTreeSet::new();
-    if input.part != Part::Deleted {
-        out.extend(pick(plus));
-    }
-    if input.part != Part::Inserted {
-        out.extend(pick(minus));
+    for c in &input.ctors {
+        if input.part != Part::Deleted {
+            out.extend(ChangeSet::of(set.plus(), input.rel, *c).cloned());
+        }
+        if input.part != Part::Inserted {
+            out.extend(ChangeSet::of(set.minus(), input.rel, *c).cloned());
+        }
     }
     out
 }

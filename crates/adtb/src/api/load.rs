@@ -153,7 +153,7 @@ impl<R: Runtime> Load<'_, R> {
             cancel: self.cancel.clone(),
             ..TxnCallOptions::default()
         };
-        self.txn.query_text(&text, &params, &opts)?;
+        self.txn.load_text(&text, &params, &opts)?;
         let position = self.txn.commit(None)?;
         Ok(LoadReport { rows, position })
     }

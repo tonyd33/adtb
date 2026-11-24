@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::Waker;
 
-use crate::exec::{self, Entry, Priority, Refusal, Requested};
+use crate::exec::{self, Budget, Entry, Priority, Refusal, Requested};
 use crate::runtime::{Instant, Runtime};
 
 use crate::mvcc::{Conflict, Waits, Watch, Xid};
@@ -37,6 +37,13 @@ impl<R: Runtime> Drop for PeakNoted<'_, R> {
             .spilled
             .store(self.grant.spilled(), Ordering::Release);
     }
+}
+
+/// Returns a grant of no limit.
+pub(super) fn unbounded() -> Arc<exec::Grant> {
+    Budget::new(usize::MAX)
+        .admit(usize::MAX)
+        .expect("a budget admits its whole limit")
 }
 
 impl<R: Runtime> Database<R> {

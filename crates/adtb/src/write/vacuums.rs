@@ -268,14 +268,14 @@ impl<R: Runtime> Database<R> {
     /// Add to `changed` the versions the outcome `o` of a statement deleted and inserted.
     pub(super) fn record_changed(&self, changed: &mut Changed, o: &super::Outcome) {
         let heap = |r: &RelId, c: &u32| self.rels.get(r).and_then(|rel| rel.ctors.get(*c as usize));
-        for ((r, c), rows) in &o.deleted {
+        for ((r, c), n) in &o.deleted {
             if let Some(ctor) = heap(r, c) {
-                changed.entry(ctor.heap).or_default().deleted += rows.len() as u64;
+                changed.entry(ctor.heap).or_default().deleted += *n as u64;
             }
         }
-        for ((r, c), rows) in &o.inserted {
+        for ((r, c), n) in &o.inserted {
             if let Some(ctor) = heap(r, c) {
-                changed.entry(ctor.heap).or_default().inserted += rows.len() as u64;
+                changed.entry(ctor.heap).or_default().inserted += *n as u64;
             }
         }
     }

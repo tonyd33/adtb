@@ -150,7 +150,11 @@ impl Local {
     /// Errors:
     /// - `KeyViolation`, changing nothing, when an inserted row's key is held by a row
     ///   the change set keeps, or two rows of the result share a key.
-    pub fn apply(&mut self, schema: &Schema, effects: &[&Eff]) -> Result<(), Error> {
+    pub fn apply<'e>(
+        &mut self,
+        schema: &Schema,
+        effects: impl IntoIterator<Item = &'e Eff>,
+    ) -> Result<(), Error> {
         let mut plus: BTreeSet<(RelId, Val)> = BTreeSet::new();
         let mut minus: BTreeSet<(RelId, Val)> = BTreeSet::new();
         let mut inserted: Vec<(RelId, Val)> = Vec::new();

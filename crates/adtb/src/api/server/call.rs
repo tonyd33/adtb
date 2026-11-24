@@ -487,8 +487,8 @@ impl<R: Runtime> Call<R> {
             Ok(Some(Produced::Whole(result))) => {
                 let outcome = Outcome {
                     result,
-                    inserted: write::Rows::new(),
-                    deleted: write::Rows::new(),
+                    inserted: write::Counts::new(),
+                    deleted: write::Counts::new(),
                 };
                 p.results(p.schema(), vec![outcome], Vec::new())
                     .and_then(|rows| self.whole(e, rows))
