@@ -25,7 +25,7 @@ enum Gate {
     /// Recovery is replaying the log; no page has an expected LSN until it ends.
     Recovering,
     Armed(Expected),
-    /// The open could not read the retained log or the page LSN map: no page is checked.
+    /// The open could not read the retained log: no page is checked.
     Off,
 }
 
@@ -1353,9 +1353,9 @@ impl<R: Runtime> Pager<R> {
 
     /// End recovery: set each page's expected LSN from the page LSN map, then the retained log,
     /// a record before a gap or a damaged batch as a least LSN. Turn the gate off, setting none,
-    /// when a map page, the log directory, a segment or a block of the retained log cannot be
-    /// read. Unproven with the map page refused, or when the log cannot prove a record before the
-    /// end recovery kept.
+    /// when the log directory, a segment or a block of the retained log cannot be read. Set only
+    /// the retained log's, unproven, when a map page cannot be read or is refused, failing in the
+    /// first case. Unproven when the log cannot prove a record before the end recovery kept.
     pub(super) fn arm(&self) -> Arming {
         match self.expected() {
             Ok((expected, arming)) => {
@@ -1366,12 +1366,11 @@ impl<R: Runtime> Pager<R> {
         }
     }
 
-    /// Returns the expected LSNs [`arm`](Self::arm) sets and what it returns, or the read that
-    /// failed.
+    /// Returns the expected LSNs [`arm`](Self::arm) sets and what it returns, or the read of the
+    /// log that failed.
     fn expected(&self) -> Result<(Expected, Arming), Unarmed> {
         let (folded, map) = match self.map_entries() {
             Ok(folded) => (folded, Ok(())),
-            Err(e) if e.damage == Damage::Unreadable => return Err(Unarmed::Page(e)),
             Err(e) => (Vec::new(), Err(e)),
         };
         let end = self.evidence().recovered();
@@ -1394,6 +1393,7 @@ impl<R: Runtime> Pager<R> {
             expected.raise(pid, read_past(log.gap, lsn));
         }
         let arming = match map {
+            Err(err) if err.damage == Damage::Unreadable => Arming::Failed(Unarmed::Page(err)),
             Err(err) => Arming::Unproven(Some(err)),
             Ok(()) if gapless => Arming::Proven,
             Ok(()) => Arming::Unproven(None),
@@ -1434,7 +1434,10 @@ impl<R: Runtime> Pager<R> {
             Unarmed::Page(e) if e.pid == self.damage_list_page() => {
                 self.read(e.pid).err().map(Unarmed::Page)
             }
-            _ => self.expected().err(),
+            _ => match self.expected() {
+                Ok((_, Arming::Failed(why))) | Err(why) => Some(why),
+                Ok(_) => None,
+            },
         };
         let now = again.unwrap_or(Unarmed::Late);
         self.evidence().unarmed = Some(now.clone());

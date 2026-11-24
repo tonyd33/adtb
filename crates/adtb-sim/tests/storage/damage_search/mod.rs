@@ -1587,11 +1587,14 @@ enum Shows {
     ReadFailed,
     /// Its faulted run tore the rewrite of a status page the commit log settled.
     TornSettle,
+    /// Verify names the stale page while an LSN map page cannot be read.
+    Unmapped,
 }
 
 /// The pairs the search must still reach: a lost write of the settings heap beside a damage list
-/// page unreadable for good, which opens for verify; and a lost write of a status page whose
-/// settle's rewrite the crash after the tear of an engine page at 679 tears.
+/// page unreadable for good, which opens for verify; a lost write of a status page whose
+/// settle's rewrite the crash after the tear of an engine page at 679 tears; and a lost write of a
+/// status page beside the LSN map page unreadable for good, which verify reports from the log.
 const PINNED_PAIRS: &[PinnedPair] = &[
     (
         2,
@@ -1612,6 +1615,16 @@ const PINNED_PAIRS: &[PinnedPair] = &[
         },
         Kind::Engine,
         Shows::TornSettle,
+    ),
+    (
+        3,
+        (710, Kind::CommitLog),
+        Point {
+            at: 711,
+            injection: Injection::Unreadable { lasting: true },
+        },
+        Kind::LsnMap,
+        Shows::Unmapped,
     ),
 ];
 
@@ -1638,15 +1651,18 @@ fn rerun_pair(&(seed, (at, kind), then, then_kind, shows): &PinnedPair) {
             shows == Shows::ReadFailed,
             shows == Shows::TornSettle,
             true,
+            true,
             Vec::<Violation>::new()
         ),
         (
             o.read_failed,
             o.torn_settle,
+            shows != Shows::Unmapped || !o.verdicts.named.is_empty(),
             o.opened,
             o.verdicts.violations
         ),
-        "pinned pair seed {seed} at {at} then {then:?}: fired, torn settle, opened, violations"
+        "pinned pair seed {seed} at {at} then {then:?}: fired, torn settle, named, opened, \
+         violations"
     );
 }
 

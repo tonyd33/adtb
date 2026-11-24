@@ -43,5 +43,7 @@ pub(crate) enum Arming {
     /// The gate checks the LSNs the open could read, short of a proof: the map page refused, if
     /// that is why.
     Unproven(Option<PageError>),
+    /// A read the gate needs failed: no page read in is checked, and verify checks against what
+    /// the open could read.
     Failed(Unarmed),
 }
