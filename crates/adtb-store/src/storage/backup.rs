@@ -9,6 +9,7 @@ use std::fmt::Write as _;
 
 use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op, Runtime};
 
+use super::alloc::Bitmapped;
 use super::block::{
     Batch, BlockState, LogImage, LogProblem, LogSource, Mode, Slot, read_block, scan,
 };
@@ -850,7 +851,7 @@ impl<R: Runtime> Pager<R> {
             Err(_) => None,
         };
         // Reading the bitmap under this latch can deadlock with a writer latching in page order.
-        let free = matches!(self.is_free(pid), Ok(true));
+        let free = self.bitmapped(pid) == Bitmapped::Free;
         let g = self.hold(pid);
         let pool = g.resident().then(|| page::lsn(&g));
         let ((), read) = self.read_seen(pid, |_| (), || pool);

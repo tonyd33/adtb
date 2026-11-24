@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use adtb_file::Record;
+use adtb_lang::capability::RootKind;
 use adtb_lang::kernel::{Conflict, Kind, Terms, Tm, Valid, ValidTerms, Var};
 use adtb_lang::schema::prelude::ctor;
 use adtb_lang::schema::{Committed, Generator, OnDelete, Schema, Stage};
@@ -176,7 +177,8 @@ pub struct Rejected {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Arena {
     Statement,
-    Program,
+    /// The normal program, in a root of the kind given.
+    Program(RootKind),
 }
 
 /// A term planned with the variables bound around it.
@@ -189,6 +191,8 @@ pub struct Stmt<'a, R: Runtime> {
     /// The database's schema, or one extending it with the transaction's temp relations.
     schema: &'a Committed,
     terms: ValidTerms,
+    /// The kind of root the statement's terms were normalised as.
+    kind: RootKind,
     /// What each variable standing for a temp relation's rows or a file scan stands for.
     inputs: BTreeMap<Var, Input>,
     /// The records of each file scan.
@@ -240,6 +244,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             tx,
             schema,
             terms,
+            kind: text.items.kind(),
             inputs,
             scans: RefCell::default(),
             unconverted: RefCell::default(),
@@ -273,6 +278,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             tx,
             schema: &db.schema,
             terms,
+            kind: RootKind::Adhoc,
             inputs: BTreeMap::new(),
             scans: RefCell::default(),
             unconverted: RefCell::default(),
@@ -303,7 +309,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     fn arena(&self, a: Arena) -> Valid<'_> {
         match a {
             Arena::Statement => self.terms.valid(),
-            Arena::Program => self.db.program.valid(),
+            Arena::Program(_) => self.db.program.valid(),
         }
     }
 
@@ -442,9 +448,13 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let program = match cached {
             Some(p) => p,
             None => {
-                let x = self
-                    .db
-                    .program(self.schema, self.arena(a), t, self.caller.clone())?;
+                let kind = match a {
+                    Arena::Statement => self.kind,
+                    Arena::Program(kind) => kind,
+                };
+                let x =
+                    self.db
+                        .program(self.schema, self.arena(a), (t, kind), self.caller.clone())?;
                 let x = Arc::new(x);
                 self.plans.borrow_mut().insert(key, x.clone());
                 x
@@ -460,7 +470,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
 
     /// Returns the plan of term `t` of the statement.
     pub fn plan_of(&self, t: Tm) -> Result<crate::plan::Plan, Error> {
-        self.db.plan(self.schema, self.arena(Arena::Statement), t)
+        self.db
+            .plan(self.schema, self.arena(Arena::Statement), (t, self.kind))
     }
 
     pub fn schema(&self) -> &'a Committed {
@@ -479,7 +490,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     fn fill(&self, a: Arena, v: Val) -> Result<Val, Error> {
         let occurrences = match a {
             Arena::Statement => &self.fresh,
-            Arena::Program => &self.db.program_fresh,
+            Arena::Program(_) => &self.db.program_fresh,
         };
         let mut draw = |occ: u32, p: &Val| {
             let key = (a, p.clone());
@@ -1243,7 +1254,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 let new = if retag {
                     let (var, body) = self.db.retags[&r];
                     let env: Env = [(var, u.clone())].into();
-                    let v = self.eval(Arena::Program, body, &env)?;
+                    let v = self.eval(Arena::Program(RootKind::DeleteAction), body, &env)?;
                     cleared(v, c, &clears)
                 } else if !clears.is_empty() {
                     cleared(u.clone(), c, &clears)
@@ -1426,12 +1437,12 @@ fn normalise(plus: &mut Rows, minus: &mut Rows) {
 }
 
 impl<R: Runtime> Database<R> {
-    /// Returns the plan of term `t` of `terms`.
+    /// Returns the plan of term `t` of `terms`, in a root of `kind`.
     pub(super) fn plan(
         &self,
         schema: &Schema,
         terms: Valid<'_>,
-        t: Tm,
+        (t, kind): (Tm, RootKind),
     ) -> Result<crate::plan::Plan, Error> {
         let usable = self.usable_catalog();
         crate::plan::plan(
@@ -1440,6 +1451,7 @@ impl<R: Runtime> Database<R> {
             usable.as_deref().unwrap_or(&self.catalog),
             terms,
             t,
+            kind,
             crate::plan::Options::default(),
         )
         .map_err(|e| match e {
@@ -1448,15 +1460,16 @@ impl<R: Runtime> Database<R> {
         })
     }
 
-    /// Returns the program of term `t` of `terms` run for `caller`, its host functions bound.
+    /// Returns the program of term `t` of `terms`, in a root of `kind`, run for `caller`, its
+    /// host functions bound.
     pub(super) fn program(
         &self,
         schema: &Schema,
         terms: Valid<'_>,
-        t: Tm,
+        (t, kind): (Tm, RootKind),
         caller: Option<Val>,
     ) -> Result<exec::Program, Error> {
-        let plan = self.plan(schema, terms, t)?;
+        let plan = self.plan(schema, terms, (t, kind))?;
         let mut program = exec::compile(schema, &self.catalog, &plan, caller)?;
         program.shared.hosts = self.hosts.clone();
         Ok(program)

@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use adtb_lang::ast::{BundleItem, FnDecl, QName};
-use adtb_lang::capability::RootKind;
 use adtb_lang::check::{Compiled, check_adhoc};
 use adtb_lang::ids::CatFunctionId;
 use adtb_lang::kernel::{self, Kind, Terms, Tm, Var};
@@ -55,10 +54,7 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
         (signature, format!("{}{functions}", spanned(&r.text, span)))
     };
     let calls = signature::calls(compiled, &vis, &imports, &items).map_err(Error::diagnostic)?;
-    let kind = match r.header() {
-        Some(h) if h.hides_new => RootKind::HidingQuery,
-        _ => RootKind::Query,
-    };
+    let kind = super::root_kind(r.header());
     let mut entries = Vec::new();
     let mut source_reads = Reads::default();
     for c in calls {

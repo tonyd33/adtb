@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use adtb_lang::analysis::Totality;
 use adtb_lang::ast::FnBody;
+use adtb_lang::capability::RootKind;
 use adtb_lang::kernel::{self, Agg, Kind, PathStep, StatedVersion, Terms, Tm, Valid, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
@@ -30,11 +31,11 @@ const PROBE_COST: f64 = 4.0;
 /// The rows the fixed cost model assumes an unnested set holds.
 const SET_ROWS: f64 = 10.0;
 
-/// Returns the plan of `root`, a normal form in `terms`.
+/// Returns the plan of `root`, a normal form in `terms` of a root of `kind`.
 ///
 /// Preconditions:
-/// - `root` is a normal form `adtb_lang::norm` returned for `schema`, or a term rewritten from
-///   one, reachable from the roots `terms` was validated at.
+/// - `root` is a normal form `adtb_lang::norm` returned for `schema` as a root of `kind`, or a
+///   term rewritten from one, reachable from the roots `terms` was validated at.
 /// - `normal` is the normal program of `schema`.
 /// - `catalog` describes every relation variable `root` reads.
 pub fn plan(
@@ -43,6 +44,7 @@ pub fn plan(
     catalog: &Catalog,
     terms: Valid<'_>,
     root: Tm,
+    kind: RootKind,
     options: Options,
 ) -> Result<Plan, Error> {
     let input = Input {
@@ -51,12 +53,13 @@ pub fn plan(
         catalog,
         terms: terms.terms(),
         roots: &[root],
+        kind,
     };
     let [plan] = <[_; 1]>::try_from(plan_in(&input, options, false)).expect("one plan per root");
     plan
 }
 
-/// Returns the plan of each of `roots`, as [`plan`] does, reading every constructor relation
+/// Returns the plan of each of `roots`, roots of `kind`, as [`plan`] does, reading every constructor relation
 /// only through an index probe keyed by values bound before it. The plans share one arena.
 ///
 /// Errors, per root:
@@ -68,6 +71,7 @@ pub fn plan_bounded(
     catalog: &Catalog,
     terms: Valid<'_>,
     roots: &[Tm],
+    kind: RootKind,
 ) -> Vec<Result<Plan, Error>> {
     let input = Input {
         schema,
@@ -75,6 +79,7 @@ pub fn plan_bounded(
         catalog,
         terms: terms.terms(),
         roots,
+        kind,
     };
     plan_in(&input, Options::default(), true)
 }
@@ -86,6 +91,7 @@ struct Input<'a> {
     catalog: &'a Catalog,
     terms: &'a Terms,
     roots: &'a [Tm],
+    kind: RootKind,
 }
 
 fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Vec<Result<Plan, Error>> {
@@ -95,6 +101,7 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Vec<Result<Pla
         catalog,
         terms,
         roots,
+        kind,
     } = *input;
     let mut p = Planner {
         schema,
@@ -107,7 +114,7 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Vec<Result<Pla
         bounded,
         past: false,
         t: terms.clone(),
-        total: Totality::new(schema, false)
+        total: Totality::new(schema, kind)
             .with_aggregates(normal.terms(), normal.aggregate_parts()),
         facts: Facts::default(),
         vars: HashMap::new(),

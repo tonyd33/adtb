@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::FnBody;
+use crate::capability::{self, RootKind};
 use crate::kernel::{Agg, Const, Kind, Prim, Terms, Tm};
 use crate::schema::Schema;
 use crate::types::*;
@@ -35,8 +36,12 @@ pub struct Totality<'s> {
 }
 
 impl<'s> Totality<'s> {
-    /// Returns a classifier for terms of `schema`; set `hiding` for a bundle declaring `hide new constructors`.
-    pub fn new(schema: &'s Schema, hiding: bool) -> Self {
+    /// Returns a classifier for terms of `schema` in a root of `kind`.
+    pub fn new(schema: &'s Schema, kind: RootKind) -> Self {
+        Totality::hiding(schema, capability::entry(kind).hiding())
+    }
+
+    fn hiding(schema: &'s Schema, hiding: bool) -> Self {
         Totality {
             schema,
             hiding,
@@ -54,7 +59,7 @@ impl<'s> Totality<'s> {
         terms: &Terms,
         parts: impl IntoIterator<Item = Option<[Tm; 4]>>,
     ) -> Self {
-        let mut judge = Totality::new(self.schema, self.hiding);
+        let mut judge = Totality::hiding(self.schema, self.hiding);
         self.aggregates = parts
             .into_iter()
             .map(|p| match p {

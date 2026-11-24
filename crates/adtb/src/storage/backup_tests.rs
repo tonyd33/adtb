@@ -1,7 +1,7 @@
 //! Full backups of a database under writers, restores of them to new files, and the test restore
 //! that proves one.
 
-use crate::testing::Plant;
+use crate::testing::{Plant, Probe};
 use adtb_testkit::process;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1056,7 +1056,7 @@ fn a_corrupt_free_page_is_not_listed() {
     let mut sim = Sim::with_files(48, Config::default(), files);
     process::run(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &options).unwrap();
-        assert!(pager.is_free(free).unwrap());
+        assert!(Probe::of(&pager).is_free(free).unwrap());
         let manifest = backup_with(&pager, TARGET, &mut |_, _| true).unwrap();
         assert!(!manifest.damaged.contains(&free), "{:?}", manifest.damaged);
         pager.close();

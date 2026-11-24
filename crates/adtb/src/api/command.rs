@@ -1,5 +1,6 @@
 //! The commands of ad hoc text run in process, from their checked terms.
 
+use adtb_lang::capability::RootKind;
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,7 +18,9 @@ use crate::catalog::{Rot, engine_relation};
 use crate::exec::Val;
 use crate::plan::explain::{Actual, Node, json_text, object};
 use crate::runtime::Runtime;
-use crate::write::{self, Bounds, HoldWait, Local, Outcome, Rejection, Text, Txn, VacuumHold};
+use crate::write::{
+    self, Bounds, HoldWait, Items, Local, Outcome, Rejection, Text, Txn, VacuumHold,
+};
 
 use super::text::{DynRows, Issuer, Prepared, rows};
 use super::{Capability, Engine, Entered, Error, unsupported};
@@ -478,7 +481,7 @@ impl<R: Runtime> Engine<R> {
         Text {
             schema: p.schema(),
             terms: p.terms(),
-            items,
+            items: Items::new(items, p.roots().kind()),
             params: p.params(),
             clock: self.clock(),
             caller: Some(p.caller()),
@@ -763,7 +766,7 @@ impl<R: Runtime> Engine<R> {
         let text = Text {
             schema,
             terms: &terms,
-            items: &[both],
+            items: Items::new(std::slice::from_ref(&both), RootKind::Adhoc),
             params: &params,
             clock: self.clock(),
             caller: None,

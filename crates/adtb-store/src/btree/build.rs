@@ -10,7 +10,7 @@ use adtb_sys::lock::{Ranked, RankedGuard};
 use crate::ranks;
 use crate::runtime::{Runtime, Threads};
 use crate::steps::{Retire, Step};
-use crate::storage::{Damage, PageError, Pager, Pid, Quarantine};
+use crate::storage::{Bitmapped, Damage, PageError, Pager, Pid, Quarantine};
 
 use super::node::{self, Bounds, FORMAT, Item, NodeMut, kind_of};
 use super::tree::{BTree, Error, node_of, separator, visit};
@@ -416,8 +416,10 @@ impl BTree {
 pub fn retire<R: Runtime>(pager: &Pager<R>, pages: &[Pid]) -> Result<(), PageError> {
     let mut sound = Vec::with_capacity(pages.len());
     for &pid in pages {
-        if pager.is_free(pid)? {
-            continue;
+        match pager.bitmapped(pid) {
+            Bitmapped::Free => continue,
+            Bitmapped::Unknown(e) => return Err(e),
+            Bitmapped::Allocated => {}
         }
         let mark = |p: &mut [&mut [u8]]| {
             if let Ok(mut n) = NodeMut::new(p[0]) {

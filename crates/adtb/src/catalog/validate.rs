@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use adtb_lang::capability::RootKind;
 use adtb_lang::kernel::{self, Build, Kind, Terms, Tm, Valid, Var};
 use adtb_lang::norm::{self, NormalProgram, Root};
 use adtb_lang::schema::{Schema, TypeDefKind};
@@ -323,8 +324,17 @@ impl<R: Runtime> Query<'_, R> {
     fn run(&self, t: Tm, object: &str) -> Result<Result<(Vec<Val>, Ty), Denied>, Error> {
         let (schema, catalog, normal, terms) = (self.schema, self.catalog, self.normal, self.terms);
         let (store, budget, hosts) = (self.store, self.budget, self.hosts);
-        let p = plan::plan(schema, normal, catalog, terms, t, plan::Options::default())
-            .map_err(|e| Error::from(Broken::Plan(e)))?;
+        let options = plan::Options::default();
+        let p = plan::plan(
+            schema,
+            normal,
+            catalog,
+            terms,
+            t,
+            RootKind::Constraint,
+            options,
+        )
+        .map_err(|e| Error::from(Broken::Plan(e)))?;
         let program = hosts::program(object, (schema, catalog), &p, hosts, Broken::Validation)?;
         store.admit(program.reads())?;
         let store = store.store();

@@ -48,6 +48,7 @@ mod pager_tests;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use alloc::Bitmapped;
 pub use alloc::Reservation;
 #[cfg(any(test, feature = "testing"))]
 pub use archive::Status as ArchiveStatus;

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adtb_lang::ast::AdhocItem;
+use adtb_lang::capability::RootKind;
 use adtb_lang::check::{AdhocCommand, Bundles, Command, Compiled, Explained, Ref, check_adhoc_in};
 use adtb_lang::kernel::{Const, Kind, Node, Terms, Tm, Var};
 use adtb_lang::norm;
@@ -13,7 +14,7 @@ use adtb_lang::types::{FnId, KeyCtors, RelRef, Ty};
 
 use crate::catalog::VersionHash;
 use crate::exec::Val;
-use crate::write::Outcome;
+use crate::write::{Items, Outcome};
 
 use super::cause::Broken;
 use super::command;
@@ -54,13 +55,26 @@ impl Iterator for DynRows {
     }
 }
 
+/// The normal forms of a text's items, and the kind of root they and its commands were
+/// normalised as.
+pub(super) struct Normal {
+    items: Vec<Tm>,
+    kind: RootKind,
+}
+
+impl Normal {
+    pub fn new(items: Vec<Tm>, kind: RootKind) -> Normal {
+        Normal { items, kind }
+    }
+}
+
 /// Ad hoc text checked and normalised against one schema, its parameters bound.
 pub(super) struct Prepared {
     /// The schema checked against, extended with the temp relations the text declares, with the
     /// program of its functions.
     pub compiled: Compiled,
     pub terms: Arc<Terms>,
-    pub items: Vec<Tm>,
+    pub items: Normal,
     pub commands: Vec<AdhocCommand>,
     pub params: Vec<(Var, Val)>,
     /// The functions the text names.
@@ -217,7 +231,7 @@ impl Prepared {
         Ok(Prepared {
             compiled: compiled.of_text(&adhoc),
             terms: Arc::new(terms),
-            items,
+            items: Normal::new(items, adhoc.kind()),
             commands,
             params: bound,
             functions,
@@ -244,7 +258,11 @@ impl Prepared {
     }
 
     pub fn items(&self) -> &[Tm] {
-        &self.items
+        &self.items.items
+    }
+
+    pub fn roots(&self) -> Items<'_> {
+        Items::new(&self.items.items, self.items.kind)
     }
 
     pub fn commands(&self) -> &[AdhocCommand] {
@@ -285,7 +303,7 @@ impl Prepared {
     ) -> Result<Vec<DynRows>, Error> {
         let mut out = Vec::new();
         let mut commands = commands.into_iter().peekable();
-        for (i, (t, o)) in self.items.iter().zip(outcomes).enumerate() {
+        for (i, (t, o)) in self.items().iter().zip(outcomes).enumerate() {
             while let Some((_, rows)) = commands.next_if(|(at, _)| *at <= i) {
                 out.push(rows);
             }

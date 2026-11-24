@@ -1,5 +1,6 @@
 mod valid;
 
+use adtb_lang::capability::RootKind;
 use adtb_lang::kernel::{Kind, Terms, Tm};
 
 use super::fixture::{Fixture, running, variants};
@@ -7,8 +8,16 @@ use super::*;
 
 fn plan_with(f: &Fixture, terms: adtb_lang::kernel::Valid<'_>, t: Tm, rewrites: Rewrites) -> Plan {
     let options = Options { rewrites };
-    plan(f.schema(), &f.normal, &f.catalog, terms, t, options)
-        .unwrap_or_else(|e| panic!("no plan: {e}"))
+    plan(
+        f.schema(),
+        &f.normal,
+        &f.catalog,
+        terms,
+        t,
+        RootKind::Adhoc,
+        options,
+    )
+    .unwrap_or_else(|e| panic!("no plan: {e}"))
 }
 
 fn adhoc_plan(f: &Fixture, text: &str, params: &[(&str, &str)], rw: Rewrites) -> Plan {
@@ -183,6 +192,7 @@ fn a_write_is_refused() {
         &f.catalog,
         n.valid(),
         t,
+        RootKind::Adhoc,
         Options::default(),
     )
     .map(|_| ());
@@ -198,6 +208,7 @@ fn bounded(f: &Fixture, text: &str, ty: &str) -> Result<Plan, Error> {
         &f.catalog,
         normal.valid(),
         &[t],
+        RootKind::Adhoc,
     ))
     .expect("one plan per root");
     plan

@@ -1,3 +1,4 @@
+use adtb_lang::capability::RootKind;
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -814,7 +815,7 @@ impl<R: Runtime> Items<R> {
         Text {
             schema: &self.schema,
             terms: &p.terms,
-            items: &p.items,
+            items: write::Items::new(&p.items, RootKind::Adhoc),
             params: &[],
             clock: 0,
             caller: None,

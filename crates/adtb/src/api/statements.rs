@@ -105,7 +105,7 @@ impl<R: Runtime> Entered<'_, R> {
         let text = Text {
             schema,
             terms: p.terms(),
-            items: p.items(),
+            items: p.roots(),
             params: p.params(),
             clock: self.clock(),
             caller: Some(p.caller()),

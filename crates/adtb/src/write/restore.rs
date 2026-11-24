@@ -1,5 +1,6 @@
 //! The write of a restore's rows without checks, and the one check of the whole database after.
 
+use adtb_lang::capability::RootKind;
 use std::collections::BTreeMap;
 
 use adtb_lang::kernel::Tm;
@@ -17,7 +18,7 @@ use super::admit::Admitted;
 use super::eval::{Stmt, Violations, Violator, pairs, refuse, violate, violate_key};
 use super::reindex::Scan;
 use super::schema::Indexed;
-use super::{Broken, Database, Error, Local, Rows, Stop, Text, Txn};
+use super::{Broken, Database, Error, Items, Local, Rows, Stop, Text, Txn};
 
 /// The database a restore fills.
 #[derive(Debug)]
@@ -199,7 +200,7 @@ impl<R: Runtime> Restoring<'_, R> {
             let text = Text {
                 schema,
                 terms: &terms,
-                items: std::slice::from_ref(&t),
+                items: Items::new(std::slice::from_ref(&t), RootKind::Constraint),
                 params: &[],
                 clock: 0,
                 caller: None,

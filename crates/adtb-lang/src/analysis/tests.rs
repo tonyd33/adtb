@@ -154,7 +154,7 @@ pub(super) fn adhoc_normal(
 
 fn is_total(params: &[(&str, &str)], text: &str) -> bool {
     let (s, n) = adhoc_normal("", params, text);
-    Totality::new(&s, false).total(n.terms(), n.items()[0])
+    Totality::new(&s, RootKind::Query).total(n.terms(), n.items()[0])
 }
 
 /// Returns whether the outermost `fix` in the normal form of ad hoc `text` is bounded.
@@ -198,7 +198,7 @@ pub(crate) fn reachable(terms: &Terms, root: Tm) -> Vec<Tm> {
 
 /// Assert the postconditions of a normal form: no λ but a `Replace`'s row function, no application, no call of a schema function, and a `let` only over a bound expression that is partial or draws a fresh value.
 fn assert_normal(s: &Schema, terms: &Terms, root: Tm) {
-    let mut tot = Totality::new(s, false);
+    let mut tot = Totality::new(s, RootKind::Query);
     let all = reachable(terms, root);
     let row_functions: HashSet<Tm> = all
         .iter()
@@ -730,7 +730,7 @@ fn try_of_a_reject_is_partial() {
         .filter(|t| matches!(n.terms().kind(*t), Kind::Try(_)))
         .collect();
     assert_eq!(1, tries.len());
-    assert!(!Totality::new(&s, false).total(n.terms(), tries[0]));
+    assert!(!Totality::new(&s, RootKind::Query).total(n.terms(), tries[0]));
 }
 
 #[test]
@@ -1152,7 +1152,7 @@ fn a_fresh_draw_is_total_and_not_copyable() {
         .into_iter()
         .find(|t| matches!(n.terms().kind(*t), Kind::Fresh(..)))
         .expect("a fresh draw");
-    let mut tot = Totality::new(&s, false);
+    let mut tot = Totality::new(&s, RootKind::Query);
     assert!(tot.total(n.terms(), fresh));
     assert!(tot.draws(n.terms(), fresh));
     assert!(!tot.copyable(n.terms(), fresh));
@@ -1166,7 +1166,7 @@ fn a_call_of_a_host_function_draws_only_when_volatile() {
         &[],
         r#"[stamp("x"), pure("x")]"#,
     );
-    let mut tot = Totality::new(&s, false);
+    let mut tot = Totality::new(&s, RootKind::Query);
     let call = |name: &str| {
         reachable(n.terms(), n.items()[0])
             .into_iter()
@@ -1184,5 +1184,5 @@ fn a_constant_is_copyable() {
         .into_iter()
         .find(|t| matches!(n.terms().kind(*t), Kind::Const(_)))
         .expect("a constant");
-    assert!(Totality::new(&s, false).copyable(n.terms(), constant));
+    assert!(Totality::new(&s, RootKind::Query).copyable(n.terms(), constant));
 }

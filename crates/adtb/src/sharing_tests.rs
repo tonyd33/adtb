@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use adtb_exec::exec;
+use adtb_lang::capability::RootKind;
 use adtb_lang::check::check_adhoc;
 use adtb_lang::norm;
 use adtb_lang::parse::{Options, parse_adhoc};
@@ -141,6 +142,7 @@ impl Witness {
                         &f.catalog,
                         normal.valid(),
                         *root,
+                        RootKind::Adhoc,
                         plan::Options::default(),
                     )
                 });

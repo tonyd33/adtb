@@ -7,7 +7,7 @@ use adtb_sys::pages::{self, PageMemory, PageState};
 
 use crate::runtime::{AlignedBuf, FileId, IoError, Runtime, ThreadId};
 
-use super::alloc::{Allocation, Hold, Reservation, diff};
+use super::alloc::{Allocation, Bitmapped, Hold, Reservation, diff};
 use super::damage_log::Recorded;
 use super::driver::Driver;
 use super::error::{Damage, OpenError, Shape};
@@ -17,7 +17,7 @@ use super::holding::{Holding, NO_HOLDER};
 use super::log::{Log, Pinned, Segments};
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN};
 use super::pagetable::{DirtyTable, Logged};
-use super::quarantine::{Bitmapped, Marks};
+use super::quarantine::Marks;
 use super::record::{Edit, MapRoot, Record};
 use super::recovery::Replaying;
 use super::{Lsn, Pid, Position};

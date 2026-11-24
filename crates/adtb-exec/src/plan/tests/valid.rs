@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use adtb_lang::analysis::Totality;
+use adtb_lang::capability::RootKind;
 use adtb_lang::kernel::{Build, Const, Var};
 use adtb_lang::types::{Base, Ty};
 
@@ -12,7 +13,7 @@ type SpineArm = (u32, Var, Spine);
 
 /// Returns the judgement of `p` over `catalog`, as of a plan built bounded when `bounded` is set.
 fn check_in(f: &Fixture, catalog: &Catalog, p: &Plan, bounded: bool) -> Result<(), Broken> {
-    let mut total = Totality::new(f.schema(), false)
+    let mut total = Totality::new(f.schema(), RootKind::Adhoc)
         .with_aggregates(f.normal.terms(), f.normal.aggregate_parts());
     let mut facts = Facts::default();
     let judges = Judges::new(f.schema(), catalog, &mut facts, &mut total, bounded);
@@ -455,6 +456,7 @@ fn every_plan_of_the_planner_corpus_keeps_the_plan_invariants() {
                 &f.catalog,
                 n.valid(),
                 t,
+                RootKind::Adhoc,
                 Options { rewrites: rw },
             ) {
                 panic!("`{text}` with {name}: {e}");
@@ -470,13 +472,21 @@ fn every_plan_of_the_planner_corpus_keeps_the_plan_invariants() {
             &f.catalog,
             q.valid(),
             q.body(),
+            RootKind::Query,
             Options { rewrites: rw },
         )
         .unwrap_or_else(|e| panic!("the search with {name}: {e}"));
         made += 1;
     }
     let (n, t) = f.normal(KEY_PROBE, &[("k", "Key identities")]);
-    for p in plan_bounded(f.schema(), &f.normal, &f.catalog, n.valid(), &[t]) {
+    for p in plan_bounded(
+        f.schema(),
+        &f.normal,
+        &f.catalog,
+        n.valid(),
+        &[t],
+        RootKind::Adhoc,
+    ) {
         p.unwrap_or_else(|e| panic!("`{KEY_PROBE}` bounded: {e}"));
     }
     made += 1;

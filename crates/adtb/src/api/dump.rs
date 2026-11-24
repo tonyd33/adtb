@@ -1,5 +1,6 @@
 //! The command `dump`, and the restore of a dump into a new database file.
 
+use adtb_lang::capability::RootKind;
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ids::{CatRelId, EngineRel, Stored, engine_ctor as k, engine_rel, held_id};
@@ -17,7 +18,7 @@ use crate::catalog::{
 use crate::exec::Val;
 use crate::runtime::Runtime;
 use crate::storage::{self, BackupError, DumpManifest, Envelope, Passphrase};
-use crate::write::{self, Bounds, Local, Text, Txn};
+use crate::write::{self, Bounds, Items, Local, Text, Txn};
 
 use super::backup::{CATALOG_VERSION, RestorePoint, refused};
 use super::bundle::{self, EDITION, Registered};
@@ -903,7 +904,7 @@ impl<R: Runtime> Entered<'_, R> {
         let text = Text {
             schema: self.schema(),
             terms: &terms,
-            items: &[all],
+            items: Items::new(std::slice::from_ref(&all), RootKind::Adhoc),
             params: &params,
             clock: self.clock(),
             caller: None,

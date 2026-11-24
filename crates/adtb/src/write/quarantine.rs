@@ -303,7 +303,7 @@ impl<R: Runtime> Database<R> {
             return Ok(());
         }
         let mut touched = Touched::default();
-        for &t in text.items {
+        for &t in text.items.iter() {
             self.walk(text.terms, t, &mut touched);
         }
         self.admit_touched(&marks, touched)

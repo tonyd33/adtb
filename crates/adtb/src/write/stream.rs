@@ -63,7 +63,7 @@ impl<R: Runtime> Database<R> {
     ) -> Result<Option<Produced<R>>, Error> {
         self.admit(&text)?;
         let started = self.rt.now();
-        let [root] = text.items else {
+        let [root] = &*text.items else {
             return Ok(None);
         };
         let mut terms = text.terms.clone();
@@ -79,7 +79,12 @@ impl<R: Runtime> Database<R> {
         let free = text.params.iter().map(|(v, _)| *v).collect();
         let terms = adtb_lang::kernel::ValidTerms::new(text.schema, terms, &[(root, free)])
             .map_err(super::Broken::IllTyped)?;
-        let program = self.program(text.schema, terms.valid(), root, text.caller.cloned())?;
+        let program = self.program(
+            text.schema,
+            terms.valid(),
+            (root, text.items.kind()),
+            text.caller.cloned(),
+        )?;
         let options = exec::Options {
             fix_rounds: bounds.fix_rounds.unwrap_or(self.options.fix_rounds),
             ..self.options

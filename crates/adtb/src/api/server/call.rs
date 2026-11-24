@@ -463,7 +463,7 @@ impl<R: Runtime> Call<R> {
         Text {
             schema: p.schema(),
             terms: p.terms(),
-            items: p.items(),
+            items: p.roots(),
             params: p.params(),
             clock: e.clock(),
             caller: Some(p.caller()),

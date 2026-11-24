@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::mvcc::{Snapshot, Transactions, Writers, Xid};
 use crate::runtime::Runtime;
-use crate::storage::{Damage, LogFinding, Lsn, PageError, Pager, Pid, Position, Quarantine};
+use crate::storage::{
+    Bitmapped, Damage, LogFinding, Lsn, PageError, Pager, Pid, Position, Quarantine,
+};
 
 /// The damage recorded and not cleared at one instant.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -65,6 +67,17 @@ impl<'a, R: Runtime> Probe<'a, R> {
     /// Returns whether `object` is quarantined, by its own mark or the database's.
     pub fn marked(self, object: Quarantine) -> bool {
         self.pager.is_quarantined(object)
+    }
+
+    /// Returns whether the allocation bitmap calls `pid` free.
+    ///
+    /// Fail if its bitmap page is damaged or was lost.
+    pub fn is_free(self, pid: Pid) -> Result<bool, PageError> {
+        match self.pager.bitmapped(pid) {
+            Bitmapped::Free => Ok(true),
+            Bitmapped::Allocated => Ok(false),
+            Bitmapped::Unknown(e) => Err(e),
+        }
     }
 
     /// Returns the pages refused this open, each with what is wrong with it.

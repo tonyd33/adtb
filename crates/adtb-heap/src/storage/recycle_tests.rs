@@ -744,7 +744,7 @@ fn a_change_dropped_unwritten_with_its_page_is_replayed_until_the_page_is_durabl
         harness::finished(&mut crashed, |rt| {
             let (pager, opening) = Pager::open(rt, &options()).unwrap();
             let recovery = opening.recovery().cloned().expect("the open recovered");
-            let read = (!pager.is_free(pid).unwrap()).then(|| {
+            let read = (!Probe::of(&pager).is_free(pid).unwrap()).then(|| {
                 pager
                     .read(pid)
                     .map(|p| u64::from_le_bytes(p[HEADER_LEN..HEADER_LEN + 8].try_into().unwrap()))

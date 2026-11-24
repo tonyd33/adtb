@@ -6,6 +6,7 @@ use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use adtb_lang::ast::{BundleItem, Import, OperatorKind};
+use adtb_lang::capability::RootKind;
 use adtb_lang::check::{Bundles, Compiled};
 use adtb_lang::evolve::{DeployedGrant, LogGrant, Source};
 use adtb_lang::kernel::{Terms, Tm, Var};
@@ -34,7 +35,7 @@ use super::reads::Reads;
 use super::server::{holds_monitor, monitored};
 use super::settings::Settings;
 use super::stated;
-use super::text::{DynRows, Prepared, rows};
+use super::text::{DynRows, Normal, Prepared, rows};
 use super::txn::{AdHocTransaction, Committed, TxnCallOptions};
 use super::{CallOptions, Database, Engine, OWNER_ID, OpenError};
 
@@ -1185,6 +1186,14 @@ fn arguments(checked: &Checked, entry: &Entry, args: &[Val]) -> Result<(), Error
     Ok(())
 }
 
+/// Returns the kind of root the callables of a registration with `header` are.
+fn root_kind(header: Option<&Header>) -> RootKind {
+    match header {
+        Some(h) if h.hides_new => RootKind::HidingQuery,
+        _ => RootKind::Query,
+    }
+}
+
 /// Returns the call of `entry` with `args` for `caller`, through its translation when it has
 /// one, its arguments carried to the version the database is at.
 fn prepared(checked: &Checked, entry: &Entry, args: &[Val], caller: Val) -> Prepared {
@@ -1215,7 +1224,7 @@ fn prepared(checked: &Checked, entry: &Entry, args: &[Val], caller: Val) -> Prep
     Prepared {
         compiled: compiled.clone(),
         terms: terms.clone(),
-        items: vec![body],
+        items: Normal::new(vec![body], root_kind(checked.header.as_ref())),
         commands: Vec::new(),
         params,
         functions: BTreeSet::new(),

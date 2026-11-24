@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use super::Totality;
 use super::tests::{adhoc, adhoc_normal, reachable};
+use crate::capability::RootKind;
 use crate::check::check_schema;
 use crate::kernel::{Build, FileFormat, Kind, Prim};
 use crate::norm;
@@ -278,8 +279,13 @@ fn judge(case: &Case, text: &str) -> Result<(bool, Vec<Prim>), String> {
         })
         .collect();
     let normal = norm::program(&p).map_err(|e| format!("schema not normalised: {e:?}"))?;
+    let kind = if case.hiding {
+        RootKind::HidingQuery
+    } else {
+        RootKind::Query
+    };
     let mut totality =
-        Totality::new(&s, case.hiding).with_aggregates(normal.terms(), normal.aggregate_parts());
+        Totality::new(&s, kind).with_aggregates(normal.terms(), normal.aggregate_parts());
     Ok((totality.total(n.terms(), item), prims))
 }
 
@@ -422,7 +428,7 @@ fn an_unreachable_is_partial_and_a_case_is_judged_on_the_arms_it_reaches() {
     let mut b = Build::new(&s, &mut terms);
     let never = b.unreachable(ty.clone());
     let narrowed = b.case(scrutinee, vec![arms[0], (arms[1].0, arms[1].1, never)], ty);
-    let mut totality = Totality::new(&s, false);
+    let mut totality = Totality::new(&s, RootKind::Query);
     assert!(!totality.total(&terms, never));
     assert!(totality.total(&terms, narrowed));
 }

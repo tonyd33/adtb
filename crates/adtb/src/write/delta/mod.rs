@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use adtb_lang::analysis::Totality;
+use adtb_lang::capability::RootKind;
 use adtb_lang::kernel::{Agg, Build, Kind, Prim, Terms, Tm, Transition, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::{Committed, Schema};
@@ -197,7 +198,7 @@ pub fn compile(
         catalog,
         terms,
         facts: Facts::default(),
-        total: Totality::new(schema, false)
+        total: Totality::new(schema, RootKind::Constraint)
             .with_aggregates(normal.terms(), normal.aggregate_parts()),
         transitions: transitions
             .into_iter()
@@ -610,7 +611,14 @@ impl Compiler<'_> {
         let valid = adtb_lang::kernel::validate(self.schema, self.terms, &roots)
             .map_err(|e| Outside::Internal(Broken::IllTyped(e)))?;
         let ts: Vec<Tm> = roots.iter().map(|(t, _)| *t).collect();
-        let plans = plan::plan_bounded(self.schema, self.normal, self.catalog, valid, &ts);
+        let plans = plan::plan_bounded(
+            self.schema,
+            self.normal,
+            self.catalog,
+            valid,
+            &ts,
+            RootKind::Constraint,
+        );
         let mut add = |r: String| {
             if !why.contains(&r) {
                 why.push(r);

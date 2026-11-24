@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use adtb_lang::capability::RootKind;
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::{Committed, Schema, TypeDefKind};
@@ -99,8 +100,16 @@ pub fn refusals(
         adtb_lang::kernel::ValidTerms::new(schema, terms, &roots).map_err(Broken::IllTyped)?;
     for c in &checks {
         let options = plan::Options::default();
-        let whole = plan::plan(schema, normal, catalog, terms.valid(), c.whole(), options)
-            .map_err(Broken::WholePlan)?;
+        let whole = plan::plan(
+            schema,
+            normal,
+            catalog,
+            terms.valid(),
+            c.whole(),
+            RootKind::Constraint,
+            options,
+        )
+        .map_err(Broken::WholePlan)?;
         let why = uncompiled(exec::compile(schema, catalog, &whole, None))?;
         out.extend(why.map(|why| (c.name.clone(), why)));
     }
@@ -266,7 +275,10 @@ impl<R: Runtime> Stmt<'_, R> {
                 TypeDefKind::Newtype { base, .. } => {
                     if let Some((var, body)) = self.db.normal.domains().get(def) {
                         let env: Env = [(*var, v.clone())].into();
-                        if !self.eval(Arena::Program, *body, &env)?.truth()? {
+                        if !self
+                            .eval(Arena::Program(RootKind::Domain), *body, &env)?
+                            .truth()?
+                        {
                             let name = domain_name(schema, *def);
                             violate(viol, Violator::Domain(*def), &name, [row.clone()]);
                         }

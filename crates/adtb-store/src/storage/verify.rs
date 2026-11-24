@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::Runtime;
 
+use super::alloc::Bitmapped;
 use super::arming::Unarmed;
 use super::block::{LogFinding, LogProblem, Mode, Resolutions, Unsettled, resolutions_from, scan};
 use super::error::Damage;
@@ -9,7 +10,6 @@ use super::evidence::Judged;
 use super::log::parse_segment;
 use super::page;
 use super::pager::Pager;
-use super::quarantine::Bitmapped;
 use super::record::Record;
 use super::{Lsn, Pid, Position};
 

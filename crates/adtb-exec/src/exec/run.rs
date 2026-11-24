@@ -709,6 +709,8 @@ impl<R: Runtime> Ctx<R> {
     }
 
     /// Pass the rows of `sel` through the steps of `c` from step `from` on, then its end.
+    ///
+    /// Precondition: `f` holds at most `morsel_rows` rows.
     pub(super) fn chain(
         self: &Arc<Self>,
         run: &Run,
@@ -718,6 +720,12 @@ impl<R: Runtime> Ctx<R> {
         mut sel: Sel,
         out: &mut Distinct,
     ) -> Result<(), Error> {
+        debug_assert!(
+            f.len() <= self.options.morsel_rows.max(1),
+            "a frame of {} rows passed to a chain, past `morsel_rows` {}",
+            f.len(),
+            self.options.morsel_rows
+        );
         let off = &mut Catch::off();
         for (i, step) in c.steps.iter().enumerate().skip(from) {
             if sel.is_empty() {

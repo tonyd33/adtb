@@ -1,3 +1,4 @@
+use adtb_lang::capability::RootKind;
 use adtb_lang::kernel::{Build, Terms};
 use adtb_lang::types::{RelId, Ty};
 
@@ -5,7 +6,7 @@ use std::sync::Arc;
 
 use crate::exec::{Grant, Val};
 use crate::runtime::Runtime;
-use crate::write::{Bounds, Leave, Local, Text, Txn, either};
+use crate::write::{Bounds, Items, Leave, Local, Text, Txn, either};
 
 use super::super::{Entered, Error, TxnId};
 
@@ -57,7 +58,7 @@ impl Changes {
         let text = Text {
             schema: e.schema(),
             terms: &terms,
-            items: &[change],
+            items: Items::new(std::slice::from_ref(&change), RootKind::Adhoc),
             params: &params,
             clock: e.clock(),
             caller: None,

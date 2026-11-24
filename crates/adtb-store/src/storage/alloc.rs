@@ -8,6 +8,15 @@ use super::record::{Edit, Record};
 use super::recovery::Replaying;
 use super::{Lsn, Pid};
 
+/// What the allocation bitmap says of a page.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Bitmapped {
+    Allocated,
+    Free,
+    /// Its bitmap page is refused.
+    Unknown(PageError),
+}
+
 /// Unchanged runs shorter than this between two changed ones are logged as changed.
 const MERGE_GAP: usize = 16;
 
@@ -374,17 +383,18 @@ impl<R: Runtime> Pager<R> {
         self.update_with(new, &[], |_| {})
     }
 
-    /// Returns whether the allocation bitmap calls `pid` free.
-    ///
-    /// Fail if its bitmap page is damaged or was lost.
-    pub fn is_free(&self, pid: Pid) -> Result<bool, PageError> {
+    /// Returns what the allocation bitmap says of `pid`.
+    pub(crate) fn bitmapped(&self, pid: Pid) -> Bitmapped {
         let span = self.bitmap_span();
         let map = self.bitmap_page(pid.0 / span);
         if pid == map || pid < Pid::FIRST_DATA {
-            return Ok(false);
+            return Bitmapped::Allocated;
         }
-        let page = self.read_map(pid.0 / span)?;
-        Ok(!page.is_formatted() || !page.is_set(pid))
+        match self.read_map(pid.0 / span) {
+            Ok(page) if !page.is_formatted() || !page.is_set(pid) => Bitmapped::Free,
+            Ok(_) => Bitmapped::Allocated,
+            Err(e) => Bitmapped::Unknown(e),
+        }
     }
 
     /// Returns every page the allocation bitmap marks allocated, in order, leaving out the pages

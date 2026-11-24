@@ -592,7 +592,7 @@ fn an_open_stores_the_group_count_so_a_lost_group_is_refused_and_never_reused() 
         finished(&mut sim, |rt| {
             let pager = pager_of(rt);
             assert_eq!(BTreeMap::new(), Probe::of(&pager).refusals());
-            assert_eq!(Ok(false), pager.is_free(named));
+            assert_eq!(Ok(false), Probe::of(&pager).is_free(named));
             pager.close();
         });
         let opened = sim.files();
@@ -642,7 +642,7 @@ fn a_crash_in_recovery_then_a_cut_never_reuses_a_named_page() {
             let mut sim = Sim::with_files(1, Config::default(), small_cut(&image, SMALL_SPAN));
             finished(&mut sim, |rt| {
                 let pager = pager_of(rt);
-                assert_ne!(Ok(true), pager.is_free(named), "{what}");
+                assert_ne!(Ok(true), Probe::of(&pager).is_free(named), "{what}");
                 if let Ok(pid) = pager.allocate(1, PageKind::Catalog, 1) {
                     assert_ne!(named, pid, "{what}");
                 }

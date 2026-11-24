@@ -9,6 +9,7 @@ use crate::key::{CtorId, Scalar, Tid, Value};
 use crate::mvcc::{Fate, Writers, Xid};
 use crate::runtime::{Entropy, Threads};
 use crate::storage::{self, Options, PageError, PageKind, Pager, Pid};
+use crate::testing::Probe;
 use crate::verify::{Inventory, Sum};
 use adtb_sim::{Config, Fate as LedgerFate, Ledger, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
@@ -1094,7 +1095,7 @@ fn readers_with_a_stale_page_list_meet_a_freed_page_another_allocation_reserved_
         heap.prune(&db.pager, victim, judge, &dead, false).unwrap();
         assert_eq!(
             Ok(true),
-            db.pager.is_free(victim),
+            Probe::of(&db.pager).is_free(victim),
             "the prune freed the page"
         );
         heap.scan(&db.pager, drop).unwrap();

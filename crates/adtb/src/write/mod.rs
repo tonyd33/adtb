@@ -11,6 +11,7 @@ mod explain;
 mod fresh;
 mod grant;
 mod input;
+mod items;
 mod keyed;
 mod mend;
 mod past;
@@ -82,6 +83,7 @@ pub use check::refusals;
 pub use delta::{CheckPlan, Part, unchanged};
 pub use eval::{Violated, Violator};
 pub use input::Local;
+pub use items::Items;
 pub use past::Retained;
 pub(crate) use past::position;
 pub use quarantine::{By, Mapped, Mapping};
@@ -444,7 +446,7 @@ pub struct Text<'a> {
     /// The database's schema, or one that extends it with the transaction's temp relations.
     pub schema: &'a Committed,
     pub terms: &'a Terms,
-    pub items: &'a [Tm],
+    pub items: Items<'a>,
     pub params: &'a [(Var, Val)],
     /// The instant, in microseconds, every `generate clock` of the statements takes.
     pub clock: i64,
@@ -921,7 +923,10 @@ impl<R: Runtime> Database<R> {
         let text = Text {
             schema: &self.schema,
             terms,
-            items: &[t],
+            items: Items::new(
+                std::slice::from_ref(&t),
+                adtb_lang::capability::RootKind::Adhoc,
+            ),
             params,
             clock,
             caller: None,

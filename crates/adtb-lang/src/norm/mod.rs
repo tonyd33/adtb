@@ -373,8 +373,8 @@ struct Normaliser<'a> {
     text: RootKind,
     /// Whether every deref of the root being normalised is partial.
     unchecked: bool,
-    /// Whether the root being normalised reads through a pin hiding new constructors.
-    hiding: bool,
+    /// The kind whose entry judges totality in the root being normalised.
+    root: RootKind,
 }
 
 impl<'a> Normaliser<'a> {
@@ -390,14 +390,15 @@ impl<'a> Normaliser<'a> {
             program: p,
             out: Terms::default(),
             out_frees: Frees::default(),
-            tot: Totality::new(schema, false).with_aggregates(&p.terms, p.aggregate_parts()),
+            tot: Totality::new(schema, RootKind::Adhoc)
+                .with_aggregates(&p.terms, p.aggregate_parts()),
             free: HashMap::new(),
             fv: [HashMap::new(), HashMap::new()],
             memo: HashMap::new(),
             budget: Budget::new(src[0].len() + src[1].len()),
             text: RootKind::Adhoc,
             unchecked: false,
-            hiding: false,
+            root: RootKind::Adhoc,
         }
     }
 
@@ -407,21 +408,21 @@ impl<'a> Normaliser<'a> {
             Root::Item(_) | Root::Command(_) | Root::Query => self.text,
             _ => capability::kind_of(self.schema, root),
         };
-        let entry = capability::entry(kind);
-        self.mode(entry.derefs_partial(), entry.hiding());
+        self.mode(capability::entry(kind).derefs_partial(), kind);
         self.budget.start(&self.out);
     }
 
-    /// Normalise what follows with every deref partial when `unchecked`, judging totality as
-    /// under a hiding pin when `hiding`. Clear the memo when the mode changes: a nullary
-    /// function's memo key is the same in every root.
-    fn mode(&mut self, unchecked: bool, hiding: bool) {
-        if hiding != self.hiding {
-            self.hiding = hiding;
-            self.tot = Totality::new(self.schema, hiding)
+    /// Normalise what follows with every deref partial when `unchecked`, judging totality as a
+    /// root of kind `root`. Clear the memo when the mode changes: a nullary function's memo key
+    /// is the same in every root.
+    fn mode(&mut self, unchecked: bool, root: RootKind) {
+        let hiding = |k| capability::entry(k).hiding();
+        if hiding(root) != hiding(self.root) {
+            self.tot = Totality::new(self.schema, root)
                 .with_aggregates(&self.program.terms, self.program.aggregate_parts());
             self.memo.clear();
         }
+        self.root = root;
         if unchecked != self.unchecked {
             self.unchecked = unchecked;
             self.memo.clear();
@@ -430,11 +431,11 @@ impl<'a> Normaliser<'a> {
 
     /// Normalise an `at` block, its derefs as the entry of an `at` body states.
     fn at_step(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, Cause> {
-        let (unchecked, hiding) = (self.unchecked, self.hiding);
+        let (unchecked, root) = (self.unchecked, self.root);
         let body = capability::entry(RootKind::AtBody);
-        self.mode(unchecked || body.derefs_partial(), hiding);
+        self.mode(unchecked || body.derefs_partial(), root);
         let v = self.congruent(kind, ty, cx);
-        self.mode(unchecked, hiding);
+        self.mode(unchecked, root);
         v
     }
 

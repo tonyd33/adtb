@@ -394,7 +394,8 @@ fn a_hiding_pin_dereferences_a_whole_key_admitting_the_pinned_constructors_only(
             .iter()
             .position(|n| matches!(n.kind, Kind::Deref { .. }))
             .expect("the dereference");
-        let total = crate::analysis::Totality::new(to, false).total(q.terms(), Tm(t as u32));
+        let total = crate::analysis::Totality::new(to, crate::capability::RootKind::Query)
+            .total(q.terms(), Tm(t as u32));
         assert_eq!(!hide_new, total, "hide_new {hide_new}");
     }
 }

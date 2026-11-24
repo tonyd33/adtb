@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::runtime::Runtime;
 use crate::steps::{Retire, Step};
 
-use super::alloc::diff;
+use super::alloc::{Bitmapped, diff};
 use super::evidence::{Cause, Evidence, Judged};
 use super::order::Ordered;
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind};
@@ -80,15 +80,6 @@ impl<R: Runtime> Drop for StaleCopy<'_, R> {
             self.pager.damage(e.pid, e.damage);
         }
     }
-}
-
-/// What the allocation bitmap says of a page.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Bitmapped {
-    Allocated,
-    Free,
-    /// Its bitmap page is refused.
-    Unknown,
 }
 
 /// What a detected corruption stops.
@@ -1088,15 +1079,6 @@ impl<R: Runtime> Pager<R> {
     /// Returns the pages held as retired, none of them freed since.
     pub fn retired(&self) -> Vec<Pid> {
         self.evidence().retired()
-    }
-
-    /// Returns what the allocation bitmap says of `pid`.
-    pub(super) fn bitmapped(&self, pid: Pid) -> Bitmapped {
-        match self.is_free(pid) {
-            Ok(true) => Bitmapped::Free,
-            Ok(false) => Bitmapped::Allocated,
-            Err(_) => Bitmapped::Unknown,
-        }
     }
 
     /// Format the marks page `pid`, reserved by `new`, empty.

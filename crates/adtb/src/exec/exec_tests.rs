@@ -19,6 +19,7 @@ use crate::runtime::{IoError, OpKind};
 use crate::storage::Pid;
 use crate::testing::Knobs;
 use crate::{OpenOptions, TxnCallOptions, TxnOptions};
+use adtb_lang::capability::RootKind;
 use adtb_lang::kernel::Var;
 use adtb_lang::schema::{Committed, Schema};
 use adtb_lang::types::Ty;
@@ -128,6 +129,7 @@ fn cases_of(f: &Fixture, text: &str, params: &[(&str, &str, Value)]) -> Vec<Case
                 &f.catalog,
                 n.valid(),
                 t,
+                RootKind::Adhoc,
                 PlanOptions { rewrites },
             )
             .unwrap_or_else(|e| panic!("`{text}` has no plan: {e}"));
@@ -1054,6 +1056,7 @@ fn a_call_of_a_wasm_function_is_refused_before_it_reaches_the_executor_and_a_hos
             &f.catalog,
             n.valid(),
             t,
+            RootKind::Adhoc,
             PlanOptions::default(),
         )
         .map(|_| ());

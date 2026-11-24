@@ -13,7 +13,7 @@ use crate::storage::{
 };
 use crate::write::{self, Found, HoldWait, VerifyScope};
 
-use super::{Failed, Object, Testing};
+use super::{Failed, Object, Probe, Testing};
 
 /// The vacuum lock, held until dropped.
 #[derive(Debug)]
@@ -42,7 +42,7 @@ impl<'a, R: Runtime> Testing<'a, R> {
 
     /// Returns whether the allocation bitmap calls `page` free.
     pub fn is_free(self, page: Pid) -> Result<bool, PageError> {
-        self.db.tested_pager().is_free(page)
+        Probe::of(self.db.tested_pager()).is_free(page)
     }
 
     /// Returns every page the allocation bitmap calls allocated.
