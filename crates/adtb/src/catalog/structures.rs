@@ -196,8 +196,11 @@ impl Structures {
         out
     }
 
-    /// Returns every structure for `verify`, with the commit log `clog` when given.
-    pub fn inventory<'a>(&'a self, clog: Option<&'a CommitLog>) -> Inventory<'a> {
+    /// Returns every structure for `verify`, with `transactions` when given.
+    pub fn inventory<'a, R: Runtime>(
+        &'a self,
+        transactions: Option<&'a Transactions<R>>,
+    ) -> Inventory<'a, R> {
         let rows = self.rows.iter().map(|heap| Sum {
             heaps: vec![(CtorId(0), heap.as_ref())],
             indexes: Vec::new(),
@@ -207,7 +210,7 @@ impl Structures {
             indexes: s.indexes.iter().map(|(_, i)| i).collect(),
         });
         Inventory {
-            commit_log: clog,
+            transactions,
             sums: rows.chain(sums).collect(),
             trees: self.trees.iter().map(|(_, t)| *t).collect(),
             pages: std::iter::once(self.root).chain(self.counters).collect(),

@@ -21,8 +21,8 @@ use crate::storage::PageError;
 #[cfg(test)]
 mod tests;
 
+pub use clog::CommitLog;
 pub(crate) use clog::Settling;
-pub use clog::{CommitLog, Owes};
 pub use conflict::{Probe, Write};
 pub use fate::{Fate, Horizon, Rule};
 pub use past::{Marker, Past};

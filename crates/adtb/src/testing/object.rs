@@ -242,7 +242,7 @@ impl<'a, R: Runtime> Testing<'a, R> {
             root: clog.root(),
             directory: clog.directory_pages(),
             status: clog.status_pages().clone(),
-            reserved: clog.reserved(),
+            reserved: clog.reserved_tested(),
             bound: clog.bound(),
         }
     }

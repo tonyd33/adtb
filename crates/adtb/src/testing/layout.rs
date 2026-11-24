@@ -8,7 +8,7 @@ use super::{Failed, Object, Testing};
 impl<R: Runtime> Testing<'_, R> {
     /// Returns the first transaction id past the commit log's reservation.
     pub fn unreserved(self) -> Xid {
-        self.db.tested_db().txns().commit_log().reserved()
+        self.db.tested_db().txns().commit_log().reserved_tested()
     }
 
     /// Returns each position of the directory of heap `object` with what its page holds.

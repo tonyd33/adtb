@@ -21,7 +21,7 @@ const FLAGS: [(Flags, &str); 5] = [
 
 /// Make the edit `body` states to page `pid`, which `page` names: on a heap, directory or store
 /// page `kind KIND`, `entry N names PAGE`, `no map`, or `slot N` followed by `broken`,
-/// `deleter unreserved` or `count C`; on an index `entry N again at slot S`, entry N of the
+/// `deleter unreserved`, `inserter unreserved`, `writer unreserved` or `count C`; on an index `entry N again at slot S`, entry N of the
 /// index added again naming slot S of its page. Returns the page the edit names besides, with
 /// its name.
 pub(super) fn scribble(
@@ -57,6 +57,14 @@ pub(super) fn scribble(
             match rest {
                 ["broken"] => Edit::Broken(slot),
                 ["deleter", "unreserved"] => Edit::Deleter {
+                    slot,
+                    by: t.unreserved(),
+                },
+                ["inserter", "unreserved"] => Edit::Inserter {
+                    slot,
+                    by: t.unreserved(),
+                },
+                ["writer", "unreserved"] => Edit::Writer {
                     slot,
                     by: t.unreserved(),
                 },

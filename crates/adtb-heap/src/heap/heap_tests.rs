@@ -680,7 +680,7 @@ fn lengthening(s: Storage<SimRuntime>) -> (Pager<SimRuntime>, Heap) {
     (pager, heap)
 }
 
-fn notes_inventory(heap: &Heap) -> Inventory<'_> {
+fn notes_inventory(heap: &Heap) -> Inventory<'_, SimRuntime> {
     Inventory {
         sums: vec![Sum {
             heaps: vec![(CtorId(0), heap)],
@@ -769,7 +769,7 @@ fn a_crash_while_a_conversion_counts_its_values_leaves_no_count_too_low() {
 }
 
 /// Returns whether `pager` holds a directory entry promising less than its child holds.
-fn unsettled(pager: &Pager<SimRuntime>, inventory: &Inventory) -> bool {
+fn unsettled(pager: &Pager<SimRuntime>, inventory: &Inventory<'_, SimRuntime>) -> bool {
     crate::verify::verify(pager, inventory)
         .findings
         .iter()

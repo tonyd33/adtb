@@ -28,6 +28,8 @@ pub enum Edit {
     Vacate(usize),
     /// Make the chunk in slot `slot` of a large-value store page count `count` versions.
     Count { slot: usize, count: u32 },
+    /// Make the chunk in slot `slot` of a large-value store page written by `by`.
+    Writer { slot: usize, by: Xid },
 }
 
 /// Apply `edit` to page `pid` as one logged change. Returns `false`, changing nothing, when the
@@ -98,6 +100,13 @@ fn edited(copy: &mut PageCopy, edit: Edit) -> bool {
             };
             let tuple = page.version_mut(at);
             tuple[large::COUNT..large::COUNT + 4].copy_from_slice(&count.to_le_bytes());
+        }
+        Edit::Writer { slot, by } => {
+            let Some((mut page, at)) = version(copy, slot) else {
+                return false;
+            };
+            let tuple = page.version_mut(at);
+            tuple[large::WRITER..large::WRITER + 8].copy_from_slice(&by.0.to_le_bytes());
         }
     }
     true

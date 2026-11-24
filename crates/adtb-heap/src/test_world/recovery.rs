@@ -6,7 +6,10 @@ use crate::verify::{Inventory, Problem, verify};
 
 /// Returns what `verify` finds wrong with the file after a crash: every finding but a leaked page,
 /// which an open frees, and what the mend pass mends.
-pub fn verify_after_crash<R: Runtime>(pager: &Pager<R>, inventory: &Inventory) -> Vec<String> {
+pub fn verify_after_crash<R: Runtime>(
+    pager: &Pager<R>,
+    inventory: &Inventory<'_, R>,
+) -> Vec<String> {
     let report = verify(pager, inventory);
     let mut problems: Vec<String> = report
         .unmended()

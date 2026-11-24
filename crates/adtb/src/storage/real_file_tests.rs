@@ -86,10 +86,7 @@ fn migrated_database_reopens(dir: &Path, runtime: fn(&Path) -> OsRuntime) {
     assert_eq!(1, catalog.source().version());
     assert!(has_relation(&catalog, "shop", "customers"));
     assert!(has_relation(&catalog, "shop", "payments"));
-    let report = verify::verify(
-        &pager,
-        &catalog.structures().inventory(Some(&txns.commit_log())),
-    );
+    let report = verify::verify(&pager, &catalog.structures().inventory(Some(&txns)));
     assert!(report.is_clean() && report.complete, "{report:#?}");
 }
 

@@ -150,12 +150,11 @@ struct Findings {
 fn findings(rt: &SimRuntime, what: &str) -> Findings {
     let (pager, catalog, txns) = catalog_at(rt);
     assert!(!changing(&pager), "{what}: the open ends the change");
-    let clog = txns.commit_log();
     let depth = Depth {
         log: true,
         indexes: true,
     };
-    let report = verify::verify_with(&pager, &catalog.structures().inventory(Some(&clog)), depth);
+    let report = verify::verify_with(&pager, &catalog.structures().inventory(Some(&txns)), depth);
     pager.close();
     assert!(report.complete, "{what}: {:?}", report.findings);
     counted(&report.findings, what)
@@ -202,12 +201,11 @@ fn unmended(rt: &SimRuntime) -> (usize, bool) {
     };
     let (pager, _) = Pager::open(rt.clone(), &options).expect("the file reopens");
     let (catalog, txns) = Catalog::load(rt.clone(), &pager).expect("the catalog loads");
-    let clog = txns.commit_log();
     let depth = Depth {
         log: true,
         indexes: true,
     };
-    let report = verify::verify_with(&pager, &catalog.structures().inventory(Some(&clog)), depth);
+    let report = verify::verify_with(&pager, &catalog.structures().inventory(Some(&txns)), depth);
     let left = changing(&pager);
     pager.close();
     assert!(report.complete, "{:?}", report.findings);
@@ -1109,13 +1107,12 @@ impl Wide {
     /// Returns the overcounted heads and unsettled directory entries verify finds, failing on any
     /// other finding. With `dropped`, the first heap is left out and its pages are not findings.
     fn findings(&self, dropped: bool, what: &str) -> Findings {
-        let clog = self.txns.commit_log();
         let mut heaps = vec![(CtorId(1), &self.other)];
         if !dropped {
             heaps.push((CtorId(0), &self.heap));
         }
         let inventory = Inventory {
-            commit_log: Some(&clog),
+            transactions: Some(&self.txns),
             sums: vec![Sum {
                 heaps,
                 indexes: Vec::new(),

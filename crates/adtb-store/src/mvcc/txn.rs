@@ -15,7 +15,7 @@ use crate::storage::{Damage, Lsn, PageError, Pager, Pid, Position};
 use super::past::{Commit, Marker, Past};
 use super::{
     CommitLog, Error, Holds, Scope, Serializer, Snapshot, SnapshotId, Standing, Status,
-    StatusError, Waits, Xid,
+    StatusError, Waits, Writers, Xid,
 };
 
 /// The number of ids one xid allocation record reserves.
@@ -571,6 +571,24 @@ impl<R: Runtime> Transactions<R> {
             Status::InProgress => Standing::Unrecorded,
             status => status.into(),
         })
+    }
+
+    /// Returns the deleter of `w` when the commit log records it in progress and it runs in this
+    /// process, whether or not the database is quarantined.
+    ///
+    /// Fail with the damage of the deleter's status page.
+    pub fn running_deleter(&self, pager: &Pager<R>, w: &Writers) -> Result<Option<Xid>, PageError> {
+        let Some(x) = w.deleter() else {
+            return Ok(None);
+        };
+        let status = self.commit_log().status(pager, x);
+        match status {
+            Ok(Status::InProgress) => {
+                Ok(self.state.lock(&self.rt).running.contains(&x).then_some(x))
+            }
+            Ok(Status::Committed | Status::Aborted) | Err(StatusError::Unreserved(_)) => Ok(None),
+            Err(StatusError::Page(e)) => Err(e),
+        }
     }
 
     /// Returns what the commit log records of `x`, whether or not the database is quarantined.

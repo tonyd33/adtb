@@ -225,7 +225,7 @@ fn commit_log_pages_fill_and_page() {
         let per = clog.ids_per_page();
         let cap = (PAGE - 40) / 16;
         while clog.directory_pages().len() < 3 {
-            let from = clog.reserved();
+            let from = clog.reserved_tested();
             clog.reserve(pager, Xid(from.0 + per), from)
                 .expect("reserve");
             for k in 0..3 {
@@ -252,7 +252,7 @@ fn commit_log_pages_fill_and_page() {
         for (&x, &s) in &resolved {
             assert_eq!(s, clog.status(pager, x).expect("status"), "{x:?}");
         }
-        clog.reserved()
+        clog.reserved_tested()
     });
     let bound = Xid(per * (cap as u64 + 5) + 17);
     let freed = with_open(&mut sim, root, |pager, txns| {
@@ -283,7 +283,7 @@ fn commit_log_pages_fill_and_page() {
     with_open(&mut sim, root, |pager, txns| {
         let clog = txns.commit_log();
         assert_eq!(bound, clog.bound());
-        assert_eq!(reserved, clog.reserved());
+        assert_eq!(reserved, clog.reserved_tested());
         for (&x, &s) in &resolved {
             let want = if x < bound { Status::Committed } else { s };
             assert_eq!(want, clog.status(pager, x).expect("status"), "{x:?}");
@@ -413,9 +413,8 @@ fn inspect(rt: SimRuntime, root: Pid, pages: &[Pid], assigned: &[Xid]) -> Report
         .map(|&x| (x, txns.status_tested(&pager, x).expect("status")))
         .collect();
     let v = pager.verify();
-    let clog = txns.commit_log();
     let inventory = Inventory {
-        commit_log: Some(&clog),
+        transactions: Some(&txns),
         pages: pages.to_vec(),
         ..Inventory::default()
     };
@@ -942,7 +941,7 @@ fn a_guard_dropped_in_a_panic_bounds_the_next_reservation_and_its_id_recovers_as
             txns.recorded(pager, x),
             txns.unrecorded_aborts(),
         );
-        let reserved = txns.commit_log().reserved();
+        let reserved = txns.commit_log().reserved_tested();
         while TxnProbe::of(txns).next_xid() <= reserved {
             let later = txns.begin(pager).expect("begin");
             txns.commit(pager, later).expect("commit").done();

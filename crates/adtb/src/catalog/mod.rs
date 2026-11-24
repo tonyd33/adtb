@@ -858,10 +858,8 @@ impl Catalog {
         gone: &[Arc<Heap>],
     ) -> Result<Freed, Error> {
         let structures = self.structures();
-        let report = {
-            let clog = txns.commit_log();
-            verify::verify_with(pager, &structures.inventory(Some(&clog)), Depth::STRUCTURE)
-        };
+        let report =
+            { verify::verify_with(pager, &structures.inventory(Some(txns)), Depth::STRUCTURE) };
         if !report.complete {
             return Err(unfinished(&report));
         }

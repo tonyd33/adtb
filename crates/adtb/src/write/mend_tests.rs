@@ -141,9 +141,8 @@ impl Leftovers {
 /// structure whole and found nothing else but a page a crashed change leaked.
 fn leftovers(rt: &SimRuntime) -> Leftovers {
     at_rest(rt, |pager, catalog, txns| {
-        let clog = txns.commit_log();
         let structures = catalog.structures();
-        let inventory = structures.inventory(Some(&clog));
+        let inventory = structures.inventory(Some(txns));
         let report = verify::verify_with(pager, &inventory, Depth::FULL);
         assert!(report.complete, "{:?}", report.findings);
         let mut found = Leftovers::default();
@@ -163,7 +162,7 @@ fn leftovers(rt: &SimRuntime) -> Leftovers {
     })
 }
 
-fn trees(inventory: &verify::Inventory) -> Vec<BTree> {
+fn trees(inventory: &verify::Inventory<'_, SimRuntime>) -> Vec<BTree> {
     let indexes = inventory.sums.iter().flat_map(|s| &s.indexes);
     indexes
         .map(|i| i.tree())
@@ -200,9 +199,8 @@ fn planted() -> Files {
     run(&mut sim, |rt| {
         let (pager, _) = pager_at(&rt);
         with_catalog(&rt, &pager, |pager, catalog, txns| {
-            let clog = txns.commit_log();
             let structures = catalog.structures();
-            let inventory = structures.inventory(Some(&clog));
+            let inventory = structures.inventory(Some(txns));
             let mut unsettled = false;
             for (store, heaps) in verify::stores(&inventory) {
                 for heap in heaps {

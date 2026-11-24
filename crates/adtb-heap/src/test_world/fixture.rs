@@ -272,9 +272,8 @@ impl<'a, R: Runtime> Parts<'a, R> {
     /// [`verify_after_crash`](super::recovery::verify_after_crash) does, over every structure in
     /// it: heap `i` as constructor `i` of one sum that every index ranges over.
     pub fn verify(&self) -> Vec<String> {
-        let clog = self.txns.map(Transactions::commit_log);
         let inventory = Inventory {
-            commit_log: clog.as_deref(),
+            transactions: self.txns,
             sums: vec![Sum {
                 heaps: (0..).map(CtorId).zip(self.heaps).collect(),
                 indexes: self.indexes.iter().collect(),

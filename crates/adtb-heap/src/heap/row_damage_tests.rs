@@ -575,9 +575,8 @@ fn broken(case: &Case, via: Option<Via>) -> Broken {
             })
             .unwrap();
         pager.flush_log();
-        let clog = txns.commit_log();
         let inventory = Inventory {
-            commit_log: Some(&clog),
+            transactions: Some(&txns),
             sums: vec![Sum {
                 heaps: vec![(CtorId(0), &heap)],
                 indexes: Vec::new(),

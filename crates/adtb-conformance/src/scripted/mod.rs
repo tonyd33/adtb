@@ -118,7 +118,9 @@
 //!   `HeapFixed`; `entry N names PAGE`, entry N of a directory page naming that page, its count
 //!   raised to hold it; `no map`, a directory root naming no visibility map; `slot N broken`, slot
 //!   N of a slotted page in a state no slot holds; `slot N deleter unreserved`, the version in slot
-//!   N deleted by the first transaction id past the commit log's reservation; `slot N count C`,
+//!   N deleted by the first transaction id past the commit log's reservation; `slot N inserter
+//!   unreserved`, the version inserted by that id, keeping its deleter; `slot N writer
+//!   unreserved`, the large value's chunk in slot N written by that id; `slot N count C`,
 //!   the large value's head in slot N counting C versions. On an index, `entry N again at slot S`:
 //!   the index's entry N added again, naming slot S of the page its own names.
 //! - `leak PAGE`: a page of the kind and owner of PAGE allocated, zero, that no structure names.

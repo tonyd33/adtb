@@ -149,10 +149,9 @@ fn assert_clean(
     txns: &Transactions<SimRuntime>,
     at: usize,
 ) {
-    let clog = txns.commit_log();
     let report = verify::verify_with(
         pager,
-        &catalog.structures().inventory(Some(&clog)),
+        &catalog.structures().inventory(Some(txns)),
         Depth::STRUCTURE,
     );
     assert!(report.complete, "event {at}: {:?}", report.findings);

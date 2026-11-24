@@ -52,8 +52,7 @@ fn verify_catalog(
     catalog: &Catalog,
     txns: &Transactions<SimRuntime>,
 ) -> Report {
-    let clog = txns.commit_log();
-    verify::verify(pager, &catalog.structures().inventory(Some(&clog)))
+    verify::verify(pager, &catalog.structures().inventory(Some(txns)))
 }
 
 /// Returns the rows of every relation of `catalog` that every committed transaction wrote.
@@ -493,7 +492,7 @@ fn reopened_commits(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (Side, u64, 
             } else {
                 Side::Committed
             };
-            (side, clog.reserved())
+            (side, clog.reserved_tested())
         };
         let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
         check_whole(&pager, &catalog, &txns);

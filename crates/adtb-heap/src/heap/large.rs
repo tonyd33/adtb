@@ -21,7 +21,7 @@ use super::write::{HeapWrite, Rank};
 use super::{Error, Heap, HeapNo, Refused, Slots};
 
 const NEXT: usize = 0;
-const WRITER: usize = 8;
+pub(super) const WRITER: usize = 8;
 pub(super) const COUNT: usize = 16;
 const ROLE: usize = 20;
 const BYTES: usize = 24;
@@ -872,17 +872,11 @@ impl LargeStore {
         Ok(write.commit_store(pager.reserve(), above)?)
     }
 
-    /// Returns what is wrong with the store's chunks, `versions` being the number of versions
-    /// that point at each head: a head counting fewer versions than point at it, a head of
-    /// count 0 on a page not touched, a tail named by no chunk or by several, and a `next` that
-    /// names no tail. A head counting more versions than point at it is returned apart, with
-    /// its count and the number pointing at it.
-    pub fn check_chunks<R: Runtime>(
+    /// Returns every chunk of the store's pages that pass their own check, by TID.
+    fn checked_chunks<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        versions: &BTreeMap<Tid, u32>,
-    ) -> Result<ChunkCheck, PageError> {
-        let touched: BTreeSet<Pid> = self.space.check(pager)?.touched.into_iter().collect();
+    ) -> Result<BTreeMap<Tid, Chunk>, PageError> {
         let mut chunks = BTreeMap::new();
         for pid in self.space.pages(pager)? {
             let guard = pager.read_formatted(pid)?;
@@ -895,6 +889,30 @@ impl LargeStore {
                 }
             }
         }
+        Ok(chunks)
+    }
+
+    /// Returns the writer of every chunk of the store's pages that pass their own check, by TID.
+    pub fn writers<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Tid, Xid)>, PageError> {
+        Ok(self
+            .checked_chunks(pager)?
+            .into_iter()
+            .map(|(t, c)| (t, c.writer))
+            .collect())
+    }
+
+    /// Returns what is wrong with the store's chunks, `versions` being the number of versions
+    /// that point at each head: a head counting fewer versions than point at it, a head of
+    /// count 0 on a page not touched, a tail named by no chunk or by several, and a `next` that
+    /// names no tail. A head counting more versions than point at it is returned apart, with
+    /// its count and the number pointing at it.
+    pub fn check_chunks<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        versions: &BTreeMap<Tid, u32>,
+    ) -> Result<ChunkCheck, PageError> {
+        let touched: BTreeSet<Pid> = self.space.check(pager)?.touched.into_iter().collect();
+        let chunks = self.checked_chunks(pager)?;
         let mut named: BTreeMap<Tid, u32> = BTreeMap::new();
         let mut found = ChunkCheck::default();
         for (&t, c) in &chunks {

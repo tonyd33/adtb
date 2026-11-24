@@ -22,7 +22,7 @@ impl<R: Runtime> Database<R> {
         let go = || !stopped() && self.rebuild_stopped().is_ok();
         let mut mended = Mended::default();
         let structures = self.structures();
-        let inventory = structures.inventory(None);
+        let inventory = structures.inventory::<R>(None);
         let mut latched = BTreeSet::new();
         for latch in self.latches.values() {
             let trees: Vec<BTree> = {

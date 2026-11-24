@@ -317,7 +317,7 @@ fn a_checksum_bad_map_page_quarantines_the_database_and_verify_reports_the_rest(
         let (findings, (marked, expected), allocated, leaked) = session(&mut sim, |pager, _| {
             let findings = pager.verify().findings;
             let inventory = Inventory {
-                commit_log: None,
+                transactions: None,
                 sums: Vec::new(),
                 trees: Vec::new(),
                 pages: pages.clone(),

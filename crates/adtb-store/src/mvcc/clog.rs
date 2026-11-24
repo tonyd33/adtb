@@ -6,7 +6,7 @@ use crate::storage::{
     StaleCopy, Unsettled, flags, format, header_edit, kind, kind_fault, lsn,
 };
 
-use super::{Status, StatusError, Writers, Xid};
+use super::{Status, StatusError, Xid};
 
 /// A status page holding ids in progress: its page, its first id, those ids, and the file's copy
 /// with its judgement when the page lost a write.
@@ -15,16 +15,6 @@ pub(crate) type Unresolved<'a, R> = (Pid, u64, Vec<u64>, Option<(Vec<u8>, StaleC
 /// The right to read a status page that lost a write and write it back settled, which only the
 /// commit log holds: no code outside this module can make one.
 pub(crate) struct Settling(());
-
-/// What [`CommitLog::owes`] finds a version naming a successor is owed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Owes {
-    Nothing,
-    /// A version written by its deleter, which is running.
-    Successor(Xid),
-    /// Its deleter is at or past the reservation.
-    Unreserved(Xid),
-}
 
 /// The format version of commit log pages.
 pub const PAGE_FORMAT: u16 = 2;
@@ -538,8 +528,32 @@ impl CommitLog {
     }
 
     /// Returns the first id not reserved.
-    pub fn reserved(&self) -> Xid {
+    pub(crate) fn reserved(&self) -> Xid {
         self.root.reserved
+    }
+
+    /// Returns the first id not reserved, as [`CommitLog::reserved`] does.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn reserved_tested(&self) -> Xid {
+        self.reserved()
+    }
+
+    /// Returns whether `x` is reserved: a transaction id below the first id not reserved.
+    pub fn reserves(&self, x: Xid) -> bool {
+        Xid::FIRST <= x && x < self.root.reserved
+    }
+
+    /// Returns the number of each status page that would hold an id reserved above the bound and
+    /// that the commit log names no page for.
+    pub fn unpaged(&self) -> Vec<u64> {
+        if self.root.bound >= self.root.reserved {
+            return Vec::new();
+        }
+        let first = self.root.bound.0 / self.per_page;
+        let last = (self.root.reserved.0 - 1) / self.per_page;
+        (first..=last)
+            .filter(|n| !self.pages.contains_key(n))
+            .collect()
     }
 
     /// Returns the truncation bound: every id below it counts as committed.
@@ -656,7 +670,7 @@ impl CommitLog {
     /// Fail with [`StatusError::Unreserved`] when `x` is not reserved, and with the damage of
     /// its status page when that fails verification.
     pub fn status<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Status, StatusError> {
-        if x < Xid::FIRST || x >= self.root.reserved {
+        if !self.reserves(x) {
             return Err(StatusError::Unreserved(x));
         }
         if x < self.root.bound {
@@ -714,23 +728,6 @@ impl CommitLog {
         };
         let names = |p: &[u8]| Directory::read(dir.pid, p).is_ok_and(|d| d.entries == dir.entries);
         pager.refuse_if(dir.pid, |p| names(p).then_some(Shape::Frame))
-    }
-
-    /// Returns what a version written as `w` that names a successor is owed: a version its
-    /// deleter wrote while that deleter runs, and nothing once it has resolved or when there is
-    /// no deleter.
-    ///
-    /// Fail with the damage of the deleter's status page.
-    pub fn owes<R: Runtime>(&self, pager: &Pager<R>, w: &Writers) -> Result<Owes, PageError> {
-        let Some(x) = w.deleter() else {
-            return Ok(Owes::Nothing);
-        };
-        Ok(match self.status(pager, x) {
-            Ok(Status::InProgress) => Owes::Successor(x),
-            Ok(Status::Committed | Status::Aborted) => Owes::Nothing,
-            Err(StatusError::Unreserved(x)) => Owes::Unreserved(x),
-            Err(StatusError::Page(e)) => return Err(e),
-        })
     }
 
     /// Record that `x` committed and log its commit record, in one batch, in a commit log no

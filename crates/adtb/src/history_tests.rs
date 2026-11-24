@@ -396,7 +396,6 @@ impl Db {
 
     /// Returns what the whole-file `verify` and the history's own checks find wrong.
     fn verify_file(&self) -> Vec<String> {
-        let clog = self.txns.commit_log();
         let mut sums = vec![verify::Sum {
             heaps: vec![(CTOR, &self.past_heap)],
             indexes: vec![&self.past_index],
@@ -414,7 +413,7 @@ impl Db {
         let mut trees = vec![ledger];
         trees.extend(indexes);
         let inventory = Inventory {
-            commit_log: Some(&clog),
+            transactions: Some(&self.txns),
             sums,
             trees,
             ..Inventory::default()

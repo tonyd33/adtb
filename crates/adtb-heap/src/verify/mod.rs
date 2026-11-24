@@ -10,7 +10,7 @@ use std::ops::Bound;
 use crate::btree::{self, BTree, Index};
 use crate::heap::{Flags, Heap, LargeStore, Link, successor};
 use crate::key::{CtorId, Tid, listed};
-use crate::mvcc::{CommitLog, Owes, Xid};
+use crate::mvcc::{CommitLog, Transactions};
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, LogFinding, PageError, PageKind, Pager, Pid};
 
@@ -29,14 +29,25 @@ pub struct Sum<'a> {
 /// the one its heaps name.
 ///
 /// Precondition: every allocated page belongs to exactly one structure listed, or is in `pages`.
-#[derive(Debug, Default)]
-pub struct Inventory<'a> {
-    pub commit_log: Option<&'a CommitLog>,
+#[derive(Debug)]
+pub struct Inventory<'a, R: Runtime> {
+    pub transactions: Option<&'a Transactions<R>>,
     pub sums: Vec<Sum<'a>>,
     /// B-link trees outside any index.
     pub trees: Vec<BTree>,
     /// Pages the caller refers to outside every structure listed.
     pub pages: Vec<Pid>,
+}
+
+impl<R: Runtime> Default for Inventory<'_, R> {
+    fn default() -> Self {
+        Inventory {
+            transactions: None,
+            sums: Vec::new(),
+            trees: Vec::new(),
+            pages: Vec::new(),
+        }
+    }
 }
 
 /// What is wrong with one page.
@@ -211,18 +222,12 @@ impl<R: Runtime> Walk<'_, R> {
     }
 
     fn commit_log(&mut self, clog: &CommitLog) {
-        if clog.bound() < clog.reserved() {
-            let per = clog.ids_per_page();
-            let first = clog.bound().0 / per;
-            let last = (clog.reserved().0 - 1) / per;
-            for n in first..=last {
-                if !clog.status_pages().contains_key(&n) {
-                    self.structure(
-                        clog.root(),
-                        format!("commit log: no status page holds ids from {}", n * per),
-                    );
-                }
-            }
+        for n in clog.unpaged() {
+            let from = n * clog.ids_per_page();
+            self.structure(
+                clog.root(),
+                format!("commit log: no status page holds ids from {from}"),
+            );
         }
         let pages = clog.pages();
         for &pid in &pages {
@@ -286,7 +291,7 @@ impl<R: Runtime> Walk<'_, R> {
     /// reserved by the commit log, a version with no deleter names no successor, and one whose
     /// deleter is running names a version that deleter wrote, in the heap of `sum` its chain
     /// places it in.
-    fn chains(&mut self, heap: &Heap, sum: &[&Heap], clog: &CommitLog) {
+    fn chains(&mut self, heap: &Heap, sum: &[&Heap], txns: &Transactions<R>) {
         let name = format!("heap {}", heap.id());
         let versions = match heap.headers(self.pager) {
             Ok(v) => v,
@@ -300,7 +305,7 @@ impl<R: Runtime> Walk<'_, R> {
             ];
             let mut unreserved = false;
             for (role, x) in writers {
-                let Some(x) = x.filter(|&x| x < Xid::FIRST || x >= clog.reserved()) else {
+                let Some(x) = x.filter(|&x| !txns.commit_log().reserves(x)) else {
                     continue;
                 };
                 unreserved = true;
@@ -325,9 +330,9 @@ impl<R: Runtime> Walk<'_, R> {
                 );
                 continue;
             }
-            let deleter = match clog.owes(self.pager, &h.writers) {
-                Ok(Owes::Successor(x)) => x,
-                Ok(Owes::Nothing | Owes::Unreserved(_)) => continue,
+            let deleter = match txns.running_deleter(self.pager, &h.writers) {
+                Ok(Some(x)) => x,
+                Ok(None) => continue,
                 Err(e) => return self.damaged(e),
             };
             let of = Link {
@@ -414,6 +419,23 @@ impl<R: Runtime> Walk<'_, R> {
         match large.owned_pages(self.pager) {
             Ok(pages) => self.own(&name, pages),
             Err(e) => self.damaged(e),
+        }
+    }
+
+    /// Check that every chunk of `large` names a writer the commit log reserves.
+    fn chunk_writers(&mut self, large: LargeStore, txns: &Transactions<R>) {
+        let name = format!("large-value store {}", large.id());
+        let chunks = match large.writers(self.pager) {
+            Ok(chunks) => chunks,
+            Err(e) => return self.damaged(e),
+        };
+        for (t, x) in chunks {
+            if !txns.commit_log().reserves(x) {
+                self.structure(
+                    Pid(t.page()),
+                    format!("{name}: chunk {} names unreserved writer {}", t.slot(), x.0),
+                );
+            }
         }
     }
 
@@ -522,7 +544,7 @@ pub(crate) fn entries<R: Runtime>(
 }
 
 /// Returns each large-value store the heaps of `inventory` name, with those heaps.
-pub fn stores<'a>(inventory: &Inventory<'a>) -> Vec<(LargeStore, Vec<&'a Heap>)> {
+pub fn stores<'a, R: Runtime>(inventory: &Inventory<'a, R>) -> Vec<(LargeStore, Vec<&'a Heap>)> {
     let mut stores: Vec<(LargeStore, Vec<&Heap>)> = Vec::new();
     for (_, heap) in inventory.sums.iter().flat_map(|s| &s.heaps) {
         match stores.iter_mut().find(|(s, _)| *s == heap.large()) {
@@ -564,7 +586,7 @@ pub fn verify_store<R: Runtime>(pager: &Pager<R>, store: LargeStore, heaps: &[&H
 ///
 /// Precondition: no write is in progress.
 #[cfg(any(test, feature = "testing"))]
-pub fn verify<R: Runtime>(pager: &Pager<R>, inventory: &Inventory) -> Report {
+pub fn verify<R: Runtime>(pager: &Pager<R>, inventory: &Inventory<'_, R>) -> Report {
     verify_with(pager, inventory, Depth::FULL)
 }
 
@@ -572,7 +594,11 @@ pub fn verify<R: Runtime>(pager: &Pager<R>, inventory: &Inventory) -> Report {
 /// reports no `Unlogged` page and no log finding, and returns no commits.
 ///
 /// Precondition: no write is in progress.
-pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: Depth) -> Report {
+pub fn verify_with<R: Runtime>(
+    pager: &Pager<R>,
+    inventory: &Inventory<'_, R>,
+    depth: Depth,
+) -> Report {
     let mut walk = Walk {
         pager,
         findings: Vec::new(),
@@ -597,20 +623,23 @@ pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: D
             }
         }
     }
-    if let Some(clog) = inventory.commit_log {
-        walk.commit_log(clog);
+    if let Some(txns) = inventory.transactions {
+        walk.commit_log(&txns.commit_log());
     }
     for sum in &inventory.sums {
         walk.sum(sum);
         let heaps: Vec<&Heap> = sum.heaps.iter().map(|(_, h)| *h).collect();
         for (_, heap) in &sum.heaps {
-            if let Some(clog) = inventory.commit_log {
-                walk.chains(heap, &heaps, clog);
+            if let Some(txns) = inventory.transactions {
+                walk.chains(heap, &heaps, txns);
             }
         }
     }
     for (store, heaps) in stores(inventory) {
         walk.large(store, &heaps);
+        if let Some(txns) = inventory.transactions {
+            walk.chunk_writers(store, txns);
+        }
     }
     for (i, &tree) in inventory.trees.iter().enumerate() {
         walk.tree(&format!("tree {i}"), tree);

@@ -83,10 +83,13 @@ impl Db {
     }
 
     /// Returns what `f` makes of the inventory of the file, with `pages` the caller's own.
-    fn with_inventory<T>(&self, pages: &[Pid], f: impl FnOnce(&Inventory) -> T) -> T {
-        let clog = self.txns.commit_log();
+    fn with_inventory<T>(
+        &self,
+        pages: &[Pid],
+        f: impl FnOnce(&Inventory<'_, SimRuntime>) -> T,
+    ) -> T {
         let inventory = Inventory {
-            commit_log: Some(&clog),
+            transactions: Some(&self.txns),
             sums: vec![Sum {
                 heaps: vec![(CtorId(0), &self.heaps[0]), (CtorId(1), &self.heaps[1])],
                 indexes: vec![&self.index],
