@@ -30,16 +30,19 @@ const WRITES: [Write; 5] = [
     Write::Insert,
 ];
 
-/// A read of one row of `cells`: by its key, by a scan of the whole heap, or by a scan that stops
-/// at the row while it has its first value.
-#[derive(Clone, Copy, Debug)]
+/// A read of one row of `cells`: by its key, by a scan of the whole heap, by a scan that stops
+/// at the row while it has its first value, by a probe of the index on `m` fetching each version
+/// it names, or by a range of that index over both constructors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Read {
     Key,
     Scan,
     Early,
+    Probe,
+    Range,
 }
 
-const READS: [Read; 3] = [Read::Key, Read::Scan, Read::Early];
+const READS: [Read; 5] = [Read::Key, Read::Scan, Read::Early, Read::Probe, Read::Range];
 
 /// The value a read gives a row: 0 before any write, more after any write but a delete.
 const VALUE: &str = "c.n + c.m + (match c | Even e -> 0 | Odd o -> 1)";
@@ -70,7 +73,7 @@ impl Write {
     /// lacks reaches no step of its own.
     fn reads(self) -> &'static [Read] {
         match self {
-            Write::Insert => &[Read::Scan],
+            Write::Insert => &[Read::Scan, Read::Probe, Read::Range],
             _ => &READS,
         }
     }
@@ -96,6 +99,10 @@ impl Read {
         Req::Text(match self {
             Read::Key => format!("from c in cells where c.id == {id} select {VALUE}"),
             Read::Scan => format!("from c in cells select c.id * 10 + {VALUE}"),
+            Read::Probe => format!("from c in cells where c.m == 0 select c.id * 10 + {VALUE}"),
+            Read::Range => {
+                format!("from c in cells where c.m >= 0 and c.m <= 1 select c.id * 10 + {VALUE}")
+            }
             Read::Early => {
                 let other = A + B - id;
                 format!(
@@ -111,7 +118,7 @@ impl Read {
     fn values(self, id: i64, reply: Vec<i64>) -> Vec<i64> {
         match self {
             Read::Key | Read::Early => reply,
-            Read::Scan => reply
+            Read::Scan | Read::Probe | Read::Range => reply
                 .into_iter()
                 .filter(|v| v / 10 == id)
                 .map(|v| v % 10)
@@ -452,12 +459,17 @@ fn a_read_and_a_write_of_a_version_stopped_at_each_others_steps_leave_serializab
         "an early read of A stops on its page, before B's: {a} and {b} page locks"
     );
     let mut judged = Judged::default();
-    let (mut between, mut read_stops) = (0, 0);
+    let mut between = 0;
     let mut cases = 0;
+    let mut read_stops = READS.map(|read| (read, 0, 0));
     for write in WRITES {
         for &read in write.reads() {
+            let (_, read_cases, stopped) = (read_stops.iter_mut())
+                .find(|(r, _, _)| *r == read)
+                .expect("every read is listed");
             for seed in sweep(SEEDS) {
                 cases += 1;
+                *read_cases += 1;
                 let (history, _) = skew(write, read, At::Before, seed);
                 let case = format!("{write:?} {read:?} seed {seed} before the write");
                 judged.judge(&history, case);
@@ -467,12 +479,12 @@ fn a_read_and_a_write_of_a_version_stopped_at_each_others_steps_leave_serializab
                 }
                 let stops = every_step(write, read, seed, At::Reader, &mut judged);
                 let lock = match read {
-                    Read::Key => Step::VersionRead,
+                    Read::Key | Read::Probe | Read::Range => Step::VersionRead,
                     Read::Scan => Step::ScanRead,
                     Read::Early => Step::ScanStopped,
                 };
                 if stops.iter().any(|(s, _)| *s == lock) {
-                    read_stops += 1;
+                    *stopped += 1;
                 }
             }
         }
@@ -488,9 +500,11 @@ fn a_read_and_a_write_of_a_version_stopped_at_each_others_steps_leave_serializab
         between,
         cases,
     );
-    assert_reached(
-        "a write between a read and the end of its locking step",
-        read_stops,
-        cases,
-    );
+    for (read, read_cases, stopped) in read_stops {
+        assert_reached(
+            &format!("a write between a {read:?} read and the end of its locking step"),
+            stopped,
+            read_cases,
+        );
+    }
 }

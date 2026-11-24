@@ -239,7 +239,9 @@ takes: it records the commit or the abort, or keeps the id unresolved
 when nothing is recorded, takes the id out of the running
 transactions, and then ends it in the waits, waking its waiters. No
 other path records a commit or an abort in the commit log of an open
-database.
+database. A lookup of how this process counts an id waits for no end
+being recorded: while the commit log says an id that has begun is in
+progress and the id is not unresolved, the lookup counts it running.
 
 - A commit that fails aborts the id and returns the commit's failure,
   or the abort record's when that fails.

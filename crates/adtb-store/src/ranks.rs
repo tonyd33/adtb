@@ -15,6 +15,8 @@ pub const SEQUENCES: Rank = Rank::new(8, "the sequences lock");
 pub const TASK_QUEUE: Rank = Rank::new(9, "the task queue lock");
 pub const CALLS: Rank = Rank::new(10, "the calls lock");
 pub const IDLE: Rank = Rank::new(11, "the idle workers lock");
+/// The lock of the transactions' running ids, snapshots and holds.
+pub const STATE: Rank = Rank::new(12, "the transaction state lock");
 
 /// Panic, in debug builds and under `latch-checks`, if the calling thread holds a page latch or
 /// an index latch as it does `what`.

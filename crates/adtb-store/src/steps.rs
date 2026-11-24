@@ -39,10 +39,14 @@ pub enum Step {
     Recycle(Checkpoint),
     /// A descent of a B-tree read a child's page id from its parent and has yet to read the
     /// child, holding the lock its search runs under, if any: the vacuum lock, the bundle writer
-    /// lock, an index latch, or the serialization lock with the readers lock as a commit records
-    /// safe snapshot markers. A descent of the record of the window may hold the latch of a heap
-    /// page whose versions it judges.
+    /// lock, an index latch, the serialization lock with the readers lock as a commit records
+    /// safe snapshot markers, or the transaction state lock as a commit records its time. A
+    /// descent of the record of the window may hold the latch of a heap page whose versions it
+    /// judges.
     Descended,
+    /// The end of a transaction is to record its commit or abort, holding the transaction state
+    /// lock, and the serialization lock when it commits.
+    Recording,
 }
 
 /// A point of the damage mapper's work.
@@ -154,6 +158,7 @@ pub enum StepFn {
     Retire,
     Recycle,
     Descend,
+    Record,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -172,6 +177,7 @@ impl Step {
             Step::Retire(_) => StepFn::Retire,
             Step::Recycle(_) => StepFn::Recycle,
             Step::Descended => StepFn::Descend,
+            Step::Recording => StepFn::Record,
         }
     }
 }
@@ -182,7 +188,7 @@ impl Step {
     /// runs under the vacuum lock when a setting change runs it, and under the bundle writer
     /// lock when a registration does.
     fn holds(self) -> &'static [adtb_sys::lock::Rank] {
-        use crate::ranks::{BUNDLE_WRITER, INDEX_LATCH, READERS, SERIALIZER, VACUUM};
+        use crate::ranks::{BUNDLE_WRITER, INDEX_LATCH, READERS, SERIALIZER, STATE, VACUUM};
         match self {
             Step::VersionRead
             | Step::ScanRead
@@ -198,7 +204,14 @@ impl Step {
             }
             Step::Reindex(Reindex::Sweep) | Step::Retire(Retire::Held) => &[VACUUM, INDEX_LATCH],
             Step::Reindex(_) => &[VACUUM],
-            Step::Descended => &[VACUUM, BUNDLE_WRITER, INDEX_LATCH, SERIALIZER, READERS],
+            Step::Descended | Step::Recording => &[
+                VACUUM,
+                BUNDLE_WRITER,
+                INDEX_LATCH,
+                SERIALIZER,
+                READERS,
+                STATE,
+            ],
         }
     }
 

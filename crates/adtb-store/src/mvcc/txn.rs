@@ -1,7 +1,7 @@
 use super::vacuuming::{Busy, Holder, VacuumLock, Vacuuming};
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLockReadGuard, Weak};
 use std::time::{Duration, SystemTime};
 
@@ -47,12 +47,9 @@ pub(crate) fn assign(next: Xid, reserved: Xid) -> Assign {
 }
 
 impl State {
-    fn resolved(&self) -> Xid {
-        let first = self
-            .running
-            .first()
-            .into_iter()
-            .chain(self.unresolved.first());
+    /// Returns the least id running or in `unresolved`, else the next id.
+    fn resolved(&self, unresolved: &BTreeSet<Xid>) -> Xid {
+        let first = self.running.first().into_iter().chain(unresolved.first());
         first.min().copied().unwrap_or(self.next)
     }
 }
@@ -61,8 +58,6 @@ impl State {
 struct State {
     next: Xid,
     running: BTreeSet<Xid>,
-    /// The ids out of `running` whose abort the commit log does not record.
-    unresolved: BTreeSet<Xid>,
     holds: Holds,
     /// The LSN of the latest commit record, including retained commits recovered at open.
     last_commit: Option<Lsn>,
@@ -143,7 +138,12 @@ pub struct Shared<R: Runtime> {
     ser: Arc<Ranked<Serializer>>,
     /// Holds every id from its begin until its end.
     waits: Waits<R>,
-    state: Lock<State>,
+    state: Ranked<State>,
+    /// The ids out of the running ones whose abort the commit log does not record, locked after
+    /// the state when both are.
+    unresolved: Lock<BTreeSet<Xid>>,
+    /// The next id, as the state holds it: every id below it has begun.
+    begun_below: AtomicU64,
     history: OnceLock<Past>,
     /// The first damage found keeping a marker; every read of the past fails with it after.
     lost: OnceLock<btree::Error>,
@@ -240,7 +240,6 @@ impl<R: Runtime> Transactions<R> {
         let state = State {
             next: clog.reserved(),
             running: BTreeSet::new(),
-            unresolved: BTreeSet::new(),
             holds: Holds::default(),
             last_commit: None,
             last_time: 0,
@@ -254,7 +253,9 @@ impl<R: Runtime> Transactions<R> {
             pager: pager.clone(),
             clog: RwLock::new(clog),
             ser: Arc::new(Ranked::new(crate::ranks::SERIALIZER, Serializer::default())),
-            state: Lock::new(state),
+            begun_below: AtomicU64::new(state.next.0),
+            state: Ranked::new(crate::ranks::STATE, state),
+            unresolved: Lock::new(BTreeSet::new()),
             history: OnceLock::new(),
             lost: OnceLock::new(),
             marked: Lock::new(Lsn(0)),
@@ -315,16 +316,18 @@ impl<R: Runtime> Transactions<R> {
             Assign::Next => {}
             Assign::Exhausted => return Err(Error::Exhausted),
             Assign::Reserve(upto) => {
-                let reserved = self
-                    .clog
-                    .write(&self.rt)
-                    .reserve(pager, upto, st.resolved());
+                let reserved = self.clog.write(&self.rt).reserve(
+                    pager,
+                    upto,
+                    st.resolved(&self.unresolved.lock(&self.rt)),
+                );
                 self.checked(reserved)?;
             }
         }
         let x = st.next;
         st.next = Xid(x.0 + 1);
         st.running.insert(x);
+        self.begun_below.store(st.next.0, Ordering::Release);
         drop(st);
         self.waits.started(x);
         let txns: Weak<dyn Release> = Arc::<Shared<R>>::downgrade(&self.0);
@@ -555,7 +558,9 @@ impl<R: Runtime> Transactions<R> {
     }
 
     /// Returns how this process counts `x`: as its status says, or, while the commit log says it
-    /// is in progress, as running or as ended with its abort unrecorded.
+    /// is in progress, as running or as ended with its abort unrecorded. Takes no state lock: an
+    /// id that has begun and is not kept unresolved counts as running until the commit log
+    /// records its end.
     ///
     /// Fail as [`Transactions::status`] does.
     pub(super) fn standing(&self, pager: &Pager<R>, x: Xid) -> Result<Standing, StatusError> {
@@ -563,8 +568,8 @@ impl<R: Runtime> Transactions<R> {
         if status != Status::InProgress {
             return Ok(status.into());
         }
-        let st = self.state.lock(&self.rt);
-        if st.running.contains(&x) {
+        let begun = x.0 < self.begun_below.load(Ordering::Acquire);
+        if begun && !self.unresolved.lock(&self.rt).contains(&x) {
             return Ok(Standing::Running);
         }
         Ok(match self.status(pager, x)? {
@@ -727,7 +732,7 @@ impl<R: Runtime> Transactions<R> {
         assert!(bound <= st.next, "{bound:?} is not assigned yet");
         assert!(
             st.running.first().is_none_or(|&r| r >= bound)
-                && st.unresolved.first().is_none_or(|&r| r >= bound),
+                && (self.unresolved.lock(&self.rt).first()).is_none_or(|&r| r >= bound),
             "a transaction below {bound:?} is running or unresolved"
         );
         let truncated = self.clog.write(&self.rt).truncate(pager, bound);
@@ -936,12 +941,13 @@ impl<R: Runtime> Shared<R> {
     ) -> Result<T, E> {
         let mut st = self.state.lock(&self.rt);
         assert!(st.running.contains(&x), "{x:?} is not running");
+        self.pager.steps().at(crate::steps::Step::Recording);
         let recorded = record(&mut st);
         st.running.remove(&x);
         match &recorded {
             Ok(done) => then(&st, done),
             Err(_) => {
-                st.unresolved.insert(x);
+                self.unresolved.lock(&self.rt).insert(x);
             }
         }
         drop(st);
