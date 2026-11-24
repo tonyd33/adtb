@@ -25,6 +25,10 @@ pub(super) enum Page {
     Directory { relation: String, ctor: String },
     /// The first page of the store of the large values of the heap of a constructor.
     Large { relation: String, ctor: String },
+    /// The first data page of the history heap of a constructor.
+    History { relation: String, ctor: String },
+    /// The root of the history key index of a relation.
+    HistoryIndex { relation: String },
     /// The root of an index, by its clause as the schema writes it.
     Index { relation: String, clause: String },
     /// The root page of the catalog.
@@ -50,6 +54,15 @@ impl Page {
                 let (relation, ctor) = heap_words(rest)?;
                 Page::Large { relation, ctor }
             }
+            ("history", rest) => match rest.split_once(' ')? {
+                ("index", relation) if !relation.contains(' ') => Page::HistoryIndex {
+                    relation: relation.to_owned(),
+                },
+                _ => {
+                    let (relation, ctor) = heap_words(rest)?;
+                    Page::History { relation, ctor }
+                }
+            },
             ("index", rest) => {
                 let (relation, clause) = rest.split_once(' ')?;
                 Page::Index {
@@ -88,6 +101,16 @@ impl Page {
                     .map_err(|e| format!("{e:?}"))
                     .and_then(|p| Ok(first(p)?))
             }
+            Page::History { relation, ctor } => {
+                let history = t.history(relation, ctor).ok_or("no history heap")?;
+                t.pages(history)
+                    .map_err(|e| format!("{e:?}"))
+                    .and_then(|p| Ok(first(p)?))
+            }
+            Page::HistoryIndex { relation } => {
+                let index = t.history_index(relation).ok_or("no history key index")?;
+                t.root(index).map_err(|e| format!("{e:?}"))
+            }
             Page::Index { relation, clause } => {
                 let index = t.index(relation, clause).ok_or("no such index")?;
                 t.root(index).map_err(|e| format!("{e:?}"))
@@ -115,6 +138,8 @@ impl fmt::Display for Page {
             Page::Heap { relation, ctor } => write!(f, "heap {relation} {ctor}"),
             Page::Directory { relation, ctor } => write!(f, "directory {relation} {ctor}"),
             Page::Large { relation, ctor } => write!(f, "large {relation} {ctor}"),
+            Page::History { relation, ctor } => write!(f, "history {relation} {ctor}"),
+            Page::HistoryIndex { relation } => write!(f, "history index {relation}"),
             Page::Index { relation, clause } => write!(f, "index {relation} {clause}"),
             Page::Catalog => f.write_str("catalog"),
             Page::CommitLog => f.write_str("commit log"),

@@ -92,7 +92,8 @@
 //! These name a page by the structure holding it, as PAGE: `heap RELATION CTOR`, the first data
 //! page of the heap of constructor CTOR; `directory RELATION CTOR`, the root of that heap's
 //! directory; `large RELATION CTOR`, the first page of the store of that heap's large values;
-//! `index RELATION CLAUSE`, the root of the index of clause CLAUSE as the schema writes it;
+//! `history RELATION CTOR`, the first data page of CTOR's history heap; `history index
+//! RELATION`, the root of the relation's history key index; `index RELATION CLAUSE`, the root of the index of clause CLAUSE as the schema writes it;
 //! `catalog`, the catalog's root; `commit log`, the commit log's root; `status`, the commit log's
 //! status page of the newest transaction ids. A page is found in the open database when the step
 //! runs.

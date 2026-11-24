@@ -1,0 +1,16 @@
+# A damaged page of a history key index marks the relation's key index.
+use history
+
+run
+  vacuum items
+
+damage history index stock::items
+
+query
+  at commit $first { from i in items where key i == items.key(2) select i.name }
+----
+"bo"
+
+probe marks
+----
+stock::items key id

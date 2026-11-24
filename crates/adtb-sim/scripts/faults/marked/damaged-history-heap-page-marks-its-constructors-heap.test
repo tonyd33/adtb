@@ -1,0 +1,14 @@
+# A damaged page of a history heap marks its constructor's heap.
+use history
+
+run
+  vacuum items
+
+damage history stock::items Open
+
+fatal Quarantined { what: "stock::items.Open" }
+  at commit $first { from i in items select i.name }
+
+probe marks
+----
+stock::items.Open
