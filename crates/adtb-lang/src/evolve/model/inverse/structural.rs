@@ -33,7 +33,7 @@ fn relation_clauses(
     let Some(Decl::Relation(d)) = src.parsed(i) else {
         return None;
     };
-    let ranges = clause_ranges(&src.decls[i].text, header(m).len(), &d)?;
+    let ranges = clause_ranges(header(m).len(), &d);
     Some((i, d, ranges))
 }
 

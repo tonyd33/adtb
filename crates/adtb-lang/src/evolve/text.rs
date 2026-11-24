@@ -55,51 +55,14 @@ pub(super) fn ctor_extents(
         .collect()
 }
 
-/// The ranges of the clauses of a relation declaration, in order, local to `text`.
-pub(super) fn clause_ranges(
-    text: &str,
-    h: usize,
-    r: &ast::RelationDecl,
-) -> Option<Vec<Range<usize>>> {
-    let toks = tokens(text);
-    let after = r.ty.span.end as usize - h;
-    let mut depth = 0i32;
-    let mut starts = Vec::new();
-    let mut prev_interval = false;
-    for (tok, range) in &toks {
-        if range.start < after {
-            continue;
-        }
-        match tok {
-            Tok::LParen | Tok::LBrace | Tok::LBracket => depth += 1,
-            Tok::RParen | Tok::RBrace | Tok::RBracket => depth -= 1,
-            _ => {}
-        }
-        let word = &text[range.clone()];
-        let start = depth == 0
-            && match tok {
-                Tok::Kw(crate::lex::Kw::Key) => true,
-                Tok::Lower => match word {
-                    "index" => !prev_interval,
-                    "unique" | "interval" | "default" | "computed" | "volatile" => true,
-                    _ => false,
-                },
-                _ => false,
-            };
-        prev_interval = *tok == Tok::Lower && word == "interval";
-        if start {
-            starts.push(range.start);
-        }
-    }
-    if starts.len() != r.clauses.len() {
-        return None;
-    }
-    let mut out = Vec::new();
-    for (k, &s) in starts.iter().enumerate() {
-        let end = starts.get(k + 1).copied().unwrap_or(text.len());
-        out.push(s..s + text[s..end].trim_end().len());
-    }
-    Some(out)
+/// Returns the ranges of the clauses of relation declaration `r`, in order, local to its text,
+/// which follows a header of `h` bytes.
+pub(super) fn clause_ranges(h: usize, r: &ast::RelationDecl) -> Vec<Range<usize>> {
+    r.clauses
+        .spans()
+        .iter()
+        .map(|s| s.start as usize - h..s.end as usize - h)
+        .collect()
 }
 
 /// Every expression of a declaration that is checked as a body.

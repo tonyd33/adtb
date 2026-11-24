@@ -731,8 +731,7 @@ impl Cx<'_> {
         let Some(Decl::Relation(rd)) = before.parsed(i) else {
             return Err(missing().into());
         };
-        let ranges =
-            clause_ranges(&before.decls[i].text, header(&m).len(), &rd).ok_or_else(missing)?;
+        let ranges = clause_ranges(header(&m).len(), &rd);
         let Some((k, fields)) = rd.clauses.iter().enumerate().find_map(|(k, c)| match c {
             RelationClause::Key(fields, _) => Some((k, fields)),
             _ => None,

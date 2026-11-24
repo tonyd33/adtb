@@ -456,8 +456,43 @@ pub struct CtorDef {
 pub struct RelationDecl {
     pub name: QName,
     pub ty: Type,
-    pub clauses: Vec<RelationClause>,
+    pub clauses: Clauses,
     pub span: Span,
+}
+
+/// The clauses of a relation declaration, each with its span.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Clauses {
+    clauses: Vec<RelationClause>,
+    spans: Vec<Span>,
+}
+
+impl Clauses {
+    pub fn new(written: Vec<(RelationClause, Span)>) -> Clauses {
+        let (clauses, spans) = written.into_iter().unzip();
+        Clauses { clauses, spans }
+    }
+
+    pub fn spans(&self) -> &[Span] {
+        &self.spans
+    }
+}
+
+impl<'a> IntoIterator for &'a Clauses {
+    type Item = &'a RelationClause;
+    type IntoIter = std::slice::Iter<'a, RelationClause>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.clauses.iter()
+    }
+}
+
+impl std::ops::Deref for Clauses {
+    type Target = [RelationClause];
+
+    fn deref(&self) -> &[RelationClause] {
+        &self.clauses
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

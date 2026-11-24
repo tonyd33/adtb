@@ -1,0 +1,26 @@
+seed 5
+
+migrate
+  module m
+  add module m
+  add type L = { name: Text, lang: Text, index: I64 }
+  add relation labels : L key name
+    computed c: I64 = self.index
+
+run
+  insert labels { name: "a", lang: "en", index: 1 }
+
+migrate
+  module m
+  rekey relation labels key (name, lang)
+
+migrate
+  module m
+  revert 0002
+
+reopen
+
+query
+  from l in labels select { n: l.name, c: l.c }
+----
+{ n: "a", c: 1 }

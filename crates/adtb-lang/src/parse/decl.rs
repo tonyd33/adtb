@@ -84,13 +84,17 @@ impl Parser<'_> {
         self.expect(Tok::Colon, "`:`")?;
         let ty = self.app_type()?;
         let mut clauses = Vec::new();
-        while let Some(c) = self.relation_clause(true)? {
-            clauses.push(c);
+        loop {
+            let at = self.tok().span;
+            let Some(c) = self.relation_clause(true)? else {
+                break;
+            };
+            clauses.push((c, self.span_from(at)));
         }
         Ok(RelationDecl {
             name,
             ty,
-            clauses,
+            clauses: Clauses::new(clauses),
             span: self.span_from(start),
         })
     }
