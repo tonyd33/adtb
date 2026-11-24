@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use adtb_conformance::Found;
 use adtb_conformance::runner::{self, Corpus, Format, Options, Sides};
 
 fn suite() -> PathBuf {
@@ -24,6 +25,21 @@ fn passes_under(root: &Path, dir: &Path) {
 
 fn passes(dir: &Path) {
     passes_under(&suite(), dir);
+}
+
+#[test]
+fn the_walk_of_each_corpus_selects_cases_and_finds_no_problem() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (format, dir) in [
+        (Format::Conformance, runner::CONFORMANCE),
+        (Format::Scripts, runner::SCRIPTS),
+    ] {
+        let root = workspace.join(dir);
+        let selection = runner::select(&Corpus::new(format, root.clone()), &root);
+        let problems: Vec<String> = selection.problems().iter().map(Found::shown).collect();
+        assert_eq!(Vec::<String>::new(), problems, "{dir}");
+        assert!(!selection.cases().is_empty(), "{dir} holds cases");
+    }
 }
 
 #[test]

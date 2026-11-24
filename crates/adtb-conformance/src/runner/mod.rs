@@ -34,6 +34,10 @@ pub const SCRIPTS: &str = "crates/adtb-sim/scripts";
 /// The directories of the scripts corpus that hold no case.
 const NOT_AREAS: [&str; 2] = ["fixtures", "probes"];
 
+/// The files at the root of the scripts corpus that are no script: the instructions of coding
+/// agents.
+const NOT_SCRIPTS: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
+
 /// How the files of a corpus read and run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
@@ -172,8 +176,8 @@ impl Selection {
 
 /// Returns the cases of `corpus` at `under`: the file `under` names, or each `.test` file below
 /// the directory, sorted by path. In a conformance corpus any other file is passed over; in a
-/// scripts corpus `fixtures` and `probes` at its root are passed over and any other file is a
-/// problem.
+/// scripts corpus `fixtures`, `probes`, `AGENTS.md` and `CLAUDE.md` at its root are passed over
+/// and any other file is a problem.
 pub fn select(corpus: &Corpus, under: &Path) -> Selection {
     let mut out = Selection::default();
     if under.is_file() {
@@ -205,20 +209,22 @@ fn case(corpus: &Corpus, path: PathBuf) -> Case {
 
 fn walk(corpus: &Corpus, dir: &Path, files: &mut Vec<PathBuf>, problems: &mut Vec<Found>) {
     let scripts = corpus.format == Format::Scripts;
-    let skip = |path: &Path| {
-        scripts
-            && path.parent() == Some(corpus.root.as_path())
+    let at_root_in = |names: &[&str], path: &Path| {
+        path.parent() == Some(corpus.root.as_path())
             && path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| NOT_AREAS.contains(&n))
+                .is_some_and(|n| names.contains(&n))
     };
+    let skip = |path: &Path| scripts && at_root_in(&NOT_AREAS, path);
     adtb_script::walk(dir, &skip, &mut |entry| match entry {
         Entry::Case(path) => files.push(path),
-        Entry::Other(path) if scripts => problems.push(Found::at(
-            None,
-            format!("{}: not a `.test` script", shown(&corpus.root, &path)),
-        )),
+        Entry::Other(path) if scripts && !at_root_in(&NOT_SCRIPTS, &path) => {
+            problems.push(Found::at(
+                None,
+                format!("{}: not a `.test` script", shown(&corpus.root, &path)),
+            ));
+        }
         Entry::Other(_) => {}
         Entry::Unread(dir, e) => problems.push(Found::at(
             None,
