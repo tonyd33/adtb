@@ -314,3 +314,12 @@
 [unchecked_impls]
 "crates/adtb-heap/src/heap/undo.rs" = 1
 "crates/adtb/src/catalog/mod.rs" = 1
+
+[write_collections]
+"crates/adtb/src/write/apply.rs" = 2
+"crates/adtb/src/write/change.rs" = 4
+"crates/adtb/src/write/check.rs" = 9
+"crates/adtb/src/write/eval.rs" = 20
+"crates/adtb/src/write/input.rs" = 9
+"crates/adtb/src/write/insert.rs" = 9
+"crates/adtb/src/write/keyed.rs" = 3

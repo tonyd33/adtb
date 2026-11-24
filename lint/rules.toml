@@ -247,3 +247,17 @@ query = "catalog-begins.tql"
 include = ["crates/adtb/src/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
 rows = { change_begins = "zero" }
+
+[[rule]]
+query = "write-collections.tql"
+include = [
+  "crates/adtb/src/write/eval.rs",
+  "crates/adtb/src/write/insert.rs",
+  "crates/adtb/src/write/apply.rs",
+  "crates/adtb/src/write/check.rs",
+  "crates/adtb/src/write/admit.rs",
+  "crates/adtb/src/write/input.rs",
+  "crates/adtb/src/write/keyed.rs",
+  "crates/adtb/src/write/change.rs",
+]
+rows = { write_collections = "ratchet" }

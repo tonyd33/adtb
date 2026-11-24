@@ -1,0 +1,23 @@
+-- write_collections: a collection the write path builds outside a grant: `BTreeSet::new`,
+-- `BTreeMap::new`, `Vec::new`, `vec![]` or a `.collect()`.
+
+news = do {
+  p <- descendants_of_kind :scoped_identifier;
+  guard $ text p ~ r"^(BTreeSet|BTreeMap|Vec)::new$";
+  return p;
+};
+
+empty_vecs = do {
+  m <- descendants_of_kind :macro_invocation;
+  guard $ text m ~ r"^vec!\s*\[\s*\]$";
+  return m;
+};
+
+collects = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function | #field;
+  guard $ text f ~ r"^collect$";
+  return c;
+};
+
+main = collect (news `alt` empty_vecs `alt` collects) | arr length;
