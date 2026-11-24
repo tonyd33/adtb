@@ -598,12 +598,8 @@ impl Model {
                 let free: Vec<usize> = (0..self.s.rels.len())
                     .filter(|j| {
                         let r = self.rel(*j);
-                        let selects_own_set = self.refs().iter().any(|(i, _, f)| {
-                            *i == *j && f.ty.target() == Some((*j, &Scope::Named))
-                        });
                         !self.referenced(*j)
                             && !self.tagged(*j)
-                            && (super::super::SEARCH_DROP_OF_SELF_SELECTED_SET || !selects_own_set)
                             && r.checks.is_empty()
                             && !self.s.constraints.iter().any(|k| k.rel == *j)
                             && !self.s.extra.fns.iter().any(|f| f.reads == Some(*j))

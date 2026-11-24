@@ -1,0 +1,31 @@
+seed 5
+
+migrate
+  module app
+  add module app
+  add type T { k: I64 } = A { a: I64 } | C { b: Option (Key r.Pair) on delete clear }
+  add relation r : T key k
+  add set Pair of r = A | C
+  add type U = { id: Key us, t: Key r }
+  add relation us : U key id generate sequence
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop relation r", detail: "`drop relation r` is refused while field `U.t` references it\n`Pair` is neither a constructor of `T` nor a named set of `r`\n`on delete` is allowed only on a `Key` field or an `Option` of one\n`on delete clear` is allowed only on an `Option (Key ...)` field" } } }
+  module app
+  drop set Pair of r
+  drop relation r
+  drop type T
+
+migrate
+  module app
+  drop relation us
+  drop type U
+  drop set Pair of r
+  drop relation r
+  drop type T
+
+reopen
+
+query
+  1
+----
+1

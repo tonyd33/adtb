@@ -35,11 +35,6 @@ const SEARCH_DROP_INDEX_REVERSED_SCOPE: bool = true;
 /// it. The engine refuses the split with an internal error.
 const SEARCH_SPLIT_OF_SELF_REFERENCE: bool = false;
 
-/// Whether a `drop relation` takes a relation whose own type references its named set, dropping
-/// the set, the relation and the type in one migration. The checker refuses it: the type names a
-/// set no longer declared.
-const SEARCH_DROP_OF_SELF_SELECTED_SET: bool = false;
-
 /// The name a `rename field` takes on half its draws when no field of its type holds it; no other
 /// drawn name is spelled so.
 pub const BOUND: &str = "wv";

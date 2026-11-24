@@ -159,11 +159,23 @@ impl Migrated {
             .iter()
             .zip(self.maps.iter().zip(&self.steps))
             .enumerate()
-            .find_map(|(k, (op, step))| match step {
-                (_, Some(Err(why))) | (Err(why), None) => {
-                    Some((k, Diag::new(op.span, why.clone())))
-                }
-                _ => None,
+            .find_map(|(k, (op, step))| {
+                let why = match step {
+                    (_, Some(Err(why))) | (Err(why), None) => Some(why.clone()),
+                    (Ok(maps), None) => unbuilt_move(maps, &self.afters[k]),
+                    (_, Some(Ok(steps))) => {
+                        let last = steps.len().saturating_sub(1);
+                        steps.iter().enumerate().find_map(|(j, s)| {
+                            let after = if j == last {
+                                &self.afters[k]
+                            } else {
+                                s.after()
+                            };
+                            unbuilt_move(s.maps(), after)
+                        })
+                    }
+                };
+                why.map(|why| (k, Diag::new(op.span, why)))
             })
     }
 
@@ -816,6 +828,20 @@ fn set_decl(op: &mut Resolved, decl: String) {
 /// build, which a later operator removed before any build gave it an id.
 fn unbuilt_gone(what: &str) -> String {
     format!("{what} written while the declarations did not build was removed before any build")
+}
+
+/// Returns why a step moving rows by `maps` into the declarations `after` holds fails: they do
+/// not build while it moves rows.
+fn unbuilt_move(maps: &[crate::evolve::RowMap], after: &Model) -> Option<String> {
+    if maps.is_empty() {
+        return None;
+    }
+    let ds = after.replay_source().built().err()?;
+    let first = ds.first()?;
+    Some(format!(
+        "the operator moves rows into a schema that does not build: {}",
+        first.diag.message
+    ))
 }
 
 /// Returns each failure of the declarations `model` holds, by the declaration it is in and its

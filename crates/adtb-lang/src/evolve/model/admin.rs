@@ -278,7 +278,7 @@ impl Model {
     }
 
     /// Returns every object a name in declaration `item` resolves to.
-    fn item_objects(&self, item: Item) -> Vec<Obj> {
+    pub(super) fn item_objects(&self, item: Item) -> Vec<Obj> {
         let mut terms: Vec<&Term> = Vec::new();
         match item {
             Item::Type(t) => {

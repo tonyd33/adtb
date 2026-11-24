@@ -41,6 +41,14 @@ pub(super) struct Stepped {
 }
 
 impl Stepped {
+    pub(super) fn after(&self) -> &Model {
+        &self.after
+    }
+
+    pub(super) fn maps(&self) -> &[crate::evolve::RowMap] {
+        &self.maps
+    }
+
     /// Returns the step as a source step, `after` in place of its own model when given.
     pub(super) fn into_step(self, after: Option<&Model>) -> crate::evolve::Step {
         let after = after.unwrap_or(&self.after);

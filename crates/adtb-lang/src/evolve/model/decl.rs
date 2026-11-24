@@ -472,7 +472,10 @@ impl Model {
     }
 
     fn drop_relation_allowed(&self, run: &mut Run, r: u64) -> Res<()> {
-        let built = self.schema_now(run)?;
+        let built = match self.schema_now(run) {
+            Ok(b) => b,
+            Err(e) => return self.drop_relation_allowed_unbuilt(r, e),
+        };
         let schema = built.schema();
         let Some(rel) = schema.ids().relation_of(cat_rel(r)) else {
             return broken("a dropped relation variable the schema does not hold");
@@ -506,6 +509,45 @@ impl Model {
                     "`drop relation {name}` is refused while {} names it",
                     self.shown_decl(f.0 as usize)
                 ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse `drop relation` of `r` while a declaration other than `r`, its named sets and the
+    /// type of its rows names `r`, as the model holds the declarations; refuse with `unbuilt`
+    /// while a declaration is held as written.
+    fn drop_relation_allowed_unbuilt(&self, r: u64, unbuilt: Fail) -> Res<()> {
+        let rel = &self.relations[&r];
+        let own: Vec<Obj> = rel.ty.objects().collect();
+        let sets = self.sets_of(r);
+        let names = |t: &Term| t.objects().any(|o| o == (Space::Shared, r));
+        for (i, d) in self.decls.iter().enumerate() {
+            match d.item {
+                Item::Held(..) => return Err(unbuilt),
+                Item::Relation(x) if x == r => {}
+                Item::Set(s) if sets.contains(&s) => {}
+                Item::Type(t) if own.contains(&(Space::Shared, t)) => {}
+                item => {
+                    if let Item::Type(t) = item {
+                        for f in self.fields_of(t) {
+                            let field = &self.fields[&f];
+                            if std::iter::once(&field.ty).chain(&field.action).any(names) {
+                                return refuse(format!(
+                                    "`drop relation {}` is refused while field `{}.{}` references it",
+                                    rel.name, self.types[&t].name, field.name
+                                ));
+                            }
+                        }
+                    }
+                    if self.item_objects(item).contains(&(Space::Shared, r)) {
+                        return refuse(format!(
+                            "`drop relation {}` is refused while {} names it",
+                            rel.name,
+                            self.shown_decl(i)
+                        ));
+                    }
+                }
             }
         }
         Ok(())
