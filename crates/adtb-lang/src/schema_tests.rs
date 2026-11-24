@@ -673,7 +673,7 @@ fn a_module_the_engine_source_declares_is_an_engine_module_no_user_file_may_name
         .ok()
         .unwrap();
     let got = build_over(
-        &built_in::built_in(PRELUDE_SRC, &engine),
+        &BuiltIn::new(PRELUDE_SRC, &engine),
         &[(FileId(0), user)],
         &[],
     )

@@ -597,10 +597,15 @@ struct Declared<'a> {
 }
 
 impl<'a> Builder<'a> {
-    /// Declare every name of the files, so later passes may refer forward.
+    /// Declare every name of the files, so later passes may refer forward, and the prelude's
+    /// type former `Tag` after the engine's files and before the user's.
     fn collect(&mut self) -> Declared<'a> {
         let mut d = Declared::default();
-        for (file, sf) in self.files {
+        let built_in = self.files.iter().take_while(|(f, _)| f.is_engine()).count();
+        for (i, (file, sf)) in self.files.iter().enumerate() {
+            if i == built_in {
+                self.declare_tag_former();
+            }
             let file = *file;
             let engine = file.is_engine();
             let module = self.module_id(&sf.module.text, engine);
@@ -612,7 +617,30 @@ impl<'a> Builder<'a> {
                 self.declare(file, module, decl, &mut d);
             }
         }
+        if built_in == self.files.len() {
+            self.declare_tag_former();
+        }
         d
+    }
+
+    /// Declare the prelude's type former `Tag`, with no constructors of its own. No module
+    /// scope holds it: the name `Tag` resolves to the former, never to this declaration.
+    fn declare_tag_former(&mut self) {
+        let id = TypeId(self.schema.types.len() as u32);
+        self.schema.defs_mut().types.push(TypeDef {
+            id,
+            name: "Tag".to_string(),
+            module: PRELUDE,
+            params: vec!["a".to_string()],
+            ordered: false,
+            kind: TypeDefKind::Sum {
+                header: Vec::new(),
+                ctors: Vec::new(),
+                record: false,
+            },
+            file: FileId::PRELUDE,
+            span: Span::default(),
+        });
     }
 
     fn declare(

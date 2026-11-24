@@ -1,26 +1,64 @@
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, OnceLock};
 
-use super::{ENGINE_SRC, PRELUDE_SRC};
+use super::{ENGINE_SRC, PRELUDE_SRC, Schema};
 use crate::ast;
+use crate::ids::CatalogIds;
 use crate::parse::{self, Options};
 use crate::span::FileId;
 
 /// The prelude and the engine's own module files, parsed once.
-pub(super) static BUILT_IN: LazyLock<Vec<(FileId, ast::SchemaFile)>> =
-    LazyLock::new(|| built_in(PRELUDE_SRC, ENGINE_SRC));
+pub(super) static BUILT_IN: LazyLock<BuiltIn> =
+    LazyLock::new(|| BuiltIn::new(PRELUDE_SRC, ENGINE_SRC));
 
-/// Returns the prelude and the module files of the engine's declarations `engine`, parsed.
-pub(super) fn built_in(prelude: &str, engine: &str) -> Vec<(FileId, ast::SchemaFile)> {
-    let prelude = parse::parse_schema(prelude, Options::default())
-        .ok()
-        .expect("the prelude parses");
-    let mut all = vec![(FileId::PRELUDE, prelude)];
-    all.extend(
-        engine_files(engine)
-            .into_iter()
-            .map(|f| (FileId::ENGINE, f)),
-    );
-    all
+/// The prelude and the engine's module files, parsed, with the fixed ids of the engine's objects
+/// once a build over them computed them.
+pub(super) struct BuiltIn {
+    files: Vec<(FileId, ast::SchemaFile)>,
+    engine_ids: OnceLock<Arc<CatalogIds>>,
+}
+
+impl BuiltIn {
+    /// Returns the prelude `prelude` and the module files of the engine's declarations `engine`,
+    /// parsed.
+    pub(super) fn new(prelude: &str, engine: &str) -> BuiltIn {
+        let prelude = parse::parse_schema(prelude, Options::default())
+            .ok()
+            .expect("the prelude parses");
+        let mut files = vec![(FileId::PRELUDE, prelude)];
+        files.extend(
+            engine_files(engine)
+                .into_iter()
+                .map(|f| (FileId::ENGINE, f)),
+        );
+        BuiltIn {
+            files,
+            engine_ids: OnceLock::new(),
+        }
+    }
+
+    pub(super) fn files(&self) -> &[(FileId, ast::SchemaFile)] {
+        &self.files
+    }
+
+    /// Returns the engine's fixed ids in `schema`, a build over these files.
+    ///
+    /// Preconditions: every build over these files gives each engine object the position it
+    /// gives it in every other.
+    pub(super) fn engine_ids(&self, schema: &Schema) -> Arc<CatalogIds> {
+        let ids = self
+            .engine_ids
+            .get_or_init(|| Arc::new(crate::ids::engine(schema)))
+            .clone();
+        #[cfg(any(test, feature = "testing"))]
+        if crate::sampled::ENGINE_IDS.due() {
+            assert_eq!(
+                *ids,
+                crate::ids::engine(schema),
+                "the engine's fixed ids are the same in every build over the built-in files"
+            );
+        }
+        ids
+    }
 }
 
 /// Returns the module files of the engine's declarations `engine`.

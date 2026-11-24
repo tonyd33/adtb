@@ -1377,6 +1377,11 @@ fn generated_migrations_keep_their_invariants() {
         adtb_lang::sampled::MODEL_BUILDS.checked() as usize,
         1,
     );
+    adtb_testkit::profile::assert_reached(
+        "a use of the shared engine ids checked against ids computed again",
+        adtb_lang::sampled::ENGINE_IDS.checked() as usize,
+        1,
+    );
     if adtb_testkit::profile::every_case() {
         reached.floors();
     } else {

@@ -33,7 +33,7 @@ mod ahead;
 pub use ahead::{Adder, AheadKind, AheadState};
 mod build;
 mod built_in;
-use built_in::BUILT_IN;
+use built_in::{BUILT_IN, BuiltIn};
 mod committed;
 pub use committed::Committed;
 mod engine;
@@ -1361,22 +1361,23 @@ pub fn build_ahead(
 /// in place of the ones the engine holds.
 #[cfg(feature = "testing")]
 pub fn build_engine_from(engine: &str) -> Result<Schema, Vec<FileDiag>> {
-    build_over(&built_in::built_in(PRELUDE_SRC, engine), &[], &[])
+    build_over(&BuiltIn::new(PRELUDE_SRC, engine), &[], &[])
 }
 
 /// Returns the schema `build` returns for no files, the prelude read from `prelude` in place of
 /// the one the engine holds.
 #[cfg(feature = "testing")]
 pub fn build_prelude_from(prelude: &str) -> Result<Schema, Vec<FileDiag>> {
-    build_over(&built_in::built_in(prelude, ENGINE_SRC), &[], &[])
+    build_over(&BuiltIn::new(prelude, ENGINE_SRC), &[], &[])
 }
 
 fn build_over(
-    built_in: &[(FileId, ast::SchemaFile)],
+    built_in: &BuiltIn,
     files: &[(FileId, ast::SchemaFile)],
     ahead: &[Ahead],
 ) -> Result<Schema, Vec<FileDiag>> {
     let all: Vec<_> = built_in
+        .files()
         .iter()
         .chain(files)
         .map(|(id, f)| (*id, f))
@@ -1414,10 +1415,8 @@ fn build_over(
     if !b.diags.is_empty() {
         return Err(b.diags);
     }
-    let id = TypeId(b.schema.types.len() as u32);
-    b.schema.defs_mut().types.push(tag_former(id));
     b.schema.defs_mut().engine_ctors = Some(EngineCtors::of(&b.schema));
-    b.schema.defs_mut().engine_ids = Some(Arc::new(crate::ids::engine(&b.schema)));
+    b.schema.defs_mut().engine_ids = Some(built_in.engine_ids(&b.schema));
     b.schema.ids = crate::ids::declared(&b.schema, files);
     Ok(b.schema)
 }
@@ -1436,25 +1435,6 @@ fn no_type(text: &str) -> String {
         _ => return format!("no type `{text}`"),
     };
     format!("no type `{text}`; did you mean `{meant}`?")
-}
-
-/// Returns the prelude's declaration of the type former `Tag`, with no constructors of its own.
-/// No module scope holds it: the name `Tag` resolves to the former, never to this declaration.
-fn tag_former(id: TypeId) -> TypeDef {
-    TypeDef {
-        id,
-        name: "Tag".to_string(),
-        module: PRELUDE,
-        params: vec!["a".to_string()],
-        ordered: false,
-        kind: TypeDefKind::Sum {
-            header: Vec::new(),
-            ctors: Vec::new(),
-            record: false,
-        },
-        file: FileId::PRELUDE,
-        span: Span::default(),
-    }
 }
 
 pub fn has_param(ty: &Ty) -> bool {
