@@ -74,20 +74,23 @@ pub(super) enum StateKey {
 }
 
 /// An operator with every name it writes resolved to the object it names in the model it
-/// applies to. Text it adds stays at its span of the migration's text.
+/// applies to. Text it adds is a term; a part the operator reads by its structure stays as
+/// parsed, at its span of the text of the run applying it.
 #[derive(Clone, Debug)]
-pub(super) enum Op<'o> {
+pub(super) enum Op {
     AddModule(ast::Ident),
     DropModule(ast::Ident),
-    /// A declaration of kind `kind` named `name`, at `span`.
+    /// A declaration `decl` of kind `kind` named `name`, written at `span`.
     Add {
         kind: Kind,
         name: String,
         span: Span,
+        decl: Term,
     },
+    /// Function `function` given the text after its name.
     RedefineFn {
         function: u64,
-        span: Span,
+        rest: Term,
     },
     Drop(Item),
     Rename {
@@ -100,70 +103,70 @@ pub(super) enum Op<'o> {
         verb: &'static str,
         shown: String,
     },
-    /// A field `path` names added to `part`, a type and the constructor whose fields it names,
-    /// `None` for the header; with its type and delete action at their spans.
+    /// A field `name` added to `part`, a type and the constructor whose fields it names, `None`
+    /// for the header; with its type and delete action.
     AddField {
         part: (u64, Option<u64>),
-        path: &'o ast::FieldPath,
-        ty: Span,
-        action: Option<Span>,
-        fill: &'o ast::Fill,
+        name: ast::Ident,
+        ty: Term,
+        action: Option<Term>,
+        fill: ast::Fill,
     },
     DropField(u64),
-    /// Field `field` of `part`, as `path` names it, given the delete action at `action`.
+    /// Field `field` of `part`, named `name`, given the delete action `action`.
     AlterField {
         field: u64,
         part: (u64, Option<u64>),
-        path: &'o ast::FieldPath,
-        action: Span,
+        name: String,
+        action: Term,
     },
     AddIndex {
         kind: IndexKind,
         relation: u64,
-        fields: &'o [Expr],
-        on: &'o ast::RelationRef,
+        elems: Term,
+        on: ast::RelationRef,
     },
     DropIndex {
         kind: IndexKind,
         relation: u64,
-        fields: &'o [Expr],
-        on: &'o ast::RelationRef,
+        fields: Vec<Expr>,
+        on: ast::RelationRef,
     },
     AddDefault {
         relation: u64,
-        ctor: Option<&'o ast::Ident>,
-        field: &'o ast::Ident,
-        value: &'o ast::DefaultValue,
+        ctor: Option<ast::Ident>,
+        field: ast::Ident,
+        value: Term,
     },
     DropDefault {
         relation: u64,
-        ctor: Option<&'o ast::Ident>,
-        field: &'o ast::Ident,
+        ctor: Option<ast::Ident>,
+        field: ast::Ident,
     },
     AddComputed {
         relation: u64,
-        field: &'o ast::Ident,
-        ty: &'o ast::Type,
-        expr: &'o Expr,
+        field: ast::Ident,
+        ty: Term,
+        expr: Term,
     },
     RedefineComputed {
         relation: u64,
-        field: &'o ast::Ident,
-        ty: &'o ast::Type,
-        expr: &'o Expr,
+        field: ast::Ident,
+        ty: Term,
+        expr: Term,
     },
     DropComputed {
         relation: u64,
-        field: &'o ast::Ident,
+        field: ast::Ident,
     },
     /// A constructor `path` names added to type `ty`.
     AddConstructor {
         ty: u64,
-        path: &'o ast::CtorPath,
-        record: Option<&'o [ast::FieldType]>,
-        place: Option<&'o CtorPlace>,
-        joins: &'o [ast::RelationRef],
-        arms: &'o [ast::ArmClause],
+        path: ast::CtorPath,
+        record: Option<Vec<ast::FieldType>>,
+        place: Option<CtorPlace>,
+        joins: Vec<ast::RelationRef>,
+        arms: Vec<ast::ArmClause>,
     },
     RemoveConstructor {
         ty: u64,
@@ -172,60 +175,60 @@ pub(super) enum Op<'o> {
     Split {
         ty: u64,
         ctor: u64,
-        path: &'o ast::CtorPath,
-        into: &'o [ast::CtorDef],
-        arms: &'o [ast::Arm],
-        clauses: &'o [ast::SplitClause],
+        path: ast::CtorPath,
+        into: Vec<ast::CtorDef>,
+        arms: Vec<ast::Arm>,
+        clauses: Vec<ast::SplitClause>,
     },
     Merge {
         ty: u64,
-        sel: &'o CtorSel,
-        into: &'o ast::CtorDef,
-        arms: Option<&'o [ast::Arm]>,
-        clauses: &'o [ast::ArmClause],
+        sel: CtorSel,
+        into: ast::CtorDef,
+        arms: Option<Vec<ast::Arm>>,
+        clauses: Vec<ast::ArmClause>,
     },
     Nest {
         ty: u64,
-        sel: &'o CtorSel,
-        into: &'o ast::CtorDef,
-        clauses: &'o [ast::ArmClause],
+        sel: CtorSel,
+        into: ast::CtorDef,
+        clauses: Vec<ast::ArmClause>,
     },
     Unnest {
         ty: u64,
         ctor: u64,
-        path: &'o ast::CtorPath,
-        clauses: &'o [ast::ArmClause],
+        path: ast::CtorPath,
+        clauses: Vec<ast::ArmClause>,
     },
     /// Field `field` of `part`, as `path` names it, moved to the constructors `sel` selects, or
     /// to the header.
     MoveField {
         field: u64,
         part: (u64, Option<u64>),
-        path: &'o ast::FieldPath,
-        sel: Option<&'o CtorSel>,
-        fill: Option<&'o ast::Fill>,
+        path: ast::FieldPath,
+        sel: Option<CtorSel>,
+        fill: Option<ast::Fill>,
     },
     Rekey {
         relation: u64,
-        key: &'o [ast::Ident],
-        carry: &'o [ast::FieldPath],
+        key: Vec<ast::Ident>,
+        carry: Vec<ast::FieldPath>,
     },
-    Grant(&'o ast::Grant),
-    Revoke(&'o ast::Revoke),
-    Script(&'o ast::Write),
+    Grant(ast::Grant),
+    Revoke(ast::Revoke),
+    Script(Box<ast::Write>),
     Install {
-        name: &'o ast::Ident,
-        version: &'o str,
-        from: &'o str,
+        name: ast::Ident,
+        version: String,
+        from: String,
     },
-    Uninstall(&'o ast::Ident),
+    Uninstall(ast::Ident),
     AdoptTzdb {
-        release: &'o str,
-        from: &'o str,
+        release: String,
+        from: String,
     },
     Revert {
-        migration: &'o str,
-        fills: &'o [(ast::FieldPath, ast::Fill)],
+        migration: String,
+        fills: Vec<(ast::FieldPath, ast::Fill)>,
     },
 }
 
@@ -761,17 +764,23 @@ impl<'a> Resolving<'a> {
         }
     }
 
+    /// Returns the text of the migration at `span` as a term.
+    fn written(&self, span: Span) -> Term {
+        Term::text(&self.text[span.range()])
+    }
+
     /// Returns `op` with the names it writes resolved, or why it does not apply.
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per operator kind; a split by family would need a catch-all arm in each part"
     )]
-    pub(super) fn op<'o>(&self, op: &'o OperatorKind) -> Res<Op<'o>> {
+    pub(super) fn op(&self, op: &OperatorKind) -> Res<Op> {
         let add = |kind: Kind, name: &str, span: Span| {
             Ok(Op::Add {
                 kind,
                 name: name.to_string(),
                 span,
+                decl: self.written(span),
             })
         };
         let rename = |obj: Obj, to: &ast::Ident| {
@@ -816,7 +825,7 @@ impl<'a> Resolving<'a> {
                 match self.model.find(self.module, Kind::Fn, &f.name.text) {
                     Some(Item::Fn(function)) => Ok(Op::RedefineFn {
                         function,
-                        span: f.span,
+                        rest: Term::text(&self.text[f.name.span.end as usize..f.span.end as usize]),
                     }),
                     _ => refuse_at(
                         f.name.span,
@@ -848,12 +857,12 @@ impl<'a> Resolving<'a> {
                 fill,
             } => Ok(Op::AddField {
                 part: self.part(path)?,
-                path,
-                ty: ty.span,
+                name: path.field.clone(),
+                ty: self.written(ty.span),
                 action: on_delete
                     .as_ref()
-                    .map(|_| action_span(self.text, ty.span, *decl)),
-                fill,
+                    .map(|_| self.written(action_span(self.text, ty.span, *decl))),
+                fill: fill.clone(),
             }),
             OperatorKind::DropField(path) => Ok(Op::DropField(self.field_at(path)?.1)),
             OperatorKind::AlterField { path, span, .. } => {
@@ -861,31 +870,21 @@ impl<'a> Resolving<'a> {
                 Ok(Op::AlterField {
                     field,
                     part,
-                    path,
-                    action: *span,
+                    name: path.field.text.clone(),
+                    action: self.written(*span),
                 })
             }
-            OperatorKind::AddUnique(fields, on) => Ok(Op::AddIndex {
-                kind: IndexKind::Unique,
-                relation: self.relation(&on.relation)?,
-                fields,
-                on,
-            }),
+            OperatorKind::AddUnique(fields, on) => self.add_index(IndexKind::Unique, fields, on),
             OperatorKind::AddIndex {
                 interval,
                 fields,
                 on,
-            } => Ok(Op::AddIndex {
-                kind: index_kind(*interval),
-                relation: self.relation(&on.relation)?,
-                fields,
-                on,
-            }),
+            } => self.add_index(index_kind(*interval), fields, on),
             OperatorKind::DropUnique(fields, on) => Ok(Op::DropIndex {
                 kind: IndexKind::Unique,
                 relation: self.relation(&on.relation)?,
-                fields,
-                on,
+                fields: fields.clone(),
+                on: on.clone(),
             }),
             OperatorKind::DropIndex {
                 interval,
@@ -894,8 +893,8 @@ impl<'a> Resolving<'a> {
             } => Ok(Op::DropIndex {
                 kind: index_kind(*interval),
                 relation: self.relation(&on.relation)?,
-                fields,
-                on,
+                fields: fields.clone(),
+                on: on.clone(),
             }),
             OperatorKind::AddDefault {
                 relation,
@@ -904,9 +903,12 @@ impl<'a> Resolving<'a> {
                 value,
             } => Ok(Op::AddDefault {
                 relation: self.relation(relation)?,
-                ctor: ctor.as_ref(),
-                field,
-                value,
+                ctor: ctor.clone(),
+                field: field.clone(),
+                value: match value {
+                    ast::DefaultValue::Generate(g) => Term::text(&format!("generate {}", g.text)),
+                    ast::DefaultValue::Expr(e) => self.written(e.span),
+                },
             }),
             OperatorKind::DropDefault {
                 relation,
@@ -914,8 +916,8 @@ impl<'a> Resolving<'a> {
                 field,
             } => Ok(Op::DropDefault {
                 relation: self.relation(relation)?,
-                ctor: ctor.as_ref(),
-                field,
+                ctor: ctor.clone(),
+                field: field.clone(),
             }),
             OperatorKind::AddComputed {
                 relation,
@@ -924,9 +926,9 @@ impl<'a> Resolving<'a> {
                 expr,
             } => Ok(Op::AddComputed {
                 relation: self.relation(relation)?,
-                field,
-                ty,
-                expr,
+                field: field.clone(),
+                ty: self.written(ty.span),
+                expr: self.written(expr.span),
             }),
             OperatorKind::RedefineComputed {
                 relation,
@@ -935,13 +937,13 @@ impl<'a> Resolving<'a> {
                 expr,
             } => Ok(Op::RedefineComputed {
                 relation: self.relation(relation)?,
-                field,
-                ty,
-                expr,
+                field: field.clone(),
+                ty: self.written(ty.span),
+                expr: self.written(expr.span),
             }),
             OperatorKind::DropComputed(relation, field) => Ok(Op::DropComputed {
                 relation: self.relation(relation)?,
-                field,
+                field: field.clone(),
             }),
             OperatorKind::AddConstructor {
                 path,
@@ -951,11 +953,11 @@ impl<'a> Resolving<'a> {
                 arms,
             } => Ok(Op::AddConstructor {
                 ty: self.ty(&path.ty)?,
-                path,
-                record: record.as_deref(),
-                place: place.as_ref(),
-                joins,
-                arms,
+                path: path.clone(),
+                record: record.clone(),
+                place: place.clone(),
+                joins: joins.clone(),
+                arms: arms.clone(),
             }),
             OperatorKind::RemoveConstructor(path) => {
                 let t = self.ty(&path.ty)?;
@@ -977,10 +979,10 @@ impl<'a> Resolving<'a> {
                 Ok(Op::Split {
                     ty,
                     ctor,
-                    path,
-                    into,
-                    arms,
-                    clauses,
+                    path: path.clone(),
+                    into: into.clone(),
+                    arms: arms.clone(),
+                    clauses: clauses.clone(),
                 })
             }
             OperatorKind::MergeConstructor {
@@ -991,10 +993,10 @@ impl<'a> Resolving<'a> {
                 clauses,
             } => Ok(Op::Merge {
                 ty: self.ty(ty)?,
-                sel,
-                into,
-                arms: arms.as_deref(),
-                clauses,
+                sel: sel.clone(),
+                into: into.clone(),
+                arms: arms.clone(),
+                clauses: clauses.clone(),
             }),
             OperatorKind::NestConstructor {
                 ty,
@@ -1003,9 +1005,9 @@ impl<'a> Resolving<'a> {
                 clauses,
             } => Ok(Op::Nest {
                 ty: self.ty(ty)?,
-                sel,
-                into,
-                clauses,
+                sel: sel.clone(),
+                into: into.clone(),
+                clauses: clauses.clone(),
             }),
             OperatorKind::UnnestConstructor(path, clauses) => {
                 let t = self.ty(&path.ty)?;
@@ -1013,8 +1015,8 @@ impl<'a> Resolving<'a> {
                     Some(ctor) => Ok(Op::Unnest {
                         ty: t,
                         ctor,
-                        path,
-                        clauses,
+                        path: path.clone(),
+                        clauses: clauses.clone(),
                     }),
                     None => refuse(format!(
                         "`{}` is not a constructor of `{}`",
@@ -1038,9 +1040,9 @@ impl<'a> Resolving<'a> {
                 Ok(Op::MoveField {
                     field,
                     part,
-                    path,
-                    sel: sel.as_ref(),
-                    fill: fill.as_ref(),
+                    path: path.clone(),
+                    sel: sel.clone(),
+                    fill: fill.clone(),
                 })
             }
             OperatorKind::Rekey {
@@ -1049,25 +1051,44 @@ impl<'a> Resolving<'a> {
                 carry,
             } => Ok(Op::Rekey {
                 relation: self.relation(relation)?,
-                key,
-                carry,
+                key: key.clone(),
+                carry: carry.clone(),
             }),
-            OperatorKind::Grant(g) => Ok(Op::Grant(g)),
-            OperatorKind::Revoke(r) => Ok(Op::Revoke(r)),
-            OperatorKind::Script(w) => Ok(Op::Script(w)),
+            OperatorKind::Grant(g) => Ok(Op::Grant(g.clone())),
+            OperatorKind::Revoke(r) => Ok(Op::Revoke(r.clone())),
+            OperatorKind::Script(w) => Ok(Op::Script(w.clone())),
             OperatorKind::Install {
                 name,
                 version,
                 from,
             } => Ok(Op::Install {
-                name,
-                version,
-                from,
+                name: name.clone(),
+                version: version.clone(),
+                from: from.clone(),
             }),
-            OperatorKind::Uninstall(m) => Ok(Op::Uninstall(m)),
-            OperatorKind::AdoptTzdb { release, from } => Ok(Op::AdoptTzdb { release, from }),
-            OperatorKind::Revert { migration, fills } => Ok(Op::Revert { migration, fills }),
+            OperatorKind::Uninstall(m) => Ok(Op::Uninstall(m.clone())),
+            OperatorKind::AdoptTzdb { release, from } => Ok(Op::AdoptTzdb {
+                release: release.clone(),
+                from: from.clone(),
+            }),
+            OperatorKind::Revert { migration, fills } => Ok(Op::Revert {
+                migration: migration.clone(),
+                fills: fills.clone(),
+            }),
         }
+    }
+
+    fn add_index(&self, kind: IndexKind, fields: &[Expr], on: &ast::RelationRef) -> Res<Op> {
+        let relation = self.relation(&on.relation)?;
+        let (Some(first), Some(last)) = (fields.first(), fields.last()) else {
+            return broken("an index of no field");
+        };
+        Ok(Op::AddIndex {
+            kind,
+            relation,
+            elems: self.written(first.span.to(last.span)),
+            on: on.clone(),
+        })
     }
 }
 

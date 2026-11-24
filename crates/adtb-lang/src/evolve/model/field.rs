@@ -186,21 +186,21 @@ impl Model {
         Ok((RowFn { schema, query }, text))
     }
 
-    /// Add field `path.field` of type text `ty` and delete action text `action` to the part
-    /// `path` names, every existing row taking `fill`.
+    /// Add field `field` of type `ty` and delete action `action` to the part `(t, ctor)`,
+    /// every existing row taking `fill`.
     pub(super) fn add_field(
         &mut self,
         run: &mut Run,
         (t, ctor): (u64, Option<u64>),
-        path: &ast::FieldPath,
-        ty: Span,
-        action: Option<Span>,
+        field: &ast::Ident,
+        ty: Term,
+        action: Option<Term>,
         fill: &Fill,
     ) -> Res<Applied> {
-        let name = path.field.text.clone();
+        let name = field.text.clone();
         if !self.field_free(t, ctor, &name) {
             return refuse_at(
-                path.field.span,
+                field.span,
                 format!(
                     "`{}` already has a field `{name}`",
                     self.shown_part(t, ctor)
@@ -214,8 +214,8 @@ impl Model {
             FieldM {
                 owner,
                 name: name.clone(),
-                ty: Term::text(&run.text()[ty.range()]),
-                action: action.map(|a| Term::text(&run.text()[a.range()])),
+                ty,
+                action,
             },
         );
         let held = match ctor {
@@ -342,27 +342,25 @@ impl Model {
         Ok((Resolved::DropField { field: f }, Vec::new(), Ok(Vec::new())))
     }
 
-    /// Give the field `path` names the delete action written at `action`.
+    /// Give field `f`, named `name`, the delete action `action`.
     pub(super) fn alter_field(
         &mut self,
         run: &mut Run,
         (f, (_, ctor)): (u64, (u64, Option<u64>)),
-        path: &ast::FieldPath,
-        action: Span,
+        name: &str,
+        action: Term,
     ) -> Res<Applied> {
-        self.fields.get_mut(&f).expect("the field").action =
-            Some(Term::text(&run.text()[action.range()]));
+        self.fields.get_mut(&f).expect("the field").action = Some(action);
         let built = self.built_for(run)?;
         let file = self.lift_field(&built, f)?;
         let ctor_name = ctor.map(|c| self.ctors[&c].name.clone());
-        let action =
-            Self::field_canonical(&built, file, ctor_name.as_deref(), &path.field.text, true)?
-                .unwrap_or_else(|| {
-                    run.late(Late::Field {
-                        field: f,
-                        action_only: true,
-                    })
-                });
+        let action = Self::field_canonical(&built, file, ctor_name.as_deref(), name, true)?
+            .unwrap_or_else(|| {
+                run.late(Late::Field {
+                    field: f,
+                    action_only: true,
+                })
+            });
         Ok((
             Resolved::AlterField { field: f, action },
             Vec::new(),

@@ -134,13 +134,13 @@ impl Model {
             .unwrap_or_else(|_| run.late(Late::Unresolved))
     }
 
-    /// Add a unique or index over `fields` to the relation variable `on` names.
+    /// Add a unique or index over elements `elems` to the relation variable `on` names.
     pub(super) fn add_index(
         &mut self,
         run: &mut Run,
         kind: IndexKind,
         r: u64,
-        fields: &[Expr],
+        elems: Term,
         on: &ast::RelationRef,
     ) -> Res<Applied> {
         if let Some(sel) = &on.sel {
@@ -150,9 +150,6 @@ impl Model {
                 return refuse_at(on.span, e);
             }
         }
-        let (Some(first), Some(last)) = (fields.first(), fields.last()) else {
-            return broken("an index of no field");
-        };
         let names: Vec<&ast::Ident> = match &on.sel {
             None => Vec::new(),
             Some(ast::CtorSel::One(c)) => vec![c],
@@ -167,7 +164,7 @@ impl Model {
             id: Some(index),
             was: Vec::new(),
             kind,
-            elems: vec![Term::text(&run.text()[first.span.to(last.span).range()])],
+            elems: vec![elems],
             scope,
         };
         let built = self.appended(run, r, clause)?;
@@ -365,12 +362,8 @@ impl Model {
         r: u64,
         ctor: Option<&ast::Ident>,
         field: &ast::Ident,
-        value: &ast::DefaultValue,
+        value: Term,
     ) -> Res<Applied> {
-        let value = match value {
-            ast::DefaultValue::Generate(g) => Term::text(&format!("generate {}", g.text)),
-            ast::DefaultValue::Expr(e) => Term::text(&run.text()[e.span.range()]),
-        };
         let ids = self.default_ids(r, ctor.map(|c| c.text.as_str()), field)?;
         let clause = ClauseM::Default {
             ctor: ctor.map(|c| Term::text(&c.text)),
@@ -583,15 +576,15 @@ impl Model {
         run: &mut Run,
         r: u64,
         field: &ast::Ident,
-        ty: &ast::Type,
-        expr: &Expr,
+        ty: Term,
+        expr: Term,
     ) -> Res<Applied> {
         let computed = self.fresh(Space::Computed);
         let clause = ClauseM::Computed {
             id: Some(computed),
             name: field.text.clone(),
-            ty: Term::text(&run.text()[ty.span.range()]),
-            expr: Term::text(&run.text()[expr.span.range()]),
+            ty,
+            expr,
         };
         let Some((built, file)) = self.appended(run, r, clause)? else {
             let k = self.relations[&r].clauses.len() - 1;
@@ -631,8 +624,8 @@ impl Model {
         run: &mut Run,
         r: u64,
         field: &ast::Ident,
-        ty: &ast::Type,
-        expr: &Expr,
+        ty: Term,
+        expr: Term,
     ) -> Res<Applied> {
         let k = self.computed_at(r, field)?;
         if let ClauseM::Computed {
@@ -645,8 +638,8 @@ impl Model {
             .expect("the relation variable")
             .clauses[k]
         {
-            *held_ty = Term::text(&run.text()[ty.span.range()]);
-            *held_expr = Term::text(&run.text()[expr.span.range()]);
+            *held_ty = ty;
+            *held_expr = expr;
         }
         let Some((built, file)) = self.rebuilt_relation(run, r)? else {
             self.clause_typed(run, r, k, None)?;

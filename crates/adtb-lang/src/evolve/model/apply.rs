@@ -637,7 +637,7 @@ impl Model {
         built.canonical(file).map(Some).map_err(Fail::reason)
     }
 
-    /// Apply one operator. Returns it resolved.
+    /// Resolve operator `op` and apply it. Returns it resolved.
     pub(super) fn operator(&mut self, run: &mut Run, op: &OperatorKind) -> Res<(ResolvedOp, Maps)> {
         if matches!(
             op,
@@ -651,13 +651,31 @@ impl Model {
         let resolving = Resolving::of(self, run.module(), run.text());
         let resolved = resolving.op(op)?;
         resolving.tie_rest(op);
-        let mut ties = resolving.into_ties();
+        let ties = resolving.into_ties();
+        let out = self.apply(run, resolved)?;
+        if run.is_copying() {
+            let after = Resolving::of(self, run.module(), run.text());
+            after.tie_declared(op);
+            let mut ties = ties;
+            ties.extend(after.into_ties());
+            run.note_names(ties);
+        }
+        Ok(out)
+    }
+
+    /// Apply operator `op`. Returns it resolved.
+    pub(super) fn apply(&mut self, run: &mut Run, op: Op) -> Res<(ResolvedOp, Maps)> {
         let plain = |(op, clauses): (Resolved, Vec<Clause>)| (op, clauses, Ok(Vec::new()));
-        let (out, clauses, maps) = match resolved {
+        let (out, clauses, maps) = match op {
             Op::AddModule(m) => plain(self.add_module(&m)?),
             Op::DropModule(m) => plain(self.drop_module(&m)?),
-            Op::Add { kind, name, span } => plain(self.add(run, kind, &name, span)?),
-            Op::RedefineFn { function, span } => plain(self.redefine_fn(run, function, span, op)?),
+            Op::Add {
+                kind,
+                name,
+                span,
+                decl,
+            } => plain(self.add(run, kind, &name, span, &decl)?),
+            Op::RedefineFn { function, rest } => plain(self.redefine_fn(run, function, rest)?),
             Op::Drop(item) => plain(self.drop(run, item)?),
             Op::Rename { obj, to } => plain(self.rename(run, obj, &to)?),
             Op::Stage {
@@ -668,54 +686,54 @@ impl Model {
             } => plain(self.stage(run, key, to, verb, &shown)?),
             Op::AddField {
                 part,
-                path,
+                name,
                 ty,
                 action,
                 fill,
-            } => self.add_field(run, part, path, ty, action, fill)?,
+            } => self.add_field(run, part, &name, ty, action, &fill)?,
             Op::DropField(f) => self.drop_field(f)?,
             Op::AlterField {
                 field,
                 part,
-                path,
+                name,
                 action,
-            } => self.alter_field(run, (field, part), path, action)?,
+            } => self.alter_field(run, (field, part), &name, action)?,
             Op::AddIndex {
                 kind,
                 relation,
-                fields,
+                elems,
                 on,
-            } => self.add_index(run, kind, relation, fields, on)?,
+            } => self.add_index(run, kind, relation, elems, &on)?,
             Op::DropIndex {
                 kind,
                 relation,
                 fields,
                 on,
-            } => self.drop_index(run, kind, relation, fields, on)?,
+            } => self.drop_index(run, kind, relation, &fields, &on)?,
             Op::AddDefault {
                 relation,
                 ctor,
                 field,
                 value,
-            } => self.add_default(run, relation, ctor, field, value)?,
+            } => self.add_default(run, relation, ctor.as_ref(), &field, value)?,
             Op::DropDefault {
                 relation,
                 ctor,
                 field,
-            } => self.drop_default(run, relation, ctor, field)?,
+            } => self.drop_default(run, relation, ctor.as_ref(), &field)?,
             Op::AddComputed {
                 relation,
                 field,
                 ty,
                 expr,
-            } => self.add_computed(run, relation, field, ty, expr)?,
+            } => self.add_computed(run, relation, &field, ty, expr)?,
             Op::RedefineComputed {
                 relation,
                 field,
                 ty,
                 expr,
-            } => self.redefine_computed(run, relation, field, ty, expr)?,
-            Op::DropComputed { relation, field } => self.drop_computed(run, relation, field)?,
+            } => self.redefine_computed(run, relation, &field, ty, expr)?,
+            Op::DropComputed { relation, field } => self.drop_computed(run, relation, &field)?,
             Op::AddConstructor {
                 ty,
                 path,
@@ -723,7 +741,14 @@ impl Model {
                 place,
                 joins,
                 arms,
-            } => self.add_constructor(run, (ty, path), record, place, joins, arms)?,
+            } => self.add_constructor(
+                run,
+                (ty, &path),
+                record.as_deref(),
+                place.as_ref(),
+                &joins,
+                &arms,
+            )?,
             Op::RemoveConstructor { ty, ctor } => self.remove_constructor(run, ty, ctor)?,
             Op::Split {
                 ty,
@@ -732,57 +757,51 @@ impl Model {
                 into,
                 arms,
                 clauses,
-            } => self.split(run, (ty, ctor), path, into, arms, clauses)?,
+            } => self.split(run, (ty, ctor), &path, &into, &arms, &clauses)?,
             Op::Merge {
                 ty,
                 sel,
                 into,
                 arms,
                 clauses,
-            } => self.merge(run, (ty, sel), into, arms, clauses, false)?,
+            } => self.merge(run, (ty, &sel), &into, arms.as_deref(), &clauses, false)?,
             Op::Nest {
                 ty,
                 sel,
                 into,
                 clauses,
-            } => self.nest(run, ty, sel, into, clauses)?,
+            } => self.nest(run, ty, &sel, &into, &clauses)?,
             Op::Unnest {
                 ty,
                 ctor,
                 path,
                 clauses,
-            } => self.unnest(run, (ty, ctor), path, clauses)?,
+            } => self.unnest(run, (ty, ctor), &path, &clauses)?,
             Op::MoveField {
                 field,
                 part,
                 path,
                 sel,
                 fill,
-            } => self.move_field(run, (field, part), path, sel, fill)?,
+            } => self.move_field(run, (field, part), &path, sel.as_ref(), fill.as_ref())?,
             Op::Rekey {
                 relation,
                 key,
                 carry,
-            } => self.rekey(run, relation, key, carry)?,
-            Op::Grant(g) => self.grant(run, g)?,
-            Op::Revoke(r) => self.revoke(run, r)?,
-            Op::Script(w) => self.script(run, w)?,
+            } => self.rekey(run, relation, &key, &carry)?,
+            Op::Grant(g) => self.grant(run, &g)?,
+            Op::Revoke(r) => self.revoke(run, &r)?,
+            Op::Script(w) => self.script(run, &w)?,
             Op::Install {
                 name,
                 version,
                 from,
-            } => self.install(run, name, version, from)?,
-            Op::Uninstall(m) => self.uninstall(m)?,
-            Op::AdoptTzdb { release, from } => self.adopt_tzdb(release, from)?,
-            Op::Revert { migration, fills } => self.revert(run, migration, fills)?,
+            } => self.install(run, &name, &version, &from)?,
+            Op::Uninstall(m) => self.uninstall(&m)?,
+            Op::AdoptTzdb { release, from } => self.adopt_tzdb(&release, &from)?,
+            Op::Revert { migration, fills } => self.revert(run, &migration, &fills)?,
         };
         self.settle();
-        if run.is_copying() {
-            let after = Resolving::of(self, run.module(), run.text());
-            after.tie_declared(op);
-            ties.extend(after.into_ties());
-            run.note_names(ties);
-        }
         Ok((ResolvedOp { op: out, clauses }, maps))
     }
 

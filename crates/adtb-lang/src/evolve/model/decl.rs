@@ -5,7 +5,7 @@ use super::op::{
 use super::run::{Built, Late, Run, unbuilt};
 use super::slots::Found;
 use super::*;
-use crate::ast::{self, OperatorKind};
+use crate::ast;
 use crate::check;
 use crate::evolve::{Clause, Resolved, SourceDecl, Target, mentions_def, mentions_rel};
 use crate::ids::named_ids;
@@ -69,6 +69,7 @@ impl Model {
         kind: Kind,
         name: &str,
         span: Span,
+        decl: &Term,
     ) -> Res<(Resolved, Vec<Clause>)> {
         if !self.modules.contains(run.module()) {
             return refuse(format!(
@@ -89,7 +90,7 @@ impl Model {
         let at = FileId(self.decls.len() as u32);
         let decl = SourceDecl {
             module: run.module().to_string(),
-            text: run.text()[span.range()].to_string(),
+            text: decl.print(self),
         };
         let built = match self.build_adopting(std::slice::from_ref(&decl), &run.ahead(self)) {
             Ok(b) => b,
@@ -267,20 +268,15 @@ impl Model {
         &mut self,
         run: &mut Run,
         function: u64,
-        span: Span,
-        op: &OperatorKind,
+        rest: Term,
     ) -> Res<(Resolved, Vec<Clause>)> {
-        let OperatorKind::RedefineFn(f) = op else {
-            return broken("a redefinition of no function");
-        };
         let at = self
             .decl_at(Item::Fn(function))
             .expect("a function the operator resolved");
-        let rest = &run.text()[f.name.span.end as usize..span.end as usize];
         self.functions
             .get_mut(&function)
             .expect("the function")
-            .rest = Term::text(rest);
+            .rest = rest;
         let built = match self.build_adopting(&[], &run.ahead(self)) {
             Ok(b) => b,
             Err(ds) => {
