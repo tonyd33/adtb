@@ -51,8 +51,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use adtb_file::Disk;
-use adtb_lang::ids::CatIndexId;
-use adtb_lang::ids::held_id;
+use adtb_lang::ids::{CatIndexId, held_id};
 use adtb_lang::kernel::{Terms, Tm, ValidTerms, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Committed;
