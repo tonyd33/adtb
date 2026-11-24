@@ -542,9 +542,7 @@ impl Model {
                 rel.uniques.clear();
                 self.s.rels.push(rel);
                 self.keys.add();
-                let waiting = self.building || super::super::SEARCH_WAITING_AFTER_BROKEN;
-                let variant = if waiting { self.s.extra.next % 8 } else { 7 };
-                let (mut out, reach, last) = match variant {
+                let (mut out, reach, last) = match self.s.extra.next % 8 {
                     0..=4 => {
                         let f = self.fresh("f");
                         let decl = format!("{f} (k: Key {name}) -> Key {name} = k");

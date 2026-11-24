@@ -443,6 +443,18 @@ pub(super) fn broken<T>(why: impl Into<String>) -> Res<T> {
 }
 
 impl Model {
+    /// Refuse by the declarations' first failure when module `m` holds a declaration of kind
+    /// `kind` named `name` added while they do not build.
+    pub(super) fn unheld(&self, m: &str, kind: Kind, name: &str) -> Res<()> {
+        if !matches!(self.find(m, kind, name), Some(Item::Held(..))) {
+            return Ok(());
+        }
+        match self.built(&[], &self.ahead_inputs()) {
+            Err(ds) => unchecked(&ds),
+            Ok(_) => broken("a held declaration in declarations that build"),
+        }
+    }
+
     /// Returns the declaration of kind `kind` named `name` in module `module`; a set's name is
     /// `relation.set`.
     pub(super) fn find(&self, module: &str, kind: Kind, name: &str) -> Option<Item> {
@@ -597,7 +609,7 @@ impl<'a> Resolving<'a> {
         match self.model.type_named(&m, &q.name.text) {
             Some(t) => Ok(self.tied(q.name.span, Space::Shared, t)),
             None => {
-                self.unheld(&m, Kind::Type, &q.name.text)?;
+                self.model.unheld(&m, Kind::Type, &q.name.text)?;
                 refuse_at(
                     q.span(),
                     format!("module `{m}` declares no type `{}`", q.name.text),
@@ -611,24 +623,12 @@ impl<'a> Resolving<'a> {
         match self.model.relation_named(&m, &q.name.text) {
             Some(r) => Ok(self.tied(q.name.span, Space::Shared, r)),
             None => {
-                self.unheld(&m, Kind::Relation, &q.name.text)?;
+                self.model.unheld(&m, Kind::Relation, &q.name.text)?;
                 refuse_at(
                     q.span(),
                     format!("module `{m}` declares no relation `{}`", q.name.text),
                 )
             }
-        }
-    }
-
-    /// Refuse by the declarations' first failure when module `m` holds a declaration of kind
-    /// `kind` named `name` added while they do not build.
-    fn unheld(&self, m: &str, kind: Kind, name: &str) -> Res<()> {
-        if !matches!(self.model.find(m, kind, name), Some(Item::Held(..))) {
-            return Ok(());
-        }
-        match self.model.built(&[], &self.model.ahead_inputs()) {
-            Err(ds) => unchecked(&ds),
-            Ok(_) => broken("a held declaration in declarations that build"),
         }
     }
 
@@ -658,10 +658,14 @@ impl<'a> Resolving<'a> {
             .find(&m, Kind::Set, &format!("{}.{}", rel.name.text, name.text))
         {
             Some(Item::Set(s)) => Ok(self.tied(name.span, Space::Set, s)),
-            _ => refuse_at(
-                name.span,
-                format!("`{}` declares no named set `{}`", rel.name.text, name.text),
-            ),
+            _ => {
+                let set = format!("{}.{}", rel.name.text, name.text);
+                self.model.unheld(&m, Kind::Set, &set)?;
+                refuse_at(
+                    name.span,
+                    format!("`{}` declares no named set `{}`", rel.name.text, name.text),
+                )
+            }
         }
     }
 
@@ -837,10 +841,13 @@ impl<'a> Resolving<'a> {
                         function,
                         rest: Term::text(&self.text[f.name.span.end as usize..f.span.end as usize]),
                     }),
-                    _ => refuse_at(
-                        f.name.span,
-                        format!("module `{}` declares no fn `{}`", self.module, f.name.text),
-                    ),
+                    _ => {
+                        self.model.unheld(self.module, Kind::Fn, &f.name.text)?;
+                        refuse_at(
+                            f.name.span,
+                            format!("module `{}` declares no fn `{}`", self.module, f.name.text),
+                        )
+                    }
                 }
             }
             OperatorKind::DropType(q) => Ok(Op::Drop(self.decl(Kind::Type, q)?)),

@@ -40,11 +40,6 @@ const SEARCH_SPLIT_OF_SELF_REFERENCE: bool = false;
 /// set no longer declared.
 const SEARCH_DROP_OF_SELF_SELECTED_SET: bool = false;
 
-/// Whether a relation's draw adds before it a declaration naming its key that the migration
-/// rewrites or drops, after a broken operator. The engine refuses the `redefine fn` of a function
-/// defined while the declarations do not build, naming the redefine, not the broken operator.
-const SEARCH_WAITING_AFTER_BROKEN: bool = false;
-
 /// Whether a migration that drops a type naming the key of a relation it adds later is reverted.
 /// The engine fails the revert with an internal error: the inverse of the `drop type` names the
 /// relation the inverse of the `add relation` dropped.

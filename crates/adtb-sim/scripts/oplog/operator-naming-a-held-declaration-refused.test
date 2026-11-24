@@ -17,3 +17,10 @@ migrate refused MigrationRefused { version: 2, reason: Rejected { reason: Schema
   add type U = { n: I64 }
   drop type U
   add field T.zz: I64 fill 1
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "rekey relation ts key zz", detail: "field `T.id` of `ts`'s own type is typed `Key ts` and is outside the new key; drop it in the same migration\nthe operator checks against the schema the operators before it produce, which does not check: key field `zz` is not a header field or a field of the only constructor of `T`" } } }
+  module m
+  rekey relation ts key zz
+  define fn f (x: I64) -> I64 = x
+  redefine fn f (x: I64) -> I64 = x + 1
+  add field T.zz: I64 fill 1

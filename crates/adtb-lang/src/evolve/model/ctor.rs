@@ -355,13 +355,17 @@ impl Model {
                     ArmTarget::OfConstraint { constraint },
                     None,
                 )),
-                _ => refuse_at(
-                    a.target.span(),
-                    format!(
-                        "module `{m}` declares no schema function, constraint or computed field `{}`",
-                        a.target.name.text
-                    ),
-                ),
+                _ => {
+                    self.unheld(&m, Kind::Fn, &a.target.name.text)?;
+                    self.unheld(&m, Kind::Constraint, &a.target.name.text)?;
+                    refuse_at(
+                        a.target.span(),
+                        format!(
+                            "module `{m}` declares no schema function, constraint or computed field `{}`",
+                            a.target.name.text
+                        ),
+                    )
+                }
             },
         }
     }

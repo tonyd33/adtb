@@ -565,8 +565,6 @@ struct Model {
     keys: Keys,
     /// The version the migration produces.
     version: u64,
-    /// Whether the declarations build before the operator drawn next.
-    building: bool,
 }
 
 /// What a scope of constructors becomes when constructors are replaced: each old constructor's
@@ -732,7 +730,6 @@ impl Case {
             s: self.schema.clone(),
             keys: self.keys.clone(),
             version,
-            building: !broke,
         };
         let mut ops = m.draw(&mut rng, kind, broke)?;
         let mut steps = vec![(ops.len(), m.s.clone(), m.keys.clone())];
