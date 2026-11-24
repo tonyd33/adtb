@@ -370,10 +370,11 @@ impl<R: Runtime> std::fmt::Debug for Call<R> {
     }
 }
 
-/// Returns the value of the bound program `bound`.
-pub fn execute<R: Runtime>(rt: R, bound: Bound, call: Call<R>) -> Result<Val, Error> {
+/// Returns the value of the bound program `bound`, held in the call's grant.
+pub fn execute<R: Runtime>(rt: R, bound: Bound, call: Call<R>) -> Result<Held<Val>, Error> {
+    let grant = call.grant.clone();
     let (cx, env) = start(rt, bound, call)?;
-    cx.root(&env)
+    grant.hold(cx.root(&env)?)
 }
 
 /// Returns the context that runs the program of `bound` for `call` over its store narrowed to the

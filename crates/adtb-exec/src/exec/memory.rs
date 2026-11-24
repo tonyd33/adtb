@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::Waker;
@@ -332,6 +332,16 @@ impl Arena {
         self.grant.used.fetch_sub(n, Ordering::AcqRel);
     }
 
+    /// Returns an arena holding up to `bytes` of this one's charge, taken from it.
+    pub fn part(&mut self, bytes: usize) -> Arena {
+        let n = bytes.min(self.bytes);
+        self.bytes -= n;
+        Arena {
+            grant: self.grant.clone(),
+            bytes: n,
+        }
+    }
+
     /// Take over what `other` holds.
     pub fn absorb(&mut self, mut other: Arena) {
         assert!(
@@ -395,11 +405,87 @@ impl Grant {
     }
 }
 
+impl Grant {
+    /// Returns `t` held in this grant. Fails with the statement limit, holding nothing, when
+    /// the grant has less than its footprint left.
+    pub fn hold<T: Footprint>(self: &Arc<Grant>, t: T) -> Result<Held<T>, Error> {
+        Ok(Held {
+            arena: self.take(t.footprint())?,
+            items: t,
+        })
+    }
+}
+
 impl<C> std::ops::Deref for Held<C> {
     type Target = C;
 
     fn deref(&self) -> &C {
         &self.items
+    }
+}
+
+impl<C> Held<C> {
+    /// Returns what it holds, returning its charge to the grant.
+    pub fn into_inner(self) -> C {
+        self.items
+    }
+
+    pub fn grant(&self) -> &Arc<Grant> {
+        self.arena.grant()
+    }
+
+    /// Returns an empty collection of the same grant.
+    pub fn sibling<D: Default>(&self) -> Held<D> {
+        self.grant().held()
+    }
+}
+
+impl<T: Footprint> Held<T> {
+    /// Returns `f` of what it holds, charged in its place: the difference taken from the grant
+    /// when the result is larger, returned when smaller.
+    pub fn try_map<U: Footprint, E: From<Error>>(
+        mut self,
+        f: impl FnOnce(T) -> Result<U, E>,
+    ) -> Result<Held<U>, E> {
+        let before = self.arena.bytes();
+        let u = f(self.items)?;
+        let after = u.footprint();
+        if after > before {
+            self.arena.grow(after - before)?;
+        } else {
+            self.arena.release(before - after);
+        }
+        Ok(Held {
+            items: u,
+            arena: self.arena,
+        })
+    }
+}
+
+impl Held<BTreeSet<super::Val>> {
+    /// Returns the set it holds as a value, charged as the value's size.
+    pub fn into_value(mut self) -> Result<Held<super::Val>, Error> {
+        let v = super::Val::set(self.items);
+        self.arena
+            .grow(v.size().saturating_sub(self.arena.bytes()))?;
+        Ok(Held {
+            items: v,
+            arena: self.arena,
+        })
+    }
+}
+
+impl Held<super::Val> {
+    /// Returns the elements of the set it holds, keeping its charge. Fails when it holds no set.
+    pub fn into_set(self) -> Result<Held<BTreeSet<super::Val>>, Error> {
+        let items = match self.items {
+            super::Val::Set(s) => Arc::unwrap_or_clone(s),
+            other => return Err(super::value::mistyped("a set", &other)),
+        };
+        Ok(Held {
+            items,
+            arena: self.arena,
+        })
     }
 }
 
@@ -418,7 +504,7 @@ impl<T: Footprint> Held<Vec<T>> {
     }
 }
 
-impl<T: Ord + Footprint> Held<std::collections::BTreeSet<T>> {
+impl<T: Ord + Footprint> Held<BTreeSet<T>> {
     /// Add `t`. Returns whether it was absent.
     pub fn insert(&mut self, t: T) -> Result<bool, Error> {
         let n = t.footprint();
@@ -428,6 +514,41 @@ impl<T: Ord + Footprint> Held<std::collections::BTreeSet<T>> {
             self.arena.release(n);
         }
         Ok(fresh)
+    }
+
+    /// Remove `t`, returning its charge. Returns whether it was present.
+    pub fn remove(&mut self, t: &T) -> bool {
+        let gone = self.items.remove(t);
+        if gone {
+            self.arena.release(t.footprint());
+        }
+        gone
+    }
+
+    /// Move every item of `other` into this set with its charge, returning the charge of each
+    /// it already held.
+    pub fn append(&mut self, other: Held<BTreeSet<T>>) {
+        let Held { items, arena } = other;
+        self.arena.absorb(arena);
+        for t in items {
+            let n = t.footprint();
+            if !self.items.insert(t) {
+                self.arena.release(n);
+            }
+        }
+    }
+
+    /// Returns the items `f` holds true of, with their charge, leaving the rest.
+    pub fn split_off_where(&mut self, mut f: impl FnMut(&T) -> bool) -> Held<BTreeSet<T>> {
+        let (taken, kept): (BTreeSet<T>, BTreeSet<T>) = std::mem::take(&mut self.items)
+            .into_iter()
+            .partition(|t| f(t));
+        self.items = kept;
+        let bytes = taken.iter().map(Footprint::footprint).sum();
+        Held {
+            items: taken,
+            arena: self.arena.part(bytes),
+        }
     }
 }
 

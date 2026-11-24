@@ -137,7 +137,9 @@ impl<R: Runtime> Stmt<'_, R> {
                 let new = if retag {
                     let (var, body) = self.db.retags[&r];
                     let env: Env = [(var, u.clone())].into();
-                    let v = self.eval(Arena::Program(RootKind::DeleteAction), body, &env)?;
+                    let v = self
+                        .eval(Arena::Program(RootKind::DeleteAction), body, &env)?
+                        .into_inner();
                     cleared(v, c, &clears)
                 } else if !clears.is_empty() {
                     cleared(u.clone(), c, &clears)

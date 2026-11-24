@@ -206,14 +206,14 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let mut effects = Effects::new();
         let t = self.root;
         let result = match self.terms.kind(t) {
-            Kind::Transact(b, _) => self.block(*b, &env, &mut effects)?,
+            Kind::Transact(b, _) => self.block(*b, &env, &mut effects)?.into_inner(),
             _ if *self.terms.ty(t) == Ty::Change => {
                 self.write(t, &env, &mut effects)?;
                 Val::record(Vec::new())
             }
             _ => {
                 return Ok(Outcome {
-                    result: self.eval(Arena::Statement, t, &env)?,
+                    result: self.eval(Arena::Statement, t, &env)?.into_inner(),
                     inserted: Rows::new(),
                     deleted: Rows::new(),
                 });
@@ -264,7 +264,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                             "a file scan whose path depends on a row".into(),
                         )));
                     }
-                    let Val::Text(at) = self.eval(Arena::Statement, *path, env)? else {
+                    let Val::Text(at) = self.eval(Arena::Statement, *path, env)?.into_inner()
+                    else {
                         return Err(Broken::ScanPathNotText.into());
                     };
                     let records = self.local.borrow_mut().scan(
@@ -305,8 +306,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         Ok(())
     }
 
-    /// Returns the value of term `t` of arena `a` in `env`, its placeholders filled.
-    pub fn eval(&self, a: Arena, t: Tm, env: &Env) -> Result<Val, Error> {
+    /// Returns the value of term `t` of arena `a` in `env`, its placeholders filled, held in the
+    /// statement's grant.
+    pub fn eval(&self, a: Arena, t: Tm, env: &Env) -> Result<Held<Val>, Error> {
         if a == Arena::Statement {
             let unconverted = self.unconverted.borrow();
             let mut facts = crate::plan::Facts::default();
@@ -340,7 +342,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             .call(&self.store, self.options, &self.stop, &self.grant)?;
         let bound = program.bind(|v| env.get(&v).cloned())?;
         let v = exec::execute(self.db.rt.clone(), bound, call)?;
-        self.fill(a, v)
+        v.try_map(|v| self.fill(a, v))
     }
 
     /// Returns the plan of term `t` of the statement.
@@ -418,16 +420,18 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         })
     }
 
-    pub(super) fn set(&self, t: Tm, env: &Env) -> Result<BTreeSet<Val>, Error> {
-        match self.eval(Arena::Statement, t, env)? {
-            Val::Set(s) => Ok(s.as_ref().clone()),
-            other => Err(Broken::RowsNotSet(other).into()),
+    pub(super) fn set(&self, t: Tm, env: &Env) -> Result<Held<BTreeSet<Val>>, Error> {
+        let v = self.eval(Arena::Statement, t, env)?;
+        if !matches!(*v, Val::Set(_)) {
+            return Err(Broken::RowsNotSet(v.into_inner()).into());
         }
+        Ok(v.into_set()?)
     }
 
     /// Evaluate block term `t`, adding the effects of its writes to `out`. Returns its result.
-    fn block(&self, t: Tm, env: &Env, out: &mut Effects) -> Result<Val, Error> {
+    fn block(&self, t: Tm, env: &Env, out: &mut Effects) -> Result<Held<Val>, Error> {
         let (mut t, mut env) = (t, env.clone());
+        let mut bound = Vec::new();
         loop {
             t = match self.terms.kind(t) {
                 Kind::Block(w, k) => {
@@ -436,12 +440,14 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 }
                 Kind::LetBang(x, w, k) => {
                     let v = self.bind_write(*w, &env, out)?;
-                    env = bind(&env, *x, v);
+                    env = bind(&env, *x, (*v).clone());
+                    bound.push(v);
                     *k
                 }
                 Kind::Let(x, e, k) => {
                     let v = self.eval(Arena::Statement, *e, &env)?;
-                    env = bind(&env, *x, v);
+                    env = bind(&env, *x, (*v).clone());
+                    bound.push(v);
                     *k
                 }
                 _ => return self.eval(Arena::Statement, t, &env),
@@ -472,7 +478,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             }
             Kind::Par(ws) => ws.iter().try_for_each(|w| self.write(*w, env, out)),
             Kind::Fail(m) => {
-                let Val::Text(message) = self.eval(Arena::Statement, m, env)? else {
+                let Val::Text(message) = self.eval(Arena::Statement, m, env)?.into_inner() else {
                     return Err(Broken::FailNotText.into());
                 };
                 Err(Error::Rejected(Rejection::UserError {
@@ -494,11 +500,11 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     .iter()
                     .find(|(d, _, _)| *d == c)
                     .ok_or(Broken::NoArm(c))?;
-                self.write(*w, &bind(env, *x, v), out)
+                self.write(*w, &bind(env, *x, (*v).clone()), out)
             }
             Kind::Let(x, e, w) => {
                 let v = self.eval(Arena::Statement, e, env)?;
-                self.write(w, &bind(env, x, v), out)
+                self.write(w, &bind(env, x, (*v).clone()), out)
             }
             Kind::Unreachable => Err(Broken::Unreachable.into()),
             k => Err(Broken::NotAWrite(TermKind(k)).into()),
@@ -507,24 +513,24 @@ impl<'a, R: Runtime> Stmt<'a, R> {
 
     /// Evaluate a `Replace` or `Upsert`, adding its effects to `out`. Returns the value a `let`
     /// binds to it.
-    fn bind_write(&self, t: Tm, env: &Env, out: &mut Effects) -> Result<Val, Error> {
+    fn bind_write(&self, t: Tm, env: &Env, out: &mut Effects) -> Result<Held<Val>, Error> {
         match self.terms.kind(t).clone() {
             Kind::Replace(r, rows, f) => {
                 let Kind::Lam(x, body) = *self.terms.kind(f) else {
                     return Err(Broken::ReplaceNotLam.into());
                 };
-                let mut news = BTreeSet::new();
+                let mut news: Held<BTreeSet<Val>> = self.grant.held();
                 for v in self.set(rows, env)? {
                     let n = self.eval(Arena::Statement, body, &bind(env, x, v.clone()))?;
                     if self.key_of(r, &n)? != self.key_of(r, &v)? {
                         return Err(Error::Rejected(Rejection::KeyChanged { relation: r }));
                     }
-                    if n != v && self.in_snapshot(r, &v)? {
-                        out.insert(Eff::Rep(r, v, n.clone()));
+                    if *n != v && self.in_snapshot(r, &v)? {
+                        out.insert(Eff::Rep(r, v, (*n).clone()));
                     }
-                    news.insert(n);
+                    news.insert(n.into_inner())?;
                 }
-                Ok(Val::set(news))
+                Ok(news.into_value()?)
             }
             Kind::Upsert { rows, .. } => {
                 let rows = self.records(rows, env, None)?;

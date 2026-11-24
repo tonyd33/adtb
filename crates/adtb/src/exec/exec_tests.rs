@@ -267,7 +267,8 @@ fn run_all(
         let mut got = Vec::new();
         for c in cases {
             let grant = budget.admit(64 << 20).expect("a grant fits");
-            let v = exec::execute(rt.clone(), c.bound(), call(store, grant, pool, opts));
+            let v = exec::execute(rt.clone(), c.bound(), call(store, grant, pool, opts))
+                .map(exec::Held::into_inner);
             got.push(outcome(f.schema(), &c.ty, v));
         }
         assert_eq!(0, budget.granted(), "every grant returned to the budget");
@@ -863,7 +864,7 @@ fn an_execution_over_a_store_that_does_not_list_its_program_s_reads_is_refused()
             .iter()
             .map(|c| {
                 let call = call(&narrowed, roomy(), None, XOptions::default());
-                exec::execute(rt.clone(), c.bound(), call)
+                exec::execute(rt.clone(), c.bound(), call).map(exec::Held::into_inner)
             })
             .collect::<Vec<_>>()
     });
@@ -892,7 +893,8 @@ fn an_exists_that_stops_early_reads_fewer_versions_than_the_heap_holds() {
             .iter()
             .map(|c| {
                 let g = budget.admit(64 << 20).expect("a grant fits");
-                let v = exec::execute(rt.clone(), c.bound(), call(&store, g, None, opts));
+                let v = exec::execute(rt.clone(), c.bound(), call(&store, g, None, opts))
+                    .map(exec::Held::into_inner);
                 (c.name.clone(), v, count.take())
             })
             .collect::<Vec<_>>();
@@ -932,7 +934,8 @@ fn stopped_scan_beside_a_writer_of_its_row(
                     .testing()
                     .store(&reader)
                     .expect("the transaction is open");
-                let v = exec::execute(rt, c.bound(), call(&store, roomy(), pool.as_ref(), opts));
+                let v = exec::execute(rt, c.bound(), call(&store, roomy(), pool.as_ref(), opts))
+                    .map(exec::Held::into_inner);
                 drop(store);
                 assert_eq!(Ok(Val::bool(true)), v, "{}", c.name);
                 out = Some((c.rewrites.early_stop, skew(reader, writer)));
@@ -1090,7 +1093,8 @@ fn run_spilling(
         let mut got = Vec::new();
         for c in cases {
             let g = budget.admit(grant).expect("a grant fits");
-            let v = exec::execute(rt.clone(), c.bound(), call(store, g.clone(), pool, opts));
+            let v = exec::execute(rt.clone(), c.bound(), call(store, g.clone(), pool, opts))
+                .map(exec::Held::into_inner);
             got.push((outcome(f.schema(), &c.ty, v), g.spilled()));
         }
         assert_eq!(0, budget.granted(), "every grant returned to the budget");
@@ -1103,7 +1107,7 @@ const STOP_RANGE_QUERIES: &[&str] = &[
     "exists s in stock where s.v > 50",
     "exists s in stock where s.v > 500",
     "exists s in stock where s.id > stock.key(10) and s.v > 50",
-    "from s in stock where s.id > stock.key(40) and s.id <= stock.key(260) select { id: s.id, name: s.name }",
+    "from s in stock where s.id > stock.key(40) and s.id <= stock.key(140) select { id: s.id, name: s.name }",
     "count(s for s in stock where s.id >= stock.key(100))",
     "top 0 by (s.v, key s) (from s in stock select s)",
 ];

@@ -351,7 +351,8 @@ impl<R: Runtime> Query<'_, R> {
         );
         let run = program
             .bind(|_| None)
-            .and_then(|bound| exec::execute(store.pager().rt().clone(), bound, call));
+            .and_then(|bound| exec::execute(store.pager().rt().clone(), bound, call))
+            .map(exec::Held::into_inner);
         let v = match run {
             Ok(v) => v,
             Err(exec::Error::Fault(f)) => {

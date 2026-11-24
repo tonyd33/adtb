@@ -387,33 +387,30 @@ impl<R: Runtime> Ctx<R> {
 
     fn fix(self: &Arc<Self>, fx: &Fix, env: &Frame, par: bool) -> Result<Val, Error> {
         let n = fx.binds.len();
-        let with = |cur: &[Val], deltas: &[Val]| {
+        let with = |cur: &[Held<Val>], deltas: &[Held<Val>]| {
             let mut e = env.clone();
             for (i, b) in fx.binds.iter().enumerate() {
-                e.bind_one(b.var, cur[i].clone());
-                e.bind_one(b.delta, deltas[i].clone());
+                e.bind_one(b.var, (*cur[i]).clone());
+                e.bind_one(b.delta, (*deltas[i]).clone());
             }
             e
         };
+        let held = |e: &Eval, inner: &Frame| self.grant.hold(self.eval_env(e, inner, par)?);
         let limit = self.options.fix_rounds;
-        let mut held = self.grant.arena();
-        let mut hold = |sets: &[Val]| -> Result<(), Error> {
-            let bytes: usize = sets.iter().map(Val::size).sum();
-            let more = bytes.saturating_sub(held.bytes());
-            held.grow(more)
-        };
-        let mut cur: Vec<Val> = vec![Val::empty_set(); n];
+        let mut cur = (0..n)
+            .map(|_| self.grant.hold(Val::empty_set()))
+            .collect::<Result<Vec<_>, _>>()?;
         let mut rounds = 0;
         let steps: Option<Vec<&Eval>> = fx.binds.iter().map(|b| b.step.as_ref()).collect();
         if let Some(steps) = steps {
             let inner = with(&cur, &cur);
-            let mut deltas = fx
-                .binds
-                .iter()
-                .map(|b| self.eval_env(&b.body, &inner, par))
+            let mut deltas = (fx.binds.iter())
+                .map(|b| held(&b.body, &inner))
                 .collect::<Result<Vec<_>, _>>()?;
-            cur = deltas.clone();
-            hold(&cur)?;
+            drop(inner);
+            cur = (deltas.iter())
+                .map(|d| self.grant.hold((**d).clone()))
+                .collect::<Result<Vec<_>, _>>()?;
             while any_rows(&deltas)? {
                 rounds += 1;
                 if rounds > limit {
@@ -423,33 +420,31 @@ impl<R: Runtime> Ctx<R> {
                 let inner = with(&cur, &deltas);
                 let mut found = Vec::with_capacity(n);
                 for step in &steps {
-                    found.push(self.eval_env(step, &inner, par)?);
+                    found.push(held(step, &inner)?);
                 }
-                for (i, s) in found.into_iter().enumerate() {
-                    let old = cur[i].as_set()?;
-                    let new: BTreeSet<Val> = s
-                        .as_set()?
-                        .iter()
-                        .filter(|x| !old.contains(x))
-                        .cloned()
-                        .collect();
-                    let mut all = old.clone();
-                    all.extend(new.iter().cloned());
-                    cur[i] = Val::set(all);
-                    deltas[i] = Val::set(new);
+                drop(inner);
+                for (i, f) in found.into_iter().enumerate() {
+                    let empty = self.grant.hold(Val::empty_set())?;
+                    let mut all = std::mem::replace(&mut cur[i], empty).into_set()?;
+                    let mut new: Held<BTreeSet<Val>> = self.grant.held();
+                    for x in f.into_set()? {
+                        if !all.contains(&x) {
+                            new.insert(x.clone())?;
+                            all.insert(x)?;
+                        }
+                    }
+                    cur[i] = all.into_value()?;
+                    deltas[i] = new.into_value()?;
                 }
-                hold(&cur)?;
             }
             return self.eval_env(&fx.body, &with(&cur, &cur), par);
         }
         loop {
             let inner = with(&cur, &cur);
-            let next = fx
-                .binds
-                .iter()
-                .map(|b| self.eval_env(&b.body, &inner, par))
+            let next = (fx.binds.iter())
+                .map(|b| held(&b.body, &inner))
                 .collect::<Result<Vec<_>, _>>()?;
-            if next == cur {
+            if next.iter().zip(&cur).all(|(a, b)| **a == **b) {
                 return self.eval_env(&fx.body, &inner, par);
             }
             rounds += 1;
@@ -457,7 +452,6 @@ impl<R: Runtime> Ctx<R> {
                 return Err(Error::StatementLimit(Exceeded::Rounds { limit }));
             }
             self.check_cancel()?;
-            hold(&next)?;
             cur = next;
         }
     }
@@ -1004,7 +998,7 @@ impl<'a> Expand<'a> {
 }
 
 /// Returns whether any of `sets` holds a row.
-fn any_rows(sets: &[Val]) -> Result<bool, Error> {
+fn any_rows(sets: &[Held<Val>]) -> Result<bool, Error> {
     for s in sets {
         if !s.as_set()?.is_empty() {
             return Ok(true);

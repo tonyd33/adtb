@@ -214,7 +214,7 @@ impl<R: Runtime> Stmt<'_, R> {
                         .find(|(p, _)| *p == v)
                         .map(|(_, rows)| rows.clone())
                 })?;
-                match exec::execute(self.db.rt.clone(), bound, call)? {
+                match exec::execute(self.db.rt.clone(), bound, call)?.into_inner() {
                     Val::Set(report) if idle => {
                         #[cfg(any(test, feature = "testing"))]
                         IDLE_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

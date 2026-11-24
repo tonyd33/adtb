@@ -4,7 +4,7 @@ use adtb_lang::kernel::{Conflict, Kind, Tm, Var};
 use adtb_lang::types::{RelId, Ty};
 
 use crate::exec::types::ctors;
-use crate::exec::{self, Val};
+use crate::exec::{self, Held, Val};
 use crate::runtime::Runtime;
 
 use super::eval::{Eff, Effects, Env, Stmt, bind};
@@ -28,7 +28,7 @@ impl<R: Runtime> Stmt<'_, R> {
         insert: Tm,
         env: &Env,
         out: &mut Effects,
-    ) -> Result<Val, Error> {
+    ) -> Result<Held<Val>, Error> {
         let rows = match self.terms().kind(insert) {
             Kind::Insert(_, rows) | Kind::Upsert { rows, .. } => *rows,
             k => {
@@ -40,7 +40,7 @@ impl<R: Runtime> Stmt<'_, R> {
         let bound = match self.terms().kind(insert) {
             Kind::Insert(r, _) => {
                 out.extend(rows.iter().map(|v| Eff::Ins(*r, v.clone())));
-                Val::set(rows)
+                rows.into_value()?
             }
             _ => self.upsert(insert, rows, env, out)?,
         };
@@ -64,7 +64,7 @@ impl<R: Runtime> Stmt<'_, R> {
         rows: Tm,
         env: &Env,
         mut rejected: Option<&mut Vec<Rejected>>,
-    ) -> Result<BTreeSet<Val>, Error> {
+    ) -> Result<Held<BTreeSet<Val>>, Error> {
         let source = match self.terms().kind(rows) {
             Kind::For(x, src, body) => match self.terms().kind(*src) {
                 Kind::Rel(r, _) => Some((*x, *r, *src, *body)),
@@ -91,18 +91,17 @@ impl<R: Runtime> Stmt<'_, R> {
             ) => {}
             other => return other,
         }
-        let mut keyed = Vec::new();
+        let mut keyed: Held<Vec<(Val, Val)>> = self.grant().held();
         for p in self.set(src, env)? {
-            keyed.push((self.key_of(r0, &p)?, p));
+            keyed.push((self.key_of(r0, &p)?, p))?;
         }
-        keyed.sort_by(|a, b| a.0.cmp(&b.0));
-        let records: Vec<Val> = keyed.into_iter().map(|(_, p)| p).collect();
+        keyed.sort();
         let source = self.schema().relation(r0).name.clone();
-        let mut out = BTreeSet::new();
-        for (i, p) in records.into_iter().enumerate() {
+        let mut out: Held<BTreeSet<Val>> = self.grant().held();
+        for (i, (_, p)) in keyed.into_iter().enumerate() {
             let line = i as i64 + 1;
             match self.set(body, &bind(env, x, p.clone())) {
-                Ok(vs) => out.extend(vs),
+                Ok(vs) => out.append(vs),
                 Err(
                     Error::Rejected(Rejection::BadInput { detail, .. })
                     | Error::Exec(exec::Error::Rejected(detail)),
@@ -139,14 +138,14 @@ impl<R: Runtime> Stmt<'_, R> {
         (x, body): (Var, Tm),
         env: &Env,
         mut rejected: Option<&mut Vec<Rejected>>,
-    ) -> Result<BTreeSet<Val>, Error> {
+    ) -> Result<Held<BTreeSet<Val>>, Error> {
         let records = self.scan_records(scan)?;
-        let mut out = BTreeSet::new();
+        let mut out: Held<BTreeSet<Val>> = self.grant().held();
         for r in records {
             let reason = match r.row {
                 Ok(p) => match self.set(body, &bind(env, x, p)) {
                     Ok(vs) => {
-                        out.extend(vs);
+                        out.append(vs);
                         continue;
                     }
                     Err(
@@ -234,10 +233,10 @@ impl<R: Runtime> Stmt<'_, R> {
     pub(super) fn upsert(
         &self,
         t: Tm,
-        rows: BTreeSet<Val>,
+        rows: Held<BTreeSet<Val>>,
         env: &Env,
         out: &mut Effects,
-    ) -> Result<Val, Error> {
+    ) -> Result<Held<Val>, Error> {
         let Kind::Upsert {
             rel,
             on,
@@ -250,12 +249,12 @@ impl<R: Runtime> Stmt<'_, R> {
         else {
             panic!("an upsert")
         };
-        let mut bound = BTreeSet::new();
+        let mut bound: Held<BTreeSet<Val>> = self.grant().held();
         for n in rows {
             let olds = self.conflicts(rel, on, &n)?;
             if olds.is_empty() {
                 out.insert(Eff::Ins(rel, n.clone()));
-                bound.insert(n);
+                bound.insert(n)?;
                 continue;
             }
             for o in olds {
@@ -266,37 +265,34 @@ impl<R: Runtime> Stmt<'_, R> {
                     && !visible.contains(&o.ctor_of()?)
                 {
                     out.insert(Eff::Ins(rel, n.clone()));
-                    bound.insert(n.clone());
+                    bound.insert(n.clone())?;
                     continue;
                 }
                 let mut ew = Effects::new();
                 let inner = bind(&bind(env, old, o.clone()), new, n.clone());
                 self.write(otherwise, &inner, &mut ew)?;
                 let k = self.key_of(rel, &o)?;
-                let mut written: Vec<Val> = Vec::new();
+                let mut wrote = false;
                 for e in &ew {
                     if let Eff::Rep(r, _, v) | Eff::Ins(r, v) = e
                         && *r == rel
                         && self.key_of(rel, v)? == k
                     {
-                        written.push(v.clone());
+                        bound.insert(v.clone())?;
+                        wrote = true;
                     }
                 }
-                if written.is_empty() {
-                    bound.insert(o);
-                } else {
-                    bound.extend(written);
+                if !wrote {
+                    bound.insert(o)?;
                 }
                 out.extend(ew);
             }
         }
         if single {
-            Ok(bound
-                .into_iter()
-                .next()
-                .expect("a single-row upsert binds a row"))
+            let row = (bound.into_iter().next()).expect("a single-row upsert binds a row");
+            Ok(self.grant().hold(row)?)
         } else {
-            Ok(Val::set(bound))
+            Ok(bound.into_value()?)
         }
     }
 
