@@ -638,6 +638,7 @@ snapshot:
 | Deleted by a transaction committed after the inserter's snapshot | Serialization failure |
 | Deleted by a transaction in progress, the version visible to the inserter's snapshot | Wait for it; serialization failure if it commits, conflict if it aborts |
 | Dead to every snapshot, or deleted by the inserter itself | Skipped |
+| Taken back by a failed statement of its own transaction | Skipped |
 | Inserted by another write of the same statement | Conflict, reported at the statement boundary |
 
 A wait ends when the awaited transaction commits or aborts; the

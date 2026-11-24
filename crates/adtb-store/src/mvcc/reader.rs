@@ -199,12 +199,22 @@ impl<S: Statuses> Reader<S> {
     }
 
     /// Returns what an insert by `me`, reading at this reader's snapshot, does about the version
-    /// `writers` wrote, found under the key it inserts into a unique index.
+    /// `writers` wrote, found under the key it inserts into a unique index. A version
+    /// `taken_back` by a failed statement of its own transaction is skipped.
     ///
     /// A version `me` inserted and has not deleted is a conflict; whether it came from the same
     /// statement is the caller's, from its command ids. A failure names `heap`, the heap of the
     /// version `me` inserts.
-    pub fn probe_unique(&self, me: Xid, writers: &Writers, heap: u32) -> Result<Probe, S::Error> {
+    pub fn probe_unique(
+        &self,
+        me: Xid,
+        writers: &Writers,
+        taken_back: bool,
+        heap: u32,
+    ) -> Result<Probe, S::Error> {
+        if taken_back {
+            return Ok(Probe::Skip);
+        }
         let status = |x| Ok(self.statuses.status(x)?.counted());
         let (xmin, xmax) = (writers.inserter(), writers.deleter());
         let inserter = if xmin == me {

@@ -72,7 +72,7 @@ impl Heap {
         match undo {
             Undo::Kill(_, xid) => {
                 let deleted = |w: Writers| w.superseded_by(xid);
-                self.supersede(stage, pager, target, deleted, None, Flags::NONE)?;
+                self.supersede(stage, pager, target, deleted, None, Flags::TAKEN_BACK)?;
             }
             Undo::Restore(..) => {
                 self.supersede(stage, pager, target, Writers::cleared, None, Flags::NONE)?;

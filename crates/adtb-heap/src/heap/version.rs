@@ -66,6 +66,8 @@ impl Flags {
     pub const HEAP_ONLY: Flags = Flags(8);
     /// A copy of this version is in its constructor's history heap.
     pub const KEPT: Flags = Flags(16);
+    /// A failed statement of the version's inserter took it back.
+    pub const TAKEN_BACK: Flags = Flags(32);
 
     pub fn contains(self, other: Flags) -> bool {
         self.0 & other.0 == other.0

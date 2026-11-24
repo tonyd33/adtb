@@ -320,7 +320,7 @@ fn probe(xmin: u64, xmax: u64) -> Probe {
         (10, Status::InProgress),
     ];
     Reader::over(statuses(&table), snapshot, Some(Xid(10)))
-        .probe_unique(Xid(10), &writers(xmin, xmax), HEAP)
+        .probe_unique(Xid(10), &writers(xmin, xmax), false, HEAP)
         .unwrap()
 }
 

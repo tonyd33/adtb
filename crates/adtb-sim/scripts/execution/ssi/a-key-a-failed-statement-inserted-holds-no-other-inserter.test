@@ -1,0 +1,38 @@
+# A key a failed statement inserted and its take-back killed makes no other inserter wait or fail,
+# while its transaction runs or once it commits.
+migrate
+  module app
+  add module app
+  add type Item = { id: Key items, value: I64 }
+  add relation items : Item key id generate sequence
+  add check positive on items (value > 0)
+
+begin a id A
+
+begin b id B
+
+in a error Violated { constraint: "app::positive", report: 1 rows, redacted: 0 }
+  insert items { id: items.key(1), value: -1 }
+
+in b run
+  insert items { id: items.key(1), value: 2 }
+
+commit b
+
+in a error Violated { constraint: "app::positive", report: 1 rows, redacted: 0 }
+  insert items { id: items.key(2), value: -1 }
+
+begin c id C
+
+commit a
+
+in c run
+  insert items { id: items.key(2), value: 3 }
+
+commit c
+
+query rowsort
+  from i in items select i.value
+----
+2
+3

@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use crate::heap::Version;
+use crate::heap::{Flags, Version};
 use crate::mvcc::{Conflict, Hold, Logged, Probe, Reader, Transactions, Write, Xid};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
@@ -149,7 +149,8 @@ fn unrivalled<R: Runtime>(
             if row.key().as_ref() != Some(key) {
                 continue;
             }
-            let probed = reader.probe_unique(x, &v.header.writers, heap);
+            let taken_back = v.flags.contains(Flags::TAKEN_BACK);
+            let probed = reader.probe_unique(x, &v.header.writers, taken_back, heap);
             match v.looked_up(pager, probed)? {
                 None => continue 'scan,
                 Some(Probe::Skip | Probe::Conflict) => {}
