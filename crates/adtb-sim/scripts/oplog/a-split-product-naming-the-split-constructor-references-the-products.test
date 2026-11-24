@@ -1,0 +1,61 @@
+seed 1
+
+migrate
+  module app
+  add module app
+  add type T { id: Key ts }
+    = A { a: I64 }
+    | D { b: Option (Key ts.D) on delete clear }
+  add relation ts : T key id generate sequence
+
+run
+  insert ts.A { a: 1 }
+  insert ts.D { b: None }
+
+run
+  insert ts from (from x in ts.D select D { b: Some { value: key x } })
+
+migrate
+  module app
+  split constructor T.D into E { b: Option (Key ts.D) on delete clear }
+    by match
+      | D c -> E { b: c.b }
+
+query rowsort
+  from x in ts.E select { id: x.id, b: x.b }
+----
+{ b: None, id: ts.key(2) }
+{ b: Some { value: ts.key(2) }, id: ts.key(3) }
+
+run
+  insert ts from (from x in ts.E where x.b != None select E { b: Some { value: key x } })
+
+error Invalid { detail: "expected Key ts.E, found Key ts.A" }
+  insert ts from (from x in ts.A select E { b: Some { value: key x } })
+
+query rowsort
+  from x in ts.E select { b: x.b }
+----
+{ b: None }
+{ b: Some { value: ts.key(2) } }
+{ b: Some { value: ts.key(3) } }
+
+migrate
+  module app
+  split constructor T.E
+    into F { b: Option (Key ts.E) on delete clear }
+       | G { b: Option (Key ts.E) on delete clear }
+    by match
+      | E { b: None } -> F { b: None }
+      | E { b: Some { value: v } } -> G { b: Some { value: v } }
+
+error Invalid { detail: "expected Key ts.(F | G), found Key ts.A" }
+  insert ts from (from x in ts.A select G { b: Some { value: key x } })
+
+run
+  insert ts from (from x in ts.F select G { b: Some { value: key x } })
+
+query
+  count(x for x in ts.G)
+----
+3

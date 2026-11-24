@@ -23,6 +23,9 @@ pub(super) struct Naming {
     missing: Vec<Diag>,
     /// The migration's text.
     text: std::sync::Arc<str>,
+    /// Each constructor a split of the migration replaced, by name, with the names of its
+    /// products.
+    split: Vec<(String, Vec<String>)>,
 }
 
 /// Where a copy of the migration's text is in the declarations.
@@ -77,12 +80,16 @@ impl Naming {
 /// Copy into `out` the names `names` holds at each token of `range` of `text`, onto the token of
 /// `range` of `migration` at the same place; only at places `out` does not name yet when
 /// `unnamed`. Push onto `missing` a refusal at `from` when the ranges do not hold the same tokens.
+///
+/// A name of `migration` of a constructor `split` replaced may stand where `text` holds its
+/// products, one or several between `|`, parenthesized or not; it names them all.
 fn copy_tokens(
     (out, missing): (&mut Names, &mut Vec<Diag>),
     names: &Names,
     (text, range): (&str, Range<usize>),
     (migration, from): (&str, Range<usize>),
     unnamed: bool,
+    split: &[(String, Vec<String>)],
 ) {
     let toks = |s: &str, r: &Range<usize>| -> Vec<(String, Range<usize>)> {
         lex(&s[r.clone()])
@@ -99,20 +106,77 @@ fn copy_tokens(
             .collect()
     };
     let (theirs, ours) = (toks(text, &range), toks(migration, &from));
-    if theirs.len() != ours.len() || theirs.iter().zip(&ours).any(|(a, b)| a.0 != b.0) {
+    let mut pairs = Vec::new();
+    let mut retyped = Vec::new();
+    let mut i = 0;
+    for (word, a) in &ours {
+        if theirs.get(i).is_some_and(|(t, _)| t == word) {
+            pairs.push((theirs[i].1.clone(), a.clone()));
+            i += 1;
+            continue;
+        }
+        let Some((_, products)) = split.iter().find(|(c, _)| c == word) else {
+            i = usize::MAX;
+            break;
+        };
+        match products_at(&theirs[i.min(theirs.len())..], products) {
+            Some((spans, took)) => {
+                retyped.push((spans, a.clone()));
+                i += took;
+            }
+            None => {
+                i = usize::MAX;
+                break;
+            }
+        }
+    }
+    if i != theirs.len() {
         missing.push(Diag::new(
             Span::new(from.start, from.end),
             "the declarations do not hold this operand as written, so its names do not resolve",
         ));
         return;
     }
-    for ((_, b), (_, a)) in theirs.iter().zip(&ours) {
+    for (b, a) in pairs {
         if unnamed {
-            out.copy_unnamed(names, b.clone(), a.start);
+            out.copy_unnamed(names, b, a.start);
         } else {
-            out.copy(names, b.clone(), a.start);
+            out.copy(names, b, a.start);
         }
     }
+    for (spans, a) in retyped {
+        out.gather(names, &spans, a);
+    }
+}
+
+/// Returns the range of each product name `toks` starts with, as `P`, `P | Q` or `(P | Q)` with
+/// every name one of `products`, and the number of tokens they take.
+fn products_at(
+    toks: &[(String, Range<usize>)],
+    products: &[String],
+) -> Option<(Vec<Range<usize>>, usize)> {
+    let open = toks.first().is_some_and(|(t, _)| t == "(");
+    let mut at = usize::from(open);
+    let mut spans = Vec::new();
+    loop {
+        let (name, span) = toks.get(at)?;
+        if !products.contains(name) {
+            return None;
+        }
+        spans.push(span.clone());
+        at += 1;
+        if toks.get(at).is_none_or(|(t, _)| t != "|") {
+            break;
+        }
+        at += 1;
+    }
+    if open {
+        if toks.get(at)?.0 != ")" {
+            return None;
+        }
+        at += 1;
+    }
+    Some((spans, at))
 }
 
 /// Returns the declaration operator `op` added or redefined.
@@ -143,6 +207,10 @@ impl Model {
     /// declarations it leaves, and those of earlier operators still unnamed once those
     /// declarations resolve every name the copy's declaration writes.
     pub(super) fn name_copies(&mut self, run: &mut Run, op: &Operator, resolved: &ResolvedOp) {
+        if let OperatorKind::SplitConstructor { path, into, .. } = &op.kind {
+            let products = into.iter().map(|c| c.name.text.clone()).collect();
+            self.naming.split.push((path.ctor.text.clone(), products));
+        }
         let mut unpaired = Vec::new();
         let made = self.copies_of(run, op, resolved, &mut unpaired);
         self.naming.missing.extend(unpaired);
@@ -163,6 +231,7 @@ impl Model {
                         (built.text(file), span.range()),
                         (run.text(), from.clone()),
                         false,
+                        &naming.split,
                     );
                     if waits(&built, file, &names) {
                         naming.pending.push((from, at, Some(Names::default())));
@@ -221,6 +290,7 @@ impl Model {
                     (built.text(file), span.range()),
                     (migration, from.clone()),
                     false,
+                    &naming.split,
                 );
                 kept.push((from, at, unpaired.is_empty().then_some(held).or(named)));
                 continue;
@@ -231,6 +301,7 @@ impl Model {
                 (built.text(file), span.range()),
                 (migration, from),
                 false,
+                &naming.split,
             );
         }
         naming.pending = kept;
@@ -251,6 +322,7 @@ impl Model {
             (built.text(file), range),
             (&text, from),
             false,
+            &naming.split,
         );
     }
 
@@ -652,6 +724,7 @@ impl Run<'_> {
                 (built.text(file), h.span.range()),
                 (self.text(), w.span.range()),
                 false,
+                &[],
             );
         }
         self.note_names(out);

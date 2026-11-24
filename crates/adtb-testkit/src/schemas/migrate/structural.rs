@@ -8,11 +8,7 @@ type Pair = (usize, usize, usize);
 
 impl Model {
     pub(super) fn split(&mut self, rng: &mut Rng, broke: bool) -> Option<Vec<Op>> {
-        let can: Vec<(usize, usize)> = self
-            .replaceable()
-            .into_iter()
-            .filter(|&p| super::super::SEARCH_SPLIT_OF_SELF_REFERENCE || !self.names_itself(p))
-            .collect();
+        let can = self.replaceable();
         let mut before = Vec::new();
         let shape = if broke && rng.below(2) == 0 {
             self.unimaged_split(rng, &can, &mut before)
@@ -170,18 +166,6 @@ impl Model {
             .uniques
             .iter()
             .any(|k| k.ctors.as_ref().is_some_and(|cs| cs.contains(&c)))
-    }
-
-    /// Returns whether constructor `c` of relation `i` holds a reference to a constructor set
-    /// holding it.
-    fn names_itself(&self, (i, c): (usize, usize)) -> bool {
-        self.rel(i).ctors[c]
-            .fields
-            .iter()
-            .any(|f| match f.ty.target() {
-                Some((t, Scope::Ctors(cs))) => t == i && cs.contains(&c),
-                _ => false,
-            })
     }
 
     /// Returns whether constructor `c` of relation `i` holds a flag a split may route by.

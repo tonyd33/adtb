@@ -145,6 +145,21 @@ impl Names {
         self.extend(fresh);
     }
 
+    /// Record at `to` the objects the names of `from` at each of `spans` resolve to, in the
+    /// module of the first.
+    pub fn gather(&mut self, from: &Names, spans: &[Range<usize>], to: Range<usize>) {
+        let key = |r: &Range<usize>| (r.start as u32, r.end as u32);
+        let at = key(&to);
+        if let Some(m) = spans.first().and_then(|r| from.modules.get(&key(r))) {
+            self.modules.insert(at, m.clone());
+        }
+        for r in spans {
+            if let Some(ids) = from.ids.get(&key(r)) {
+                self.ids.entry(at).or_default().extend(ids.iter().copied());
+            }
+        }
+    }
+
     fn names_at(&self, span: (u32, u32)) -> bool {
         self.modules.contains_key(&span) || self.ids.contains_key(&span)
     }

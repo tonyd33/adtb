@@ -31,10 +31,6 @@ const SET: &str = "Pair";
 /// order its clause writes them.
 const SEARCH_DROP_INDEX_REVERSED_SCOPE: bool = true;
 
-/// Whether a split constructor has a field typed by a reference to a constructor set holding
-/// it. The engine refuses the split with an internal error.
-const SEARCH_SPLIT_OF_SELF_REFERENCE: bool = false;
-
 /// The name a `rename field` takes on half its draws when no field of its type holds it; no other
 /// drawn name is spelled so.
 pub const BOUND: &str = "wv";
