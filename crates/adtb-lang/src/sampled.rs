@@ -58,6 +58,9 @@ pub static BUILDS: Sampler = Sampler::new(0);
 /// The hits of the build memo of a migration's model.
 pub static MODEL_BUILDS: Sampler = Sampler::new(1);
 
+/// The hits of the checks a build holds.
+pub static CHECKS: Sampler = Sampler::new(3);
+
 /// The uses of the engine's fixed ids a build of the built-in declarations shares.
 pub static ENGINE_IDS: Sampler = Sampler::new(2);
 

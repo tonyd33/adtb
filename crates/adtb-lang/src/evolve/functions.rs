@@ -3,9 +3,9 @@ use super::*;
 impl Source {
     /// Returns every function and aggregate of the user modules, in declaration order.
     pub fn functions(&self) -> Result<Vec<Function>, Vec<FileDiag>> {
-        let schema = self.schema()?;
+        let checked = self.checked()?;
+        let schema = checked.schema();
         let names = self.names()?;
-        let checked = check::check_schema(&schema)?;
         let judge = crate::capability::Judge::new(&checked);
         let mut out = Vec::new();
         for (file, f) in self.files()? {

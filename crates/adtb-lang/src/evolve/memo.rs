@@ -24,7 +24,18 @@ pub(super) struct BuildInputs {
 pub(super) struct Prebuilt {
     schema: Arc<Schema>,
     files: Arc<[(FileId, ast::SchemaFile)]>,
+    checked: Arc<Mutex<VecDeque<Checked>>>,
 }
+
+/// The check of a build relabelled with catalog ids `ids` and write states `states`.
+struct Checked {
+    ids: crate::ids::CatalogIds,
+    states: schema::States,
+    result: Result<Compiled<Schema>, Vec<FileDiag>>,
+}
+
+/// The most checks one build holds.
+const CHECKED_BOUND: usize = 4;
 
 impl Prebuilt {
     pub(super) fn schema(&self) -> &Arc<Schema> {
@@ -33,6 +44,57 @@ impl Prebuilt {
 
     pub(super) fn files(&self) -> &Arc<[(FileId, ast::SchemaFile)]> {
         &self.files
+    }
+
+    fn checks(&self) -> std::sync::MutexGuard<'_, VecDeque<Checked>> {
+        self.checked
+            .lock()
+            .expect("no panic while a build's checks are locked: it only compares and moves them")
+    }
+
+    /// Returns the check of `schema`, checked once per catalog ids and write states.
+    ///
+    /// Preconditions:
+    /// - `schema` is this build's schema relabelled with write states `states`.
+    /// - The run height `norm::set_run_height` sets, which no key holds, does not change while
+    ///   the memo holding this build lives.
+    pub(super) fn checked(
+        &self,
+        schema: Schema,
+        states: &schema::States,
+    ) -> Result<Compiled<Schema>, Vec<FileDiag>> {
+        let held = {
+            let mut held = self.checks();
+            let at = held
+                .iter()
+                .position(|c| c.ids == *schema.ids() && c.states == *states);
+            at.and_then(|at| held.remove(at)).map(|hit| {
+                let result = hit.result.clone();
+                held.push_front(hit);
+                result
+            })
+        };
+        if let Some(result) = held {
+            #[cfg(any(test, feature = "testing"))]
+            if crate::sampled::CHECKS.due() {
+                assert_eq!(
+                    format!("{:?}", check::check_schema(schema)),
+                    format!("{result:?}"),
+                    "a held check equals the check of its schema"
+                );
+            }
+            return result;
+        }
+        let ids = schema.ids().clone();
+        let result = check::check_schema(schema);
+        let mut held = self.checks();
+        held.push_front(Checked {
+            ids,
+            states: states.clone(),
+            result: result.clone(),
+        });
+        held.truncate(CHECKED_BOUND);
+        result
     }
 }
 
@@ -90,6 +152,7 @@ impl BuildInputs {
         Ok(Prebuilt {
             schema: Arc::new(schema),
             files: files.into(),
+            checked: Arc::default(),
         })
     }
 }

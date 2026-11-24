@@ -52,6 +52,23 @@ impl Source {
     /// Build the schema, with the catalog ids and write states the source holds.
     pub fn schema(&self) -> Result<Schema, Vec<FileDiag>> {
         let built = self.built()?;
+        Ok(built.relabelled(&|s| self.assigned_ids(s), &self.write_states()))
+    }
+
+    /// Build and type check the schema as [`Source::check`] does, checking a build once per
+    /// catalog ids and write states.
+    pub(super) fn checked(&self) -> Result<Compiled<Schema>, Vec<FileDiag>> {
+        let built = self
+            .memo
+            .built(self.inputs(), &self.parsed, memo::Owner::Source)?;
+        let states = self.write_states();
+        let schema = built
+            .schema()
+            .relabelled(&|s| self.assigned_ids(s), &states);
+        built.checked(schema, &states)
+    }
+
+    fn write_states(&self) -> schema::States {
         let mut states = schema::States::default();
         for (&(r, c), s) in &self.states {
             states.set_relation(r, c, s.stage);
@@ -59,7 +76,7 @@ impl Source {
         for (&c, s) in &self.value_states {
             states.set_value(c, s.stage);
         }
-        Ok(built.relabelled(&|s| self.assigned_ids(s), &states))
+        states
     }
 
     /// Returns the schema [`Source::schema`] builds, committed.

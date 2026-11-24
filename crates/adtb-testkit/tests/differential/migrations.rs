@@ -1382,6 +1382,11 @@ fn generated_migrations_keep_their_invariants() {
         adtb_lang::sampled::ENGINE_IDS.checked() as usize,
         1,
     );
+    adtb_testkit::profile::assert_reached(
+        "a held check of a build checked against its schema checked again",
+        adtb_lang::sampled::CHECKS.checked() as usize,
+        1,
+    );
     if adtb_testkit::profile::every_case() {
         reached.floors();
     } else {
