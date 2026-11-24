@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
+use adtb_lang::ids::{CatFieldId, engine_ctor as k, engine_field as f};
 use adtb_lang::types::RelId;
 
 use adtb_sys::lock::Lock;
@@ -15,7 +16,7 @@ use crate::plan::HeapId;
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
 use crate::vacuum::{Pacer, Phase, Progress, Step};
 
-use super::{Database, Error, Stop, VacuumHold};
+use super::{Database, EngineRow, Error, Stop, VacuumHold};
 
 /// The longest a vacuum sleeps before it looks again at what stops it.
 const NAP: Duration = Duration::from_millis(100);
@@ -62,24 +63,32 @@ fn phase_text(phase: Phase) -> &'static str {
     }
 }
 
+/// The fields of a row of `sys::vacuums`, in the order [`Shown::row`] gives them.
+const VACUUM: [CatFieldId; 7] = [
+    f::VACUUM_ID,
+    f::VACUUM_RELATION,
+    f::VACUUM_CTOR,
+    f::VACUUM_PHASE,
+    f::VACUUM_DONE,
+    f::VACUUM_DEAD_VERSIONS,
+    f::VACUUM_STARTED,
+];
+
 impl Shown {
-    fn row(&self, step: Option<&Step>, relation: u64, started: i64) -> Val {
+    fn row(&self, layout: &EngineRow<7>, step: Option<&Step>, relation: u64, started: i64) -> Val {
         let key = |n: u64| Val::Int(i64::try_from(n).unwrap_or(i64::MAX));
         let (phase, done, dead) = step.map_or(("scan", 0.0, 0), |s| {
             (phase_text(s.phase), s.done, s.dead_versions)
         });
-        Val::ctor(
-            0,
-            vec![
-                Val::Int(self.id),
-                key(relation),
-                key(u64::from(self.ctor.0)),
-                Val::text(phase),
-                Val::F64(F64::new(done)),
-                Val::Int(i64::try_from(dead).unwrap_or(i64::MAX)),
-                Val::Instant(started),
-            ],
-        )
+        layout.row([
+            Val::Int(self.id),
+            key(relation),
+            key(u64::from(self.ctor.0)),
+            Val::text(phase),
+            Val::F64(F64::new(done)),
+            Val::Int(i64::try_from(dead).unwrap_or(i64::MAX)),
+            Val::Instant(started),
+        ])
     }
 }
 
@@ -164,15 +173,16 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Returns the rows of `sys::vacuums`.
-    pub(super) fn vacuum_rows(&self) -> BTreeSet<Val> {
+    pub(super) fn vacuum_rows(&self) -> Result<BTreeSet<Val>, Error> {
+        let layout = EngineRow::new(&self.schema, k::VACUUM, VACUUM)?;
         let steps = self.vacuum_steps();
         let running = self.vacuums.running.lock(&self.rt);
         let Some(r) = running.as_ref() else {
-            return BTreeSet::new();
+            return Ok(BTreeSet::new());
         };
-        (r.ctors.iter())
-            .map(|s| s.row(steps.get(&s.heap), r.relation, r.started))
-            .collect()
+        Ok((r.ctors.iter())
+            .map(|s| s.row(&layout, steps.get(&s.heap), r.relation, r.started))
+            .collect())
     }
 }
 

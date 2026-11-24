@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use adtb_lang::ids::{engine_rel, held_id};
+use adtb_lang::ids::{engine_ctor as k, engine_field as f, engine_rel, held_id};
 use adtb_lang::types::RelId;
 
 use crate::btree::Index;
@@ -21,7 +21,7 @@ use crate::vacuum;
 
 use super::reindex::VacuumHold;
 use super::schema::Rel;
-use super::{Database, Error};
+use super::{Broken, Database, EngineRow, Error};
 
 /// The structures a database keeps history in, and the schema version each heap and each
 /// migration's transaction belongs to.
@@ -190,7 +190,7 @@ impl<R: Runtime> Database<R> {
     pub(super) fn volatile_rows(&self, rel: RelId) -> Result<BTreeSet<Val>, Error> {
         let id = held_id(self.schema.ids().relation_id(rel));
         if id == engine_rel::VACUUMS.id() {
-            return Ok(self.vacuum_rows());
+            return self.vacuum_rows();
         }
         if id != engine_rel::COMMIT_TIMES.id() && id != engine_rel::SAFE_SNAPSHOTS.id() {
             return Ok(self
@@ -204,28 +204,50 @@ impl<R: Runtime> Database<R> {
         else {
             return Ok(BTreeSet::new());
         };
+        let ranged = |n: u64, field: &'static str| {
+            i64::try_from(n).map_err(|_| {
+                let row = self.schema.relation(rel).name.clone();
+                Error::from(Broken::CatalogError(
+                    crate::catalog::Rot::OutOfRange { row, field }.into(),
+                ))
+            })
+        };
+        let position = EngineRow::new(
+            &self.schema,
+            k::POSITION,
+            [f::POSITION_EPOCH, f::POSITION_LSN],
+        )?;
+        let position = |at: Position| -> Result<Val, Error> {
+            Ok(position.row([
+                Val::Int(ranged(at.epoch, "position.epoch")?),
+                Val::Int(ranged(at.lsn.0, "position.lsn")?),
+            ]))
+        };
         if id == engine_rel::COMMIT_TIMES.id() {
-            Ok(past
-                .commits(&self.pager)?
+            let row = EngineRow::new(
+                &self.schema,
+                k::COMMIT_TIME,
+                [f::COMMIT_TIME_POSITION, f::COMMIT_TIME_AT],
+            )?;
+            past.commits(&self.pager)?
                 .into_iter()
                 .filter(|c| c.time >= cutoff)
                 .map(|c| {
-                    Val::ctor(
-                        0,
-                        vec![
-                            position_value(c.at),
-                            Val::Instant(i64::try_from(c.time / 1000).expect("commit time fits")),
-                        ],
-                    )
+                    let at = Val::Instant(ranged(c.time / 1000, "at")?);
+                    Ok(row.row([position(c.at)?, at]))
                 })
-                .collect())
+                .collect()
         } else {
-            Ok(past
-                .markers(&self.pager)?
+            let row = EngineRow::new(
+                &self.schema,
+                k::SAFE_SNAPSHOT_MARK,
+                [f::SAFE_SNAPSHOT_POSITION],
+            )?;
+            past.markers(&self.pager)?
                 .into_iter()
                 .filter(|m| m.time >= cutoff)
-                .map(|m| Val::ctor(0, vec![position_value(m.at)]))
-                .collect())
+                .map(|m| Ok(row.row([position(m.at)?])))
+                .collect()
         }
     }
 
@@ -327,14 +349,4 @@ impl<R: Runtime> VacuumHold<'_, R> {
     pub fn set_retention(&self, window: Duration) -> Result<(), Error> {
         self.db().set_retention(window)
     }
-}
-
-fn position_value(at: Position) -> Val {
-    Val::ctor(
-        0,
-        vec![
-            Val::Int(i64::try_from(at.epoch).expect("a restore keeps the epoch within an I64")),
-            Val::Int(i64::try_from(at.lsn.0).expect("commit LSN fits")),
-        ],
-    )
 }

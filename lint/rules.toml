@@ -60,6 +60,16 @@ exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
 rows = { prelude_positions = "zero" }
 
 [[rule]]
+query = "sys-rows.tql"
+include = [
+  "crates/adtb/src/write/past.rs",
+  "crates/adtb/src/write/vacuums.rs",
+  "crates/adtb/src/api/settings.rs",
+  "crates/adtb/src/api/verify.rs",
+]
+rows = { sys_rows = "zero" }
+
+[[rule]]
 query = "simtest.tql"
 include = [
   "crates/adtb-sim/tests/**/*.rs",

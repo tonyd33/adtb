@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adtb_lang::ids::{
-    CatConstraintId, CatCtorId, CatRelId, Stored, engine_ctor, engine_rel, held_id,
+    CatConstraintId, CatCtorId, CatFieldId, CatRelId, Stored, engine_ctor, engine_field,
+    engine_rel, held_id,
 };
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
@@ -61,6 +62,7 @@ pub(super) struct Findings {
     next_id: i64,
     /// The row of `sys::jobs` of each running run, by run number.
     jobs: BTreeMap<i64, Val>,
+    job: write::EngineRow<6>,
     cursor: Option<Cursor>,
 }
 
@@ -312,6 +314,7 @@ impl Findings {
             next_run: 1,
             next_id: 1,
             jobs: BTreeMap::new(),
+            job: write::EngineRow::new(schema, engine_ctor::JOB, JOB).map_err(corrupt)?,
             cursor: None,
         };
         for row in kept.into_iter().filter(|k| k.relation == id) {
@@ -386,6 +389,16 @@ pub(super) struct Verifier<R: Runtime> {
     pub(super) fail_kept: Lock<Option<String>>,
 }
 
+/// The fields of a row of `sys::jobs`, in the order [`Job::phase`] gives them.
+const JOB: [CatFieldId; 6] = [
+    engine_field::JOB_ID,
+    engine_field::JOB_KIND,
+    engine_field::JOB_TARGET,
+    engine_field::JOB_PHASE,
+    engine_field::JOB_DONE,
+    engine_field::JOB_STARTED,
+];
+
 /// The rows a replacement of a group's findings leaves it with.
 struct Replacement {
     fresh: BTreeSet<Found>,
@@ -439,18 +452,15 @@ impl<R: Runtime> Job<'_, R> {
     }
 
     pub(super) fn phase(&self, phase: &str, done: f64) {
-        let row = Val::ctor(
-            0,
-            vec![
-                Val::Int(self.run),
-                Val::ctor(self.kind, Vec::new()),
-                Val::text(&self.target),
-                Val::text(phase),
-                Val::F64(F64::new(done)),
-                Val::Instant(self.started),
-            ],
-        );
         let mut held = self.verifier.findings.lock(&self.verifier.rt);
+        let row = held.job.row([
+            Val::Int(self.run),
+            Val::ctor(self.kind, Vec::new()),
+            Val::text(&self.target),
+            Val::text(phase),
+            Val::F64(F64::new(done)),
+            Val::Instant(self.started),
+        ]);
         held.jobs.insert(self.run, row);
         self.show(&held);
     }
@@ -938,7 +948,8 @@ pub(super) fn held_rows<R: Runtime>(
     };
     let table = engine_relation(schema, engine_rel::VERIFY_FINDINGS);
     let findings = Findings::of(kept, schema, table)?;
-    let mut volatile = super::settings::process_options(schema, &options.shown());
+    let mut volatile =
+        super::settings::process_options(schema, &options.shown()).map_err(corrupt)?;
     volatile.insert(table, findings.vals());
     Ok((findings, volatile))
 }

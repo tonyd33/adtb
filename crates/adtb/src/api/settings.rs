@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use adtb_lang::ids::engine_rel;
+use adtb_lang::ids::{engine_ctor as k, engine_field as f, engine_rel};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
@@ -14,6 +14,7 @@ use crate::exec::{F64, Val};
 use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
+use crate::write::{self, EngineRow};
 
 use super::{OpenError, bundle, corrupt};
 
@@ -120,24 +121,31 @@ pub(super) struct Shown {
 }
 
 /// Returns the rows of `sys::process_options` of `schema` showing `shown`.
-pub(super) fn process_options(schema: &Schema, shown: &[Shown]) -> BTreeMap<RelId, BTreeSet<Val>> {
+pub(super) fn process_options(
+    schema: &Schema,
+    shown: &[Shown],
+) -> Result<BTreeMap<RelId, BTreeSet<Val>>, write::Error> {
     let rel = engine_relation(schema, engine_rel::PROCESS_OPTIONS);
+    let fields = [
+        f::PROCESS_OPTION_ID,
+        f::PROCESS_OPTION_NAME,
+        f::PROCESS_OPTION_VALUE,
+        f::PROCESS_OPTION_DERIVED,
+    ];
+    let layout = EngineRow::new(schema, k::PROCESS_OPTION, fields)?;
     let rows = shown
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            Val::ctor(
-                0,
-                vec![
-                    Val::Int(i64::try_from(i + 1).unwrap_or(i64::MAX)),
-                    Val::text(s.name),
-                    Val::text(&s.value),
-                    Val::bool(s.derived),
-                ],
-            )
+            layout.row([
+                Val::Int(i64::try_from(i + 1).unwrap_or(i64::MAX)),
+                Val::text(s.name),
+                Val::text(&s.value),
+                Val::bool(s.derived),
+            ])
         })
         .collect();
-    BTreeMap::from([(rel, rows)])
+    Ok(BTreeMap::from([(rel, rows)]))
 }
 
 #[cfg(test)]

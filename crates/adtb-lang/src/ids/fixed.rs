@@ -715,26 +715,52 @@ pub mod engine_rel {
 }
 
 macro_rules! engine_fields {
-    ($($module:literal $rel:literal { $($name:ident $field:literal $id:literal),* $(,)? })*) => {
+    ($($module:literal $ty:literal { $($name:ident $field:literal $id:literal),* $(,)? })*) => {
         $($(pub const $name: CatFieldId = CatFieldId($id);)*)*
 
-        /// Every constant of this module with its module's, relation's and field's names.
+        /// Every constant of this module with its module's, type's and field's names.
         #[cfg(test)]
         pub(crate) const NAMED: &[(&str, &str, &str, CatFieldId)] =
-            &[$($(($module, $rel, $field, $name),)*)*];
+            &[$($(($module, $ty, $field, $name),)*)*];
     };
 }
 
-/// The ids the engine's declarations give the fields of engine relations the engine names.
+/// The ids the engine's declarations give the fields of engine types the engine names.
 pub mod engine_field {
     use super::super::CatFieldId;
 
     engine_fields! {
-        "sys" "field_values" { FIELD_VALUES_VALUE "value" 271 }
-        "sys" "conflicts" { CONFLICTS_KEYS "keys" 345 }
-        "sys" "verify_findings" { VERIFY_FINDINGS_WITNESS "witness" 386 }
-        "catalog" "plans" { PLANS_TEXT "text" 201, PLANS_DOCUMENT "document" 202 }
-        "catalog" "audit" { AUDIT_CHANGES "changes" 249 }
+        "prelude" "Position" { POSITION_EPOCH "epoch" 15, POSITION_LSN "lsn" 16 }
+        "sys" "FieldValue" { FIELD_VALUES_VALUE "value" 271 }
+        "sys" "Conflict" { CONFLICTS_KEYS "keys" 345 }
+        "sys" "Finding" { VERIFY_FINDINGS_WITNESS "witness" 386 }
+        "sys" "CommitTime" { COMMIT_TIME_POSITION "position" 417, COMMIT_TIME_AT "at" 418 }
+        "sys" "SafeSnapshotMark" { SAFE_SNAPSHOT_POSITION "position" 419 }
+        "sys" "Vacuum" {
+            VACUUM_ID "id" 347,
+            VACUUM_RELATION "relation" 348,
+            VACUUM_CTOR "ctor" 349,
+            VACUUM_PHASE "phase" 350,
+            VACUUM_DONE "done" 351,
+            VACUUM_DEAD_VERSIONS "dead_versions" 352,
+            VACUUM_STARTED "started" 353,
+        }
+        "sys" "Job" {
+            JOB_ID "id" 354,
+            JOB_KIND "kind" 355,
+            JOB_TARGET "target" 356,
+            JOB_PHASE "phase" 357,
+            JOB_DONE "done" 358,
+            JOB_STARTED "started" 359,
+        }
+        "sys" "ProcessOption" {
+            PROCESS_OPTION_ID "id" 367,
+            PROCESS_OPTION_NAME "name" 368,
+            PROCESS_OPTION_VALUE "value" 369,
+            PROCESS_OPTION_DERIVED "derived" 370,
+        }
+        "catalog" "Plan" { PLANS_TEXT "text" 201, PLANS_DOCUMENT "document" 202 }
+        "catalog" "AuditEvent" { AUDIT_CHANGES "changes" 249 }
     }
 }
 
@@ -776,6 +802,11 @@ pub mod engine_ctor {
 
     engine_ctors! {
         "sys" "JobKind" { JOB_REINDEX "Reindex", JOB_VERIFY "Verify" }
+        "sys" "Job" { JOB "Job" }
+        "sys" "Vacuum" { VACUUM "Vacuum" }
+        "sys" "CommitTime" { COMMIT_TIME "CommitTime" }
+        "sys" "SafeSnapshotMark" { SAFE_SNAPSHOT_MARK "SafeSnapshotMark" }
+        "sys" "ProcessOption" { PROCESS_OPTION "ProcessOption" }
         "catalog" "Role" { ROLE "Role" }
         "catalog" "TypeDef" { TYPE_SUM "SumType", TYPE_NEWTYPE "Newtype" }
         "catalog" "Constructor" { CONSTRUCTOR "Constructor" }

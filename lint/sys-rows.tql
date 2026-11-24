@@ -1,0 +1,12 @@
+-- sys_rows: a value of a constructor whose fields are listed in place, or whose constructor is a
+-- literal position, in a writer of the engine's `sys::` rows. A row is built by
+-- `write::EngineRow`, each field placed by its id.
+
+main = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"(Val::ctor|Val::Ctor)$";
+  a <- pure c | #arguments;
+  guard $ text a ~ r"(^\(\s*[0-9]|vec!)";
+  return c;
+} | arr range;
