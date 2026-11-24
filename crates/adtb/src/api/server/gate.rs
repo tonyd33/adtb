@@ -19,7 +19,7 @@ use super::super::command::{Need, free_params, need};
 use super::super::dump::read_by_dump;
 use super::super::registered::{Callee, Registered};
 use super::super::text::{Issuer, Prepared, TextError, declared};
-use super::super::{Engine, Error, OWNER_ROLE, RejectReason};
+use super::super::{Engine, Entered, Error, OWNER_ROLE, RejectReason};
 use super::adhoc::{Holds, refused_text, schema_relations, unanalysed};
 use super::binding::{RoleBinding, Target, holds_call, owns};
 use super::call::{RoleCall, Work};
@@ -28,8 +28,6 @@ use super::session::{RoleSession, text_hash};
 use super::tables::{CallOrigin, CallRow, Tables, service};
 use super::task::{TaskOptions, args_hash};
 use super::{Capability, RoleAuthority, denied};
-
-type Opened<'e, R> = crate::api::Entered<'e, R>;
 
 /// The authority of a role's call, judged by this gate alone: the issuer of its text, which
 /// holds what the role held when judged.
@@ -50,7 +48,7 @@ impl<R: Runtime> RoleSession<R> {
         text: &str,
         params: &[(&str, Ty, Val)],
         opts: &TaskOptions,
-    ) -> Result<(Admitted, RoleCall<R>, Opened<'e, R>), Error> {
+    ) -> Result<(Admitted, RoleCall<R>, Entered<'e, R>), Error> {
         let authority = RoleAuthority {
             engine: self.engine.clone(),
         };
@@ -60,11 +58,12 @@ impl<R: Runtime> RoleSession<R> {
         let caller = authority.admit_caller(self, &hash, assertion.as_ref())?;
         let names: Vec<String> = params.iter().map(|(n, ..)| (*n).to_owned()).collect();
         let parsed = Prepared::parsed(text);
+        let entered = e.enter()?;
+        let e = &entered;
         let mut issuer = match &parsed {
             Ok(items) => authority.admit_items(self, e, items, &names, &caller, &hash)?,
             Err(_) => None,
         };
-        let _open = e.enter()?;
         let held = (self.name != OWNER_ROLE)
             .then(|| authority.holds(self))
             .transpose()?;
@@ -176,7 +175,7 @@ impl<R: Runtime> RoleSession<R> {
         );
         let admitted =
             e.admit_program(p, &queued, Authority::Role(Judged(issuer.map(Box::new))))?;
-        Ok((admitted, call, _open))
+        Ok((admitted, call, entered))
     }
 }
 
@@ -189,7 +188,7 @@ impl<R: Runtime> RoleBinding<R> {
         ordinal: u32,
         args: &[Val],
         opts: &TaskOptions,
-    ) -> Result<(Admitted, Work, RoleCall<R>, Opened<'e, R>), Error> {
+    ) -> Result<(Admitted, Work, RoleCall<R>, Entered<'e, R>), Error> {
         let session = self.session();
         let callee = self
             .registered()
@@ -204,7 +203,8 @@ impl<R: Runtime> RoleBinding<R> {
             &origin,
             assertion.as_ref(),
         )?;
-        let open = e.enter()?;
+        let entered = e.enter()?;
+        let e = &entered;
         self.registered().arguments(ordinal, args)?;
         let typed: Vec<_> = callee
             .names
@@ -244,11 +244,16 @@ impl<R: Runtime> RoleBinding<R> {
             .registered()
             .queued(args, opts.call.priority, opts.call.deadline);
         let admitted = e.admit_program(p, &queued, Authority::Role(Judged(None)))?;
-        Ok((admitted, Work::Registered(Box::new(bound)), call, open))
+        Ok((admitted, Work::Registered(Box::new(bound)), call, entered))
     }
 
     /// Refuse the call of `ordinal`, leaving the queue, as [`submit`](RoleBinding::submit) does.
-    fn recheck(&self, e: &Engine<R>, ordinal: u32, assertion: Option<&Val>) -> Result<(), Error> {
+    fn recheck(
+        &self,
+        e: &Entered<'_, R>,
+        ordinal: u32,
+        assertion: Option<&Val>,
+    ) -> Result<(), Error> {
         let callee = self
             .registered()
             .callee(ordinal)
@@ -308,7 +313,7 @@ impl<R: Runtime> RoleAuthority<R> {
     fn admit_items(
         &self,
         session: &RoleSession<R>,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         items: &[AdhocItem],
         params: &[String],
         caller: &Val,
@@ -393,7 +398,7 @@ impl<R: Runtime> RoleAuthority<R> {
     fn admit_prepared(
         &self,
         session: &RoleSession<R>,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         p: &Prepared,
         caller: &Val,
         issuer: &Issuer,
@@ -539,7 +544,11 @@ impl<R: Runtime> Readmission<R> {
     /// Refuse the call with `Denied`, recorded in the audit, unless the session's role may still
     /// make it, and a registered call whose bundle has left its lifecycle. Returns what the role
     /// of checked text `admitted` holds now.
-    pub(super) fn check(&self, e: &Engine<R>, admitted: &Admitted) -> Result<Option<Holds>, Error> {
+    pub(super) fn check(
+        &self,
+        e: &Entered<'_, R>,
+        admitted: &Admitted,
+    ) -> Result<Option<Holds>, Error> {
         match self {
             Readmission::Text {
                 session,

@@ -32,7 +32,7 @@ use crate::vacuum::{Busy, Holder, Vacuuming};
 
 use super::past::Retained;
 use super::schema::{Indexed, Rel};
-use super::{Bounds, Broken, Database, Error, Rerun, Stop, Txn};
+use super::{Bounds, Broken, Database, Error, Mapping, Rerun, Stop, Txn};
 
 /// One index to rebuild, how, and who follows it.
 pub struct Rebuild<'a> {
@@ -128,8 +128,13 @@ impl<'d, R: Runtime> VacuumHold<'d, R> {
     /// same atomic step. Returns whether every old page was freed.
     ///
     /// Precondition: `grant` was taken before this lock.
-    pub fn rebuild(&self, job: &Rebuild<'_>, grant: &Arc<exec::Grant>) -> Result<bool, Failure> {
-        self.db.rebuild(job, grant)
+    pub fn rebuild(
+        &self,
+        job: &Rebuild<'_>,
+        grant: &Arc<exec::Grant>,
+        mapping: &Mapping<'_, R>,
+    ) -> Result<bool, Failure> {
+        self.db.rebuild(job, grant, mapping)
     }
 }
 
@@ -472,7 +477,10 @@ impl<R: Runtime> Database<R> {
     /// the cause of the failure, `None` once the engine closes.
     ///
     /// Precondition: the caller holds no vacuum lock.
-    pub fn rebuild_grant(&self) -> Result<Arc<exec::Grant>, Option<String>> {
+    pub fn rebuild_grant(
+        &self,
+        mapping: &Mapping<'_, R>,
+    ) -> Result<Arc<exec::Grant>, Option<String>> {
         self.admit_grant(
             exec::Priority::Background,
             (self.rt.now(), None),
@@ -480,7 +488,7 @@ impl<R: Runtime> Database<R> {
         )
         .map_err(|e| match e {
             Error::Exec(exec::Error::Cancelled) => None,
-            e => Some(self.detail(self.fail(e).error())),
+            e => Some(self.detail(mapping.fail(e).error())),
         })
     }
 
@@ -570,7 +578,12 @@ impl<R: Runtime> Database<R> {
         self.pager.steps().at(Step::Reindex(phase));
     }
 
-    fn rebuild(&self, job: &Rebuild<'_>, grant: &Arc<exec::Grant>) -> Result<bool, Failure> {
+    fn rebuild(
+        &self,
+        job: &Rebuild<'_>,
+        grant: &Arc<exec::Grant>,
+        mapping: &Mapping<'_, R>,
+    ) -> Result<bool, Failure> {
         let mut pages = Pages {
             built: Vec::new(),
             built_past: Vec::new(),
@@ -608,7 +621,7 @@ impl<R: Runtime> Database<R> {
                         "the build needs more than its memory grant of {grant} bytes and its spill \
                          bound of {limit} bytes"
                     )),
-                    e => Some(self.detail(self.fail(e).error())),
+                    e => Some(self.detail(mapping.fail(e).error())),
                 };
                 Err(Failure { cause, reclaimed })
             }

@@ -15,7 +15,7 @@ use crate::plan::{Catalog, IndexId};
 use crate::ranks;
 use crate::runtime::Runtime;
 use crate::storage::policy::{Holder, Phase};
-use crate::storage::{Damage, MarkFailure, Ordered, Orders, Quarantine};
+use crate::storage::{Damage, MapPoint, MarkFailure, Ordered, Orders, Quarantine};
 
 use super::schema::Rel;
 use super::verify::Found;
@@ -34,7 +34,7 @@ pub enum By {
     Transactions,
 }
 
-/// A failure of the write path that [`Database::fail`] has mapped.
+/// A failure of the write path that [`Mapping::fail`] has mapped.
 #[derive(Debug)]
 pub struct Mapped(Error);
 
@@ -47,7 +47,7 @@ impl Mapped {
         self.0
     }
 
-    /// Returns `e` as if [`Database::fail`] had mapped it to itself.
+    /// Returns `e` as if [`Mapping::fail`] had mapped it to itself.
     #[cfg(test)]
     pub(crate) fn unmapped_for_test(e: Error) -> Mapped {
         Mapped(e)
@@ -123,13 +123,14 @@ impl<R: Runtime> Database<R> {
         "the database".to_owned()
     }
 
-    /// Map the damage recorded and not yet mapped, setting each mark under the serialization
-    /// lock. Returns each object whose mark holds only in memory, with why.
+    /// Map at `at` the damage recorded and not yet mapped, setting each mark under the
+    /// serialization lock. Returns each object whose mark holds only in memory, with why.
     ///
     /// Precondition: the calling thread holds no page latch and not the serialization lock.
-    fn map_damage(&self) -> BTreeMap<Quarantine, MarkFailure> {
+    fn map_damage(&self, at: &MapPoint) -> BTreeMap<Quarantine, MarkFailure> {
         self.unlocked();
-        self.pager.map_damage(
+        self.pager.map_at(
+            at,
             |pid| {
                 self.structures
                     .holders(&self.pager, &self.session.txns, pid, Phase::Running)
@@ -138,11 +139,13 @@ impl<R: Runtime> Database<R> {
         )
     }
 
-    /// End an API call: map the damage recorded and not yet mapped, whatever the call returned.
-    ///
-    /// Precondition: the calling thread holds no page latch and not the serialization lock.
-    pub fn end_call(&self) {
-        self.map_damage();
+    /// Returns the guard of an API call or a background pass, which maps the damage recorded and
+    /// not yet mapped when it drops, whatever the call or pass returned.
+    pub fn mapping(&self) -> Mapping<'_, R> {
+        Mapping {
+            db: self,
+            at: MapPoint::pass(),
+        }
     }
 
     /// Map the damage recorded and not yet mapped for a commit, so that a mark its damage sets
@@ -229,105 +232,6 @@ impl<R: Runtime> Database<R> {
     /// objects as a client sees them.
     pub fn detail(&self, e: &Error) -> String {
         super::broken::detail_naming(e, |object| self.quarantined_name(object))
-    }
-
-    /// Returns `e` once the damage recorded is mapped, a failure on a damaged page turned into
-    /// the failure naming what its damage quarantines, and a failure of the transactions layer
-    /// other than a closed pager into the failure naming the database once the database is
-    /// marked. An orphan entry marks
-    /// its index. An I/O failure stays as it is. A `Blocked` maps nothing.
-    ///
-    /// Precondition: the calling thread holds no page latch and not the serialization lock.
-    pub fn fail(&self, e: Error) -> Mapped {
-        self.unlocked();
-        if let Error::Blocked { .. } = e {
-            return Mapped(e);
-        }
-        let mut failed = self.map_damage();
-        let quarantined_as = |objects: &BTreeSet<Quarantine>, failed: &BTreeMap<_, _>, by| {
-            let objects = objects.iter().map(|o| (*o, failed.get(o).copied()));
-            Error::Quarantined {
-                objects: objects.collect(),
-                by,
-            }
-        };
-        Mapped(match e.class() {
-            Class::Damage => match e.page() {
-                Some(p) if p.damage != Damage::Unreadable => match self.pager.marked_to(p.pid) {
-                    Some(objects) if !objects.is_empty() => {
-                        quarantined_as(&objects, &failed, By::Met)
-                    }
-                    _ => e,
-                },
-                _ => e,
-            },
-            Class::Found => {
-                let holder = e.orphan().and_then(|index| {
-                    let indexes = self.bindings.indexes();
-                    let (id, _) = indexes
-                        .iter()
-                        .find(|(_, i)| i.index.tree().owner() == index)?;
-                    self.index_holder(*id)
-                });
-                match holder {
-                    Some(holder) => {
-                        let objects = self.mark_finding(holder, &mut failed);
-                        quarantined_as(&objects, &failed, By::Found)
-                    }
-                    None => e,
-                }
-            }
-            Class::Transactions
-                if matches!(e, Error::Transactions(t) if t != crate::mvcc::Error::Closed)
-                    && self.pager.database_marked() =>
-            {
-                quarantined_as(
-                    &BTreeSet::from([Quarantine::Database]),
-                    &failed,
-                    By::Transactions,
-                )
-            }
-            Class::Retry
-            | Class::Reject
-            | Class::Transactions
-            | Class::Refused
-            | Class::Checker
-            | Class::Suspended => e,
-        })
-    }
-
-    /// Mark the index of each `Order`, `Orphan` or `Missing` finding of `found`, and map the
-    /// damage recorded. Returns a finding for each mark that holds only in memory.
-    ///
-    /// Precondition: the calling thread holds no page latch and not the serialization lock.
-    pub fn quarantine_findings(&self, found: &BTreeSet<Found>) -> Vec<Found> {
-        self.unlocked();
-        let mut failed = self.map_damage();
-        for f in found {
-            if let Found::Order { index, .. }
-            | Found::Orphan { index, .. }
-            | Found::Missing { index, .. } = f
-                && let Some(holder) = self.index_holder(IndexId(*index))
-            {
-                self.mark_finding(holder, &mut failed);
-            }
-        }
-        failed
-            .into_iter()
-            .map(|(object, e)| Found::Structure {
-                at: format!(
-                    "the mark of {} holds only in memory: {e}",
-                    self.quarantined_name(object)
-                ),
-            })
-            .collect()
-    }
-
-    /// Returns the refusal [`admit_database`](Database::admit_database) gives, as
-    /// [`fail`](Database::fail) maps it, without mapping the damage recorded. `None` when the
-    /// database is not quarantined.
-    pub fn database_refusal(&self) -> Option<Mapped> {
-        self.admit_database().err().map(Mapped)
     }
 
     /// Fail if the open is still unarmed once the failed read is attempted again.
@@ -646,6 +550,135 @@ impl<R: Runtime> Database<R> {
             })
         });
         Some(Cow::Owned(catalog))
+    }
+}
+
+/// The mapping point of an API call or a background pass. It alone maps the damage recorded
+/// mid-session and builds a [`Mapped`] failure. Dropping it ends the call or pass.
+///
+/// Precondition: the thread that drops it holds no page latch and not the serialization lock.
+pub struct Mapping<'d, R: Runtime> {
+    db: &'d Database<R>,
+    at: MapPoint,
+}
+
+impl<R: Runtime> Mapping<'_, R> {
+    /// Returns `e` once the damage recorded is mapped, a failure on a damaged page turned into
+    /// the failure naming what its damage quarantines, and a failure of the transactions layer
+    /// other than a closed pager into the failure naming the database once the database is
+    /// marked. An orphan entry marks
+    /// its index. An I/O failure stays as it is. A `Blocked` maps nothing.
+    ///
+    /// Precondition: the calling thread holds no page latch and not the serialization lock.
+    pub fn fail(&self, e: Error) -> Mapped {
+        if let Error::Blocked { .. } = e {
+            return Mapped(e);
+        }
+        let mut failed = self.db.map_damage(&self.at);
+        let quarantined_as = |objects: &BTreeSet<Quarantine>, failed: &BTreeMap<_, _>, by| {
+            let objects = objects.iter().map(|o| (*o, failed.get(o).copied()));
+            Error::Quarantined {
+                objects: objects.collect(),
+                by,
+            }
+        };
+        Mapped(match e.class() {
+            Class::Damage => match e.page() {
+                Some(p) if p.damage != Damage::Unreadable => match self.db.pager.marked_to(p.pid) {
+                    Some(objects) if !objects.is_empty() => {
+                        quarantined_as(&objects, &failed, By::Met)
+                    }
+                    _ => e,
+                },
+                _ => e,
+            },
+            Class::Found => {
+                let holder = e.orphan().and_then(|index| {
+                    let indexes = self.db.bindings.indexes();
+                    let (id, _) = indexes
+                        .iter()
+                        .find(|(_, i)| i.index.tree().owner() == index)?;
+                    self.db.index_holder(*id)
+                });
+                match holder {
+                    Some(holder) => {
+                        let objects = self.db.mark_finding(holder, &mut failed);
+                        quarantined_as(&objects, &failed, By::Found)
+                    }
+                    None => e,
+                }
+            }
+            Class::Transactions
+                if matches!(e, Error::Transactions(t) if t != crate::mvcc::Error::Closed)
+                    && self.db.pager.database_marked() =>
+            {
+                quarantined_as(
+                    &BTreeSet::from([Quarantine::Database]),
+                    &failed,
+                    By::Transactions,
+                )
+            }
+            Class::Retry
+            | Class::Reject
+            | Class::Transactions
+            | Class::Refused
+            | Class::Checker
+            | Class::Suspended => e,
+        })
+    }
+
+    /// Mark the index of each `Order`, `Orphan` or `Missing` finding of `found`. Returns a
+    /// finding for each mark that holds only in memory.
+    ///
+    /// Precondition: the calling thread holds no page latch and not the serialization lock.
+    pub fn findings(&self, found: &BTreeSet<Found>) -> Vec<Found> {
+        self.db.unlocked();
+        let mut failed = BTreeMap::new();
+        for f in found {
+            if let Found::Order { index, .. }
+            | Found::Orphan { index, .. }
+            | Found::Missing { index, .. } = f
+                && let Some(holder) = self.db.index_holder(IndexId(*index))
+            {
+                self.db.mark_finding(holder, &mut failed);
+            }
+        }
+        self.only_in_memory(failed)
+    }
+
+    /// End the call or pass: map the damage recorded and not yet mapped. Returns a finding for
+    /// each mark that holds only in memory.
+    ///
+    /// Precondition: the calling thread holds no page latch and not the serialization lock.
+    pub fn end(&self) -> Vec<Found> {
+        self.only_in_memory(self.db.map_damage(&self.at))
+    }
+
+    fn only_in_memory(&self, failed: BTreeMap<Quarantine, MarkFailure>) -> Vec<Found> {
+        failed
+            .into_iter()
+            .map(|(object, e)| Found::Structure {
+                at: format!(
+                    "the mark of {} holds only in memory: {e}",
+                    self.db.quarantined_name(object)
+                ),
+            })
+            .collect()
+    }
+
+    /// Returns the refusal [`admit_database`](Database::admit_database) gives, as
+    /// [`fail`](Mapping::fail) maps it, without mapping the damage recorded. `None` when the
+    /// database is not quarantined.
+    pub fn refusal(&self) -> Option<Mapped> {
+        self.db.admit_database().err().map(Mapped)
+    }
+}
+
+impl<R: Runtime> Drop for Mapping<'_, R> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.db.map_damage(&self.at);
+        }
     }
 }
 

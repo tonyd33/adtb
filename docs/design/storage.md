@@ -1058,8 +1058,9 @@ the whole database, and keeps until the object is repaired. The mapper is
 the only writer that sets a mark; every call below holds no page latch:
 
 ```text
-pager.map_damage(holders, order) -> BTreeMap<Quarantine, MarkFailure>
-                                                  // marks of the unmapped records
+pager.map_at(point, holders, order) -> BTreeMap<Quarantine, MarkFailure>
+                                                  // marks of the unmapped records, at an
+                                                  // open or the end of a call or pass
 pager.map_committing(holders, ordered) -> BTreeMap<Quarantine, MarkFailure>
                                                   // the same, for a commit
 pager.map_fault(fault, holder, order)
@@ -1123,12 +1124,15 @@ another thread frees or overwrites, or a page of a tree a swap retires, is
 superseded: it sets no mark and is not mapped, and the record that replaced it,
 or the record itself under its new holder, maps on its own. Which records are mapped is memory state, empty at every
 open, so every open maps every record again and a mark a crash lost comes
-back. The mapper runs at three points and nowhere else:
+back. The mapper runs at four points and nowhere else:
 
 - every open, once the catalog loads, whether the open succeeds or fails,
   and again once its migrations apply;
-- the end of an API call, holding no page latch and not the serialization
-  lock, whatever the call returns;
+- the end of every API call, holding no page latch and not the
+  serialization lock, whatever the call returns;
+- the end of every background pass (a vacuum of one relation, a mend, a
+  reindex job, a scrub pass and each page of it with a new finding), under
+  the same conditions;
 - a commit, under its hold of the serialization lock and before it checks
   the marks, while any record is unmapped. It maps only the records
   unmapped when its mapping begins, and leaves out a record whose last
@@ -1137,8 +1141,8 @@ back. The mapper runs at three points and nowhere else:
   Damage a read of those walks detects, on a page with no record when the
   mapping began, marks nothing of its own: the walk it stopped holds the
   record being mapped, as any walk stopped by damage does. Its record stays
-  unmapped, and the next end of a call, commit or open maps it by the
-  walks. A record
+  unmapped, and the next end of a call or pass, commit or open maps it by
+  the walks. A record
   another call appends meanwhile, even on a page those walks then read,
   waits for that call's end, the next commit or the next open.
 
@@ -1149,8 +1153,9 @@ no mark until the next of them maps its record.
 A settled status page, a stale log block and `Damage::Unreadable` map to
 nothing. A full damage list maps every record to the database. An `Order`,
 `Orphan` or `Missing` finding, and an index entry naming an unused slot,
-mark their index at the call that finds them. The failure a call returns
-names what its page's record was mapped to, and a failure of the
+mark their index at the call or pass that finds them. The failure a call
+or pass ends with is built as it ends, after its mapping, and names what
+its page's record was mapped to, and a failure of the
 transactions layer names the database once the database is marked. A
 failure reaches the client once, after the write path maps it. It ends the
 transaction when the call failed on a page, an index finding refused it
@@ -1170,7 +1175,7 @@ anything leaves the transaction open. A page maps as follows:
   runs are spent, leaves the mapping incomplete. An incomplete mapping that
   found no holder marks nothing, not even the database, and the call fails
   as a storage failure naming the page; its record stays unmapped, and the
-  next open or end of a call maps it again. A commit does not, and the
+  next open or end of a call or pass maps it again. A commit does not, and the
   page still refuses every read, so no commit writes through it;
 - a page of a relation of an engine module and a page of the large-value
   store every heap shares mark the database;

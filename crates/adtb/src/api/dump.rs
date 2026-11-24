@@ -25,7 +25,7 @@ use super::cause::Failure;
 use super::error::{FatalReason, RejectReason};
 use super::statements::Refusal;
 use super::{
-    CallOptions, CreateOptions, Database, Engine, Error, Log, OWNER_ID, OpenError, OpenOptions,
+    CallOptions, CreateOptions, Database, Entered, Error, Log, OWNER_ID, OpenError, OpenOptions,
     Position,
 };
 
@@ -519,110 +519,6 @@ fn ctor_of(v: &Val) -> u32 {
     }
 }
 
-impl<R: Runtime> Engine<R> {
-    /// Fail with `Quarantined` naming the database when it is quarantined whole and a page the
-    /// schema or the visibility of a row is read from fails its check against the retained log, or
-    /// the retained log cannot settle an id in progress.
-    fn admit_dump(&self) -> Result<(), Error> {
-        let Some(refused) = self.refusal() else {
-            return Ok(());
-        };
-        let Ok(pages) = self.catalog.read_from(&self.pager, self.db.txns()) else {
-            return Err(refused);
-        };
-        let log = self.pager.read_log(true);
-        let proven = self.db.txns().commit_log().unresolved(&self.pager).is_ok();
-        if proven
-            && pages
-                .into_iter()
-                .all(|pid| self.pager.check_page(pid, &log).is_empty())
-        {
-            Ok(())
-        } else {
-            Err(refused)
-        }
-    }
-
-    /// Write the database as `tx` reads it to the dump directory `path`, with a `security` entry
-    /// when `secured`, encrypted under `phrase` when given. Returns its manifest.
-    pub(super) fn dump_to(
-        &self,
-        id: super::TxnId,
-        tx: &Txn,
-        path: &str,
-        secured: bool,
-        phrase: Option<&Passphrase>,
-    ) -> Result<DumpManifest, Refusal> {
-        let target = self.target(path).map_err(Refusal::own)?;
-        self.admit_dump().map_err(Refusal::own)?;
-        let envelope = self.envelope().map_err(Refusal::own)?;
-        let failed = |e| self.met(id, e);
-        let broken = |r: Rot| failed(write::Error::from(write::Broken::CatalogError(r.into())));
-        let rows = |r| self.db.relation_rows(tx, r).map_err(failed);
-        let schema = self.schema();
-        let grants = Codec::<RoleGrant>::new(schema);
-        let (mut logged, mut given) = (BTreeSet::new(), BTreeSet::new());
-        for g in rows(grants.relation())? {
-            match grants.decode_val(schema, &g).map_err(broken)?.kind() {
-                GrantKind::Log => logged.insert(g),
-                GrantKind::Deployment => given.insert(g),
-            };
-        }
-        let mut ids = rows_of(schema, &KEYED, rows)?;
-        ids.insert(grants.relation(), logged);
-        let mut sections = vec![(IDS, ids)];
-        if secured {
-            let mut security = rows_of(schema, &SECURED, rows)?;
-            security.insert(grants.relation(), given);
-            sections.push((SECURITY, security));
-        }
-        sections.push((SETTINGS, rows_of(schema, &[engine_rel::SETTINGS], rows)?));
-        sections.push((AUDIT, rows_of(schema, &[engine_rel::AUDIT], rows)?));
-        let mut entries = vec![(LOG.to_owned(), log_text(&envelope, self.source.log()))];
-        for (name, rows) in sections {
-            entries.push((name.to_owned(), sections_text(&envelope, schema, &rows)));
-        }
-        let mut generators = header_line(&envelope);
-        for r in generated(schema, secured) {
-            let next = self.db.sequence_next(r);
-            let id = held_id(schema.ids().relation_id(r));
-            generators.push_str(&format!("generator {id} {next}\n"));
-        }
-        entries.push((GENERATORS.to_owned(), generators));
-        let deployed = self.db.deployed(tx, &self.deployment);
-        let deployed = deployed.map_err(|e| self.met(id, e.into()))?;
-        let bundled = rows_of(schema, &BUNDLED, rows)?;
-        let bundles = bundle_entries(&envelope, schema, &bundled, &deployed).map_err(broken)?;
-        entries.extend(bundles);
-        let mut streams = Vec::new();
-        for r in dumped(schema) {
-            let mut by_ctor: BTreeMap<u32, BTreeSet<Val>> = BTreeMap::new();
-            for row in self.db.relation_rows(tx, r).map_err(failed)? {
-                by_ctor.entry(ctor_of(&row)).or_default().insert(row);
-            }
-            let ctors = schema.ty(schema.relation(r).elem_def).ctors().len();
-            for c in 0..u32::try_from(ctors).expect("a sum has fewer than 2^32 constructors") {
-                let rows = by_ctor.remove(&c).unwrap_or_default();
-                let text = document(schema, r, &rows, &header_line(&envelope));
-                entries.push((data_name(schema, r, c, TEXT), text));
-                let stream = arrows::write_rows(schema, r, c, &rows, arrows::BATCH_LIMIT);
-                streams.push((data_name(schema, r, c, ARROWS), stream));
-            }
-        }
-        let entries: Vec<(String, Vec<u8>)> = entries
-            .into_iter()
-            .map(|(name, text)| (name, text.into_bytes()))
-            .chain(streams)
-            .collect();
-        for r in dumped(schema) {
-            self.db.admit_heaps(r).map_err(failed)?;
-        }
-        let snapshot = self.db.read_position(tx);
-        storage::write_dump(&self.rt, &target, envelope, snapshot, &entries, phrase)
-            .map_err(|e| Refusal::own(refused(e)))
-    }
-}
-
 /// Restore the dump at `source`, encrypted under `phrase` when given, as the new database file
 /// `path` of runtime `rt`, which opens with `options`. Returns the dump's manifest and each
 /// dormant grant of the restored file.
@@ -745,7 +641,8 @@ pub(super) fn restore_dump<R: Runtime>(
         .and_then(|db| {
             let secured = db
                 .engine
-                .replace_rows(on(&parsed.schema, db.engine.schema(), security), &[]);
+                .enter()
+                .and_then(|e| e.replace_rows(on(&parsed.schema, e.schema(), security), &[]));
             let closed = db.close();
             secured.and(closed)
         })
@@ -799,66 +696,6 @@ fn security_rows(schema: &Schema, text: &str, e: &Envelope) -> Result<(Rows, Vec
     Ok((rows, roles.into_iter().map(|(id, _)| id).collect()))
 }
 
-impl<R: Runtime> Engine<R> {
-    /// Replace every row of each relation of `rows` by its rows and write `facts`, as one
-    /// transaction.
-    ///
-    /// Precondition: each relation is one no migration writes.
-    fn replace_rows(&self, rows: Rows, facts: &[Fact]) -> Result<(), Error> {
-        let mut terms = Terms::default();
-        let mut params = Vec::new();
-        let mut changes = Vec::new();
-        for (r, rows) in rows {
-            let set = Ty::Set(Box::new(Ty::Data {
-                def: self.schema().relation(r).elem_def,
-                args: Vec::new(),
-                ctors: None,
-            }));
-            let x = terms.var("row·", set.clone());
-            params.push((x, Val::set(rows)));
-            let mut b = Build::new(self.schema(), &mut terms);
-            let gone = b.rel(r, None);
-            changes.push(b.delete(r, gone));
-            let new = b.var(x);
-            changes.push(b.insert(r, new));
-        }
-        let all = Build::new(self.schema(), &mut terms).par(changes);
-        let text = Text {
-            schema: self.schema(),
-            terms: &terms,
-            items: &[all],
-            params: &params,
-            clock: self.clock(),
-            caller: None,
-        };
-        let failed = |w| self.write_error(super::TxnId(0), w);
-        let tx = self.db.begin().map_err(failed)?;
-        let w = tx
-            .catalog_writer()
-            .expect("a write transaction of the write path has an id");
-        let written = self
-            .db
-            .statements(
-                write::Leave::system(),
-                &tx,
-                text,
-                &mut Local::default(),
-                Bounds::default(),
-            )
-            .map_err(|f| f.error)
-            .and_then(|_| {
-                let facts = self
-                    .deployment
-                    .insert(&self.pager, self.db.txns(), w, facts);
-                facts.map_err(write::Error::from)
-            });
-        match written {
-            Ok(()) => self.db.commit(tx).map(drop).map_err(failed),
-            Err(e) => Err(write::either(self.db.abandon(tx, || failed(e), failed))),
-        }
-    }
-}
-
 /// Check the opened database against the dump's version, parts and `ids`, write every dumped row
 /// unchecked, validate the whole database once, and resume every generator. Returns each dormant
 /// grant it wrote.
@@ -869,7 +706,7 @@ fn fill<R: Runtime>(
     parsed: Parsed,
     generators: &[(CatRelId, i64)],
 ) -> Result<Vec<Dormant>, Error> {
-    let engine = &*db.engine;
+    let engine = &db.engine.enter()?;
     let e = &manifest.envelope;
     if header(&engine.envelope()?) != header(e) {
         return Err(damaged(LOG));
@@ -1014,4 +851,166 @@ fn dormant_grants(
         }
     }
     Some(out)
+}
+
+impl<R: Runtime> Entered<'_, R> {
+    /// Fail with `Quarantined` naming the database when it is quarantined whole and a page the
+    /// schema or the visibility of a row is read from fails its check against the retained log, or
+    /// the retained log cannot settle an id in progress.
+    fn admit_dump(&self) -> Result<(), Error> {
+        let Some(refused) = self.refusal() else {
+            return Ok(());
+        };
+        let Ok(pages) = self.catalog.read_from(&self.pager, self.db.txns()) else {
+            return Err(refused);
+        };
+        let log = self.pager.read_log(true);
+        let proven = self.db.txns().commit_log().unresolved(&self.pager).is_ok();
+        if proven
+            && pages
+                .into_iter()
+                .all(|pid| self.pager.check_page(pid, &log).is_empty())
+        {
+            Ok(())
+        } else {
+            Err(refused)
+        }
+    }
+
+    /// Replace every row of each relation of `rows` by its rows and write `facts`, as one
+    /// transaction.
+    ///
+    /// Precondition: each relation is one no migration writes.
+    fn replace_rows(&self, rows: Rows, facts: &[Fact]) -> Result<(), Error> {
+        let mut terms = Terms::default();
+        let mut params = Vec::new();
+        let mut changes = Vec::new();
+        for (r, rows) in rows {
+            let set = Ty::Set(Box::new(Ty::Data {
+                def: self.schema().relation(r).elem_def,
+                args: Vec::new(),
+                ctors: None,
+            }));
+            let x = terms.var("row·", set.clone());
+            params.push((x, Val::set(rows)));
+            let mut b = Build::new(self.schema(), &mut terms);
+            let gone = b.rel(r, None);
+            changes.push(b.delete(r, gone));
+            let new = b.var(x);
+            changes.push(b.insert(r, new));
+        }
+        let all = Build::new(self.schema(), &mut terms).par(changes);
+        let text = Text {
+            schema: self.schema(),
+            terms: &terms,
+            items: &[all],
+            params: &params,
+            clock: self.clock(),
+            caller: None,
+        };
+        let failed = |w| self.write_error(super::TxnId(0), w);
+        let tx = self.db.begin().map_err(failed)?;
+        let w = tx
+            .catalog_writer()
+            .expect("a write transaction of the write path has an id");
+        let written = self
+            .db
+            .statements(
+                write::Leave::system(),
+                &tx,
+                text,
+                &mut Local::default(),
+                Bounds::default(),
+            )
+            .map_err(|f| f.error)
+            .and_then(|_| {
+                let facts = self
+                    .deployment
+                    .insert(&self.pager, self.db.txns(), w, facts);
+                facts.map_err(write::Error::from)
+            });
+        match written {
+            Ok(()) => self.db.commit(tx).map(drop).map_err(failed),
+            Err(e) => Err(write::either(self.db.abandon(tx, || failed(e), failed))),
+        }
+    }
+
+    /// Write the database as `tx` reads it to the dump directory `path`, with a `security` entry
+    /// when `secured`, encrypted under `phrase` when given. Returns its manifest.
+    pub(super) fn dump_to(
+        &self,
+        id: super::TxnId,
+        tx: &Txn,
+        path: &str,
+        secured: bool,
+        phrase: Option<&Passphrase>,
+    ) -> Result<DumpManifest, Refusal> {
+        let target = self.target(path).map_err(Refusal::own)?;
+        self.admit_dump().map_err(Refusal::own)?;
+        let envelope = self.envelope().map_err(Refusal::own)?;
+        let failed = |e| self.met(id, e);
+        let broken = |r: Rot| failed(write::Error::from(write::Broken::CatalogError(r.into())));
+        let rows = |r| self.db.relation_rows(tx, r).map_err(failed);
+        let schema = self.schema();
+        let grants = Codec::<RoleGrant>::new(schema);
+        let (mut logged, mut given) = (BTreeSet::new(), BTreeSet::new());
+        for g in rows(grants.relation())? {
+            match grants.decode_val(schema, &g).map_err(broken)?.kind() {
+                GrantKind::Log => logged.insert(g),
+                GrantKind::Deployment => given.insert(g),
+            };
+        }
+        let mut ids = rows_of(schema, &KEYED, rows)?;
+        ids.insert(grants.relation(), logged);
+        let mut sections = vec![(IDS, ids)];
+        if secured {
+            let mut security = rows_of(schema, &SECURED, rows)?;
+            security.insert(grants.relation(), given);
+            sections.push((SECURITY, security));
+        }
+        sections.push((SETTINGS, rows_of(schema, &[engine_rel::SETTINGS], rows)?));
+        sections.push((AUDIT, rows_of(schema, &[engine_rel::AUDIT], rows)?));
+        let mut entries = vec![(LOG.to_owned(), log_text(&envelope, self.source.log()))];
+        for (name, rows) in sections {
+            entries.push((name.to_owned(), sections_text(&envelope, schema, &rows)));
+        }
+        let mut generators = header_line(&envelope);
+        for r in generated(schema, secured) {
+            let next = self.db.sequence_next(r);
+            let id = held_id(schema.ids().relation_id(r));
+            generators.push_str(&format!("generator {id} {next}\n"));
+        }
+        entries.push((GENERATORS.to_owned(), generators));
+        let deployed = self.db.deployed(tx, &self.deployment);
+        let deployed = deployed.map_err(|e| self.met(id, e.into()))?;
+        let bundled = rows_of(schema, &BUNDLED, rows)?;
+        let bundles = bundle_entries(&envelope, schema, &bundled, &deployed).map_err(broken)?;
+        entries.extend(bundles);
+        let mut streams = Vec::new();
+        for r in dumped(schema) {
+            let mut by_ctor: BTreeMap<u32, BTreeSet<Val>> = BTreeMap::new();
+            for row in self.db.relation_rows(tx, r).map_err(failed)? {
+                by_ctor.entry(ctor_of(&row)).or_default().insert(row);
+            }
+            let ctors = schema.ty(schema.relation(r).elem_def).ctors().len();
+            for c in 0..u32::try_from(ctors).expect("a sum has fewer than 2^32 constructors") {
+                let rows = by_ctor.remove(&c).unwrap_or_default();
+                let text = document(schema, r, &rows, &header_line(&envelope));
+                entries.push((data_name(schema, r, c, TEXT), text));
+                let stream = arrows::write_rows(schema, r, c, &rows, arrows::BATCH_LIMIT);
+                streams.push((data_name(schema, r, c, ARROWS), stream));
+            }
+        }
+        let entries: Vec<(String, Vec<u8>)> = entries
+            .into_iter()
+            .map(|(name, text)| (name, text.into_bytes()))
+            .chain(streams)
+            .collect();
+        for r in dumped(schema) {
+            self.db.admit_heaps(r).map_err(failed)?;
+        }
+        let snapshot = self.db.read_position(tx);
+        storage::write_dump(&self.rt, &target, envelope, snapshot, &entries, phrase)
+            .map_err(|e| Refusal::own(refused(e)))
+    }
 }

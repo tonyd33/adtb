@@ -254,10 +254,12 @@ Postconditions:
   copy overwrites it. A page the allocation bitmap calls free has no
   finding, looked at again after the latched reading, unless the pager
   already refuses it; that finding marks nothing.
-- A new finding marks by `quarantine_findings` and replaces only group
-  `scrub`, at once. A finding a row already states writes no row. At the
-  end of a pass that read the whole file, rows it did not find go. A pass
-  resumed from a saved cursor keeps them until the next.
+- A new finding marks its index and replaces only group `scrub`, at once.
+  The damage recorded maps then and at the end of the pass, and a mark
+  that holds only in memory is a finding of the pass. A finding a row already
+  states writes no row. At the end of a pass that read the whole file,
+  rows it did not find go. A pass resumed from a saved cursor keeps them
+  until the next.
 - On a database quarantined whole, findings stay in memory, no cursor is
   saved, no further mark is set, and nothing reaches the log.
 

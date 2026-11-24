@@ -34,7 +34,7 @@ use adtb_lang::span::Diag;
 use crate::catalog::codec::GrantKind;
 use crate::runtime::Runtime;
 
-use super::{Database, Engine, Error, OWNER_ID, OWNER_ROLE, RejectReason, TxnId};
+use super::{Database, Engine, Entered, Error, OWNER_ID, OWNER_ROLE, RejectReason, TxnId};
 use grant::Calls;
 use store::Changes;
 pub(super) use tables::CallOrigin;
@@ -183,7 +183,12 @@ impl<R: Runtime> RoleAuthority<R> {
         name: &str,
         capability: Capability,
         grant_option: bool,
-        allowed: impl Fn(&Engine<R>, &crate::write::Txn, &Tables<'_>, &[Grant]) -> Result<(), Error>,
+        allowed: impl Fn(
+            &Entered<'_, R>,
+            &crate::write::Txn,
+            &Tables<'_>,
+            &[Grant],
+        ) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let name = role_name(name)?;
         self.access(true, |e, tx, id, changes| {
@@ -245,13 +250,13 @@ impl<R: Runtime> RoleAuthority<R> {
         &self,
         issuer: &str,
         text: &str,
-        allowed: impl Fn(&Engine<R>, &crate::write::Txn, &Tables<'_>) -> Result<(), Error>,
+        allowed: impl Fn(&Entered<'_, R>, &crate::write::Txn, &Tables<'_>) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let statement = revoke_statement(text)?;
         let engine = self.engine.upgrade().ok_or_else(Error::closed)?;
-        let _open = engine.enter()?;
+        let engine = &engine.enter()?;
         let _writer = engine.deployed.write(&engine.rt);
-        store::run(&engine, true, &mut |e, tx, id, changes| {
+        store::run(engine, true, &mut |e, tx, id, changes| {
             let t = Tables::new(e.schema(), id);
             allowed(e, tx, &t)?;
             let grants = t.grants(e, tx)?;
@@ -315,18 +320,23 @@ impl<R: Runtime> RoleAuthority<R> {
     fn access<T>(
         &self,
         write: bool,
-        mut body: impl FnMut(&Engine<R>, &crate::write::Txn, TxnId, &mut Changes) -> Result<T, Error>,
+        mut body: impl FnMut(
+            &Entered<'_, R>,
+            &crate::write::Txn,
+            TxnId,
+            &mut Changes,
+        ) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let engine = self.engine.upgrade().ok_or_else(Error::closed)?;
-        let _open = engine.enter()?;
-        store::run(&engine, write, &mut body)
+        let engine = &engine.enter()?;
+        store::run(engine, write, &mut body)
     }
 
     fn checked(
         &self,
         session: &RoleSession<R>,
         t: &Tables<'_>,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         tx: &crate::write::Txn,
     ) -> Result<(), Error> {
         if !Weak::ptr_eq(&self.engine, &session.engine) {
@@ -409,7 +419,7 @@ fn orphans(
 ///
 /// Fail with `Invalid` when the grant with grant option would close a cycle of grant options.
 fn give_capability<R: Runtime>(
-    e: &Engine<R>,
+    e: &Entered<'_, R>,
     tx: &crate::write::Txn,
     t: &Tables<'_>,
     rows: &mut Vec<Grant>,

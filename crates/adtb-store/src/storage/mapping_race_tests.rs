@@ -1,5 +1,6 @@
 //! The damage mapper racing a thread that frees, restarts, allocates or retires the page it maps.
 
+use super::damage_log::MapPoint;
 use crate::testing::Probe;
 
 use std::collections::BTreeSet;
@@ -211,7 +212,8 @@ fn race(seed: u64, files: &Files, pages: Pages, racer: Racer) -> Raced {
             let changed_at = racer.run(&pager2, pages);
             *into.lock().unwrap() = Some((changed_at, after_walk, in_window));
         });
-        pager.map_damage(
+        pager.map_at(
+            &MapPoint::pass(),
             |_| {
                 after_walk.start.store(true, Ordering::Release);
                 Some(holder(object))

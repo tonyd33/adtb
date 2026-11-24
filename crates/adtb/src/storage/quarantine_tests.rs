@@ -1,3 +1,4 @@
+use crate::storage::MapPoint;
 use crate::testing::{Object, Plant, Probe};
 use adtb_testkit::process;
 use adtb_testkit::process::finished;
@@ -128,7 +129,11 @@ fn a_mark_failing_on_a_damaged_marks_page_leaves_its_record_unmapped() {
             engine_module: false,
         };
         p.damage_tested(pid, Damage::Checksum);
-        let failed = p.map_damage(|_| Some(BTreeSet::from([heap])), &ordered_for_test());
+        let failed = p.map_at(
+            &MapPoint::pass(),
+            |_| Some(BTreeSet::from([heap])),
+            &ordered_for_test(),
+        );
         let refused = MarkFailure::Page(PageError {
             pid: page,
             damage: Damage::Checksum,

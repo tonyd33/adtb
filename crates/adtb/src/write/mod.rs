@@ -85,7 +85,7 @@ pub use eval::{Violated, Violator};
 pub use input::Local;
 pub use past::Retained;
 pub(crate) use past::position;
-pub use quarantine::{By, Mapped};
+pub use quarantine::{By, Mapped, Mapping};
 pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold};
 pub use rot::Rot;
 pub use stream::{Produced, Production};

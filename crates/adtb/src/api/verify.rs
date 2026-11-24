@@ -25,7 +25,7 @@ use crate::write::{self, Found, HoldWait, VerifyScope};
 
 use super::cause::Corruption;
 use super::text::{DynRows, rows};
-use super::{Engine, OpenError, OpenOptions, corrupt, micros};
+use super::{Engine, Entered, OpenError, OpenOptions, corrupt, micros};
 
 /// The group of the kept row holding the next run number and finding id.
 const COUNTERS: &str = "counters";
@@ -737,76 +737,6 @@ impl<R: Runtime> Engine<R> {
             .replace_findings(schema, table, &group, at, found.into(), true);
     }
 
-    /// Run `verify` over `rel`, or the whole database. Returns the rows it wrote.
-    ///
-    /// Precondition: the calling thread holds no transaction with an id.
-    pub(super) fn verified(
-        &self,
-        schema: &Schema,
-        rel: Option<RelId>,
-        waiting: HoldWait<'_>,
-    ) -> Result<DynRows, write::Error> {
-        write::outside_writer();
-        let scope = rel.map_or(VerifyScope::Database, VerifyScope::Relation);
-        self.verify_run(schema, scope, false, waiting)
-    }
-
-    /// Run `verify` over the whole database with the checks that hold only with no writer as well,
-    /// holding off vacuum, the background worker's included, for the whole run.
-    ///
-    /// Precondition: no other call runs on this database while it runs.
-    pub(super) fn verified_holding(&self, schema: &Schema) -> Result<DynRows, write::Error> {
-        self.verify_run(schema, VerifyScope::Database, true, HoldWait::unbounded())
-    }
-
-    fn verify_run(
-        &self,
-        schema: &Schema,
-        scope: VerifyScope,
-        holding: bool,
-        waiting: HoldWait<'_>,
-    ) -> Result<DynRows, write::Error> {
-        let table = engine_relation(schema, engine_rel::VERIFY_FINDINGS);
-        let run = self.verifier.next_run();
-        let started = self.clock();
-        let job = Job {
-            verifier: &self.verifier,
-            table: engine_relation(schema, engine_rel::JOBS),
-            run,
-            kind: job_kind(schema, engine_ctor::JOB_VERIFY),
-            target: match scope {
-                VerifyScope::Relation(r) => schema.relation(r).name.clone(),
-                VerifyScope::Database => String::new(),
-            },
-            started,
-        };
-        let mut found = self.verify_checks(scope, holding, waiting, &job)?;
-        if self.db.admit_database().is_ok() {
-            found.extend(self.db.quarantine_findings(&found));
-        }
-        let keep = self.verifier.keeps();
-        if !keep {
-            let why = match self.verifier.pager.unarmed() {
-                Some(why) => why.to_string(),
-                None => "quarantined whole".to_owned(),
-            };
-            found.insert(Found::Structure {
-                at: format!("the database: {why}, so the findings of this run are not kept"),
-            });
-        }
-        let group = group(scope, schema);
-        let stamp = (run, started);
-        let vals = self
-            .verifier
-            .replace_findings(schema, table, &group, stamp, found.into(), keep);
-        let elem = Ty::Data {
-            def: schema.relation(table).elem_def,
-            args: Vec::new(),
-            ctors: None,
-        };
-        Ok(rows(schema, elem, vals))
-    }
-
     fn verify_checks(
         &self,
         scope: VerifyScope,
@@ -914,6 +844,79 @@ impl<R: Runtime> Engine<R> {
                 self.pager.plant_damage(pid, Damage::Checksum);
             }
         }
+    }
+}
+
+impl<R: Runtime> Entered<'_, R> {
+    fn verify_run(
+        &self,
+        schema: &Schema,
+        scope: VerifyScope,
+        holding: bool,
+        waiting: HoldWait<'_>,
+    ) -> Result<DynRows, write::Error> {
+        let table = engine_relation(schema, engine_rel::VERIFY_FINDINGS);
+        let run = self.verifier.next_run();
+        let started = self.clock();
+        let job = Job {
+            verifier: &self.verifier,
+            table: engine_relation(schema, engine_rel::JOBS),
+            run,
+            kind: job_kind(schema, engine_ctor::JOB_VERIFY),
+            target: match scope {
+                VerifyScope::Relation(r) => schema.relation(r).name.clone(),
+                VerifyScope::Database => String::new(),
+            },
+            started,
+        };
+        let mut found = self.verify_checks(scope, holding, waiting, &job)?;
+        if self.db.admit_database().is_ok() {
+            found.extend(self.mapping().findings(&found));
+        }
+        found.extend(self.mapping().end());
+        let keep = self.verifier.keeps();
+        if !keep {
+            let why = match self.verifier.pager.unarmed() {
+                Some(why) => why.to_string(),
+                None => "quarantined whole".to_owned(),
+            };
+            found.insert(Found::Structure {
+                at: format!("the database: {why}, so the findings of this run are not kept"),
+            });
+        }
+        let group = group(scope, schema);
+        let stamp = (run, started);
+        let vals = self
+            .verifier
+            .replace_findings(schema, table, &group, stamp, found.into(), keep);
+        let elem = Ty::Data {
+            def: schema.relation(table).elem_def,
+            args: Vec::new(),
+            ctors: None,
+        };
+        Ok(rows(schema, elem, vals))
+    }
+
+    /// Run `verify` over the whole database with the checks that hold only with no writer as well,
+    /// holding off vacuum, the background worker's included, for the whole run.
+    ///
+    /// Precondition: no other call runs on this database while it runs.
+    pub(super) fn verified_holding(&self, schema: &Schema) -> Result<DynRows, write::Error> {
+        self.verify_run(schema, VerifyScope::Database, true, HoldWait::unbounded())
+    }
+
+    /// Run `verify` over `rel`, or the whole database. Returns the rows it wrote.
+    ///
+    /// Precondition: the calling thread holds no transaction with an id.
+    pub(super) fn verified(
+        &self,
+        schema: &Schema,
+        rel: Option<RelId>,
+        waiting: HoldWait<'_>,
+    ) -> Result<DynRows, write::Error> {
+        write::outside_writer();
+        let scope = rel.map_or(VerifyScope::Database, VerifyScope::Relation);
+        self.verify_run(schema, scope, false, waiting)
     }
 }
 

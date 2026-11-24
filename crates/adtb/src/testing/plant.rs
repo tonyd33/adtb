@@ -160,7 +160,8 @@ impl<R: Runtime> Testing<'_, R> {
             Plant::FailOn(e) => {
                 let w = self.db.tested_db();
                 return Ok(Planted::Refused(
-                    w.fail(write::Error::Exec(crate::exec::Error::Page(e))),
+                    w.mapping()
+                        .fail(write::Error::Exec(crate::exec::Error::Page(e))),
                 ));
             }
         }

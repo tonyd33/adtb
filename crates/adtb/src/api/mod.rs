@@ -11,6 +11,7 @@ mod closed_file_tests;
 mod coded_tests;
 mod command;
 mod dump;
+mod entered;
 mod error;
 mod error_value;
 mod failed_open;
@@ -46,7 +47,7 @@ pub mod typed;
 mod value;
 mod verify;
 
-use admitted::{Admitted, Authority, CALL_BYTES, Queued};
+use admitted::{Authority, CALL_BYTES, Queued};
 use cause::{Broken, corrupt};
 use failed_open::{failed_create, finish_create, open_damage};
 use std::collections::BTreeSet;
@@ -71,8 +72,10 @@ use crate::mvcc::Limits;
 use crate::mvcc::Transactions;
 use crate::runtime::{Runtime, ThreadId};
 use crate::storage::policy::Phase;
-use crate::storage::{self, LATCHES_PER_THREAD, Opening, Pager};
-use crate::write::{self, Bounds, Local, Setup, Txn};
+use crate::storage::{self, LATCHES_PER_THREAD, MapPoint, Opening, Pager};
+use crate::write::{self, Setup};
+
+use entered::Entered;
 
 pub use arrow::{ArrowSchema, ArrowStream, Field, RecordBatch};
 pub use backup::{
@@ -94,7 +97,7 @@ pub use txn::{AdHocTransaction, Committed, TxnCallOptions, TxnOptions};
 pub use typed::{BundleDef, Callable, CtorRelation, Key, Pending, Rows};
 
 use settings::Settings;
-use statements::{Failure, Halted};
+use statements::Halted;
 use stop::Stops;
 use text::Prepared;
 
@@ -429,39 +432,9 @@ impl<R: Runtime> Drop for Engine<R> {
     }
 }
 
-/// An engine held open for one call. Dropping it ends the call: it maps the damage recorded and
-/// not yet mapped, whatever the call returned.
-///
-/// Precondition: the dropping thread holds no page latch and not the serialization lock.
-struct Entered<'e, R: Runtime> {
-    db: &'e write::Database<R>,
-    _open: std::sync::RwLockReadGuard<'e, bool>,
-}
-
-impl<R: Runtime> Drop for Entered<'_, R> {
-    fn drop(&mut self) {
-        if !std::thread::panicking() {
-            self.db.end_call();
-        }
-    }
-}
-
 impl<R: Runtime> Engine<R> {
     fn schema(&self) -> &Arc<CommittedSchema> {
         self.compiled.shared_schema()
-    }
-
-    /// Returns the engine held open for one call, or refuses a call of a closed database.
-    fn enter(&self) -> Result<Entered<'_, R>, Error> {
-        let open = self.open.read(&self.rt);
-        if *open {
-            Ok(Entered {
-                db: &self.db,
-                _open: open,
-            })
-        } else {
-            Err(Error::closed())
-        }
     }
 
     /// Close the engine once every running call has returned: stop every submitted task, write
@@ -582,8 +555,7 @@ impl<R: Runtime> Database<R> {
         params: &[(&str, Ty, Val)],
         opts: &CallOptions,
     ) -> Result<Vec<DynRows>, Error> {
-        let e = &*self.engine;
-        let _open = e.enter()?;
+        let e = &self.engine.enter()?;
         let caller = e.principal(opts.assert.as_ref())?;
         let p = e.admit_text(Prepared::new(
             &e.compiled,
@@ -617,8 +589,7 @@ impl<R: Runtime> Database<R> {
     ///
     /// Precondition: no other call runs on this database while it runs.
     pub(crate) fn verify_holding(&self) -> Result<DynRows, Error> {
-        let e = &*self.engine;
-        let _open = e.enter()?;
+        let e = &self.engine.enter()?;
         e.verified_holding(e.schema())
             .map_err(|w| e.write_error(TxnId(0), w))
     }
@@ -626,8 +597,7 @@ impl<R: Runtime> Database<R> {
     /// Returns each incremental check the constraint or check `name`, by qualified name, is
     /// admitted with, or an invalid error when the schema has no constraint or check `name`.
     pub fn explain_checks(&self, name: &str) -> Result<Vec<write::CheckPlan>, Error> {
-        let e = &*self.engine;
-        let _open = e.enter()?;
+        let e = &self.engine.enter()?;
         e.db.checks(name).ok_or_else(|| {
             Error::invalid(format!("the schema has no constraint or check `{name}`"))
         })
@@ -749,7 +719,8 @@ fn mark_open_damage<R: Runtime>(
     txns: &Transactions<R>,
 ) {
     let structures = catalog.structures();
-    pager.map_damage(
+    pager.map_at(
+        &MapPoint::open(opening),
         |pid| structures.holders(pager, txns, pid, Phase::Opening),
         opening,
     );
@@ -769,7 +740,8 @@ fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>, opening: &Openin
         None
     };
     let mut unopened = None;
-    pager.map_damage(
+    pager.map_at(
+        &MapPoint::open(opening),
         |pid| match &loaded {
             Some((structures, txns)) => structures.holders(pager, txns, pid, Phase::Opening),
             None => {
@@ -1008,28 +980,10 @@ impl<R: Runtime> Engine<R> {
         })
     }
 
-    /// Returns `p`, the checked text of a call. On a database quarantined whole, fail with
-    /// `Quarantined` whether or not it checked, unless it is a run of `verify` or `dump` alone.
-    fn admit_text(&self, p: Result<Prepared, Error>) -> Result<Prepared, Error> {
-        let Some(refused) = self.refusal() else {
-            return p;
-        };
-        match p {
-            Ok(p) if self.lone_verify(&p) || Self::lone_dump(&p) => Ok(p),
-            _ => Err(refused),
-        }
-    }
-
     /// Returns whether `p` is one run of `dump` alone.
     fn lone_dump(p: &Prepared) -> bool {
         use adtb_lang::check::Command::Dump;
         matches!((p.items(), p.commands()), ([], [c]) if matches!(c.command, Dump { .. }))
-    }
-
-    /// Returns the failure of every call but `verify` and `dump` on a database quarantined whole.
-    fn refusal(&self) -> Option<Error> {
-        let refused = self.db.admit_database().err()?;
-        Some(self.write_error(TxnId(0), refused))
     }
 
     /// Returns whether `p` is one run of `verify` this file can answer: over a relation only when
@@ -1196,29 +1150,6 @@ impl<R: Runtime> Engine<R> {
         TxnId(i64::try_from((self.rt.next_u64() >> 1).max(1)).expect("63 bits fit an i64"))
     }
 
-    fn write_error(&self, txn: TxnId, e: write::Error) -> Error {
-        Error::of_write(&self.db, self.schema(), txn, self.db.fail(e))
-    }
-
-    /// Returns the client error of `e`, met writing catalog rows.
-    fn catalog_error(&self, e: catalog::Error) -> Error {
-        self.write_error(TxnId(0), e.into())
-    }
-
-    fn begin(&self, id: TxnId) -> Result<Txn, Error> {
-        self.db.begin().map_err(|e| self.write_error(id, e))
-    }
-
-    fn begin_read(&self, id: TxnId, deferrable: bool) -> Result<Txn, Error> {
-        self.db
-            .begin_read(deferrable)
-            .map_err(|e| self.write_error(id, e))
-    }
-
-    fn abort(&self, id: TxnId, tx: Txn) -> Result<(), Error> {
-        self.db.abort(tx).map_err(|e| self.write_error(id, e))
-    }
-
     /// Refuse a commit position past every commit of the database's history.
     fn reads_after(&self, after: Option<Position>) -> Result<(), Error> {
         let end = Position::from(self.pager.position(self.pager.durable()));
@@ -1243,86 +1174,6 @@ impl<R: Runtime> Engine<R> {
         micros(self.pager.wall())
     }
 
-    /// Run `admitted` as one transaction of its own under `opts`: read-only when it only reads, else
-    /// rerun on a serialization failure before any command ran, up to `opts.retry`, else its
-    /// `retry n`, else the file setting `RetryLimit`. Returns the rows of each item that yields a
-    /// result, with the commit position and the attempts made.
-    ///
-    /// A call whose token is cancelled, or whose deadline passes, before it commits fails with
-    /// `Cancelled` or `DeadlineExceeded` and has no effect.
-    /// Invoke `on_ready` once after checking the call options, before beginning execution.
-    fn call(
-        &self,
-        admitted: &Admitted,
-        opts: &CallOptions,
-        on_ready: impl FnOnce(),
-    ) -> Result<Committed<Vec<DynRows>>, Error> {
-        let p = admitted.prepared();
-        let stops = opts.stops();
-        stops.check(&self.rt)?;
-        self.reads_after(opts.after)?;
-        let bounds = self.granted(admitted, None, stops.bounds(&self.rt, opts.fix_rounds))?;
-        on_ready();
-        if let Some(rows) = self.verify_without_transaction(p) {
-            return rows.map(|rows| Committed {
-                value: vec![rows],
-                position: Position::from(self.pager.position(self.pager.durable())),
-                attempts: 1,
-            });
-        }
-        if !p.writes {
-            let id = self.txn_id();
-            let tx = self.begin_read(id, p.deferrable)?;
-            return self
-                .run(id, tx, admitted, bounds)
-                .map(|(value, position)| Committed {
-                    value,
-                    position,
-                    attempts: 1,
-                })
-                .map_err(|f| f.error);
-        }
-        let mut attempts = 1;
-        loop {
-            stops.check(&self.rt)?;
-            let id = self.txn_id();
-            let tx = self.begin(id)?;
-            match self.run(id, tx, admitted, bounds.clone()) {
-                Err(f) if self.reruns_after(p, opts.retry, attempts, &f.error, f.commanded) => {
-                    attempts += 1;
-                }
-                done => {
-                    return done
-                        .map(|(value, position)| Committed {
-                            value,
-                            position,
-                            attempts,
-                        })
-                        .map_err(|f| f.error);
-                }
-            }
-        }
-    }
-
-    /// Returns the run of `verify` that `p` is, when `p` is nothing else and the commit log's
-    /// damage refuses every transaction.
-    pub(super) fn verify_without_transaction(
-        &self,
-        p: &Prepared,
-    ) -> Option<Result<DynRows, Error>> {
-        self.pager.whole_cause()?;
-        let ([], [c]) = (p.items(), p.commands()) else {
-            return None;
-        };
-        let adtb_lang::check::Command::Verify(rel) = c.command else {
-            return None;
-        };
-        Some(
-            self.verified(p.schema(), rel, write::HoldWait::unbounded())
-                .map_err(|e| self.write_error(TxnId(0), e)),
-        )
-    }
-
     /// Returns how often a call of `p` reruns on a serialization failure: `retry`, else `p`'s
     /// `retry n`, else the file setting `RetryLimit`.
     fn reruns(&self, p: &Prepared, retry: Option<u32>) -> u64 {
@@ -1343,41 +1194,6 @@ impl<R: Runtime> Engine<R> {
         commanded: bool,
     ) -> bool {
         err.is_serialization() && !commanded && u64::from(attempts) <= self.reruns(p, retry)
-    }
-
-    /// Run `admitted` in `tx`, the transaction `id`, bounded by `bounds`, and commit it, or abort it on
-    /// any failure. Returns the rows of each item that yields a result and the commit position.
-    fn run(
-        &self,
-        id: TxnId,
-        tx: Txn,
-        admitted: &Admitted,
-        bounds: Bounds,
-    ) -> Result<(Vec<DynRows>, Position), Failure> {
-        let p = admitted.prepared();
-        let (cancel, deadline) = (bounds.cancel.clone(), bounds.deadline);
-        let past_commands = |error| Failure::new(error, true, !p.commands().is_empty());
-        let rows = self
-            .statements(id, &tx, admitted, &mut Local::default(), bounds)
-            .and_then(|rows| {
-                if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Acquire)) {
-                    Err(past_commands(Error::rejected(RejectReason::Cancelled)))
-                } else if deadline.is_some_and(|d| self.rt.now() >= d) {
-                    Err(past_commands(Error::rejected(
-                        RejectReason::DeadlineExceeded,
-                    )))
-                } else {
-                    Ok(rows)
-                }
-            });
-        let failed = |e| past_commands(self.write_error(id, e));
-        match rows {
-            Ok(rows) => {
-                let at = self.db.commit(tx).map_err(failed)?;
-                Ok((rows, Position::from(at)))
-            }
-            Err(f) => Err(write::either(self.db.abandon(tx, || f, failed))),
-        }
     }
 
     /// Returns the principal a call runs for: `assert`, an end user or the anonymous

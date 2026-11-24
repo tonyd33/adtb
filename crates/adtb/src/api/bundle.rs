@@ -28,7 +28,7 @@ use crate::write;
 use super::error::{Error, RejectReason};
 use super::settings::Settings;
 use super::text::{DynRows, Prepared, rows};
-use super::{Engine, OWNER_ID, OWNER_ROLE, OpenError, corrupt};
+use super::{Engine, Entered, OWNER_ID, OWNER_ROLE, OpenError, corrupt};
 
 #[cfg(test)]
 #[path = "bundle_tests.rs"]
@@ -1007,15 +1007,6 @@ pub(super) fn bundle_name(b: &BundleName) -> String {
 }
 
 impl<R: Runtime> Engine<R> {
-    /// Refuse a bind of bundle `name` when it is retired, superseded or expired, and renew its
-    /// lease when a renewal is due. A name that is no bundle's is not refused.
-    pub(super) fn bind(&self, name: &str) -> Result<(), Error> {
-        if self.admit(name, "")? {
-            self.renew(name);
-        }
-        Ok(())
-    }
-
     /// Refuse a bind or call of bundle `name`, the call's query `query`, when the bundle is
     /// retired, superseded or expired. Returns whether a renewal of its lease is due. A name
     /// that is no bundle's is not refused.
@@ -1030,101 +1021,6 @@ impl<R: Runtime> Engine<R> {
             Some(reason) => Err(Error::rejected(reason)),
             None => Ok(row.renewal_due(now, &s)),
         }
-    }
-
-    /// Renew the lease of bundle `name` when a renewal is due and no other write of a bundle's
-    /// row is under way.
-    pub(super) fn renew(&self, name: &str) {
-        let Some(writer) = self.try_bundle_writer() else {
-            return;
-        };
-        let now = self.clock();
-        let s = *self.settings.lock(&self.rt);
-        let Some(row) = self.deployed.read(&self.rt).bundles.get(name).cloned() else {
-            return;
-        };
-        if row.refusal(now, &s, "").is_some() || !row.renewal_due(now, &s) {
-            return;
-        }
-        let mut next = row.clone();
-        next.renewed = now;
-        // A renewal that fails leaves the lease as it was, for a later call to renew.
-        if writer.replace_bundle(&row, &next).is_ok() {
-            writer.put(next);
-        }
-    }
-
-    /// Run `c` when it is a command on deployment state, `retire bundle` or `supersede
-    /// bundle`, which no transaction holds. Returns its rows, `None` for any other command.
-    pub(super) fn deployment_command(
-        &self,
-        c: &Command,
-        p: &Prepared,
-    ) -> Option<Result<DynRows, Error>> {
-        match c {
-            Command::RetireBundle(b) => Some(self.retire(&bundle_name(b), p)),
-            Command::SupersedeBundle(b, by) => {
-                Some(self.supersede(&bundle_name(b), &bundle_name(by)))
-            }
-            _ => None,
-        }
-    }
-
-    /// Retire bundle `name` for the issuer of `p`, the row and its `Retire` audit row committing
-    /// together. Returns its row.
-    pub(super) fn retire(&self, name: &str, p: &Prepared) -> Result<DynRows, Error> {
-        let writer = self.bundle_writer();
-        let now = self.clock();
-        let row = known(&self.deployed.read(&self.rt).bundles, name)?.clone();
-        let mut next = row.clone();
-        if !matches!(row.state, State::Retired(_)) {
-            next.state = State::Retired(now);
-            let t = Tables::of(self.schema());
-            let role = p.issuer.as_ref().map_or(OWNER_ROLE, |i| &i.role);
-            writer.retire_row(
-                t.bundles,
-                (t.bundle_value(&row), t.bundle_value(&next)),
-                (role, p.caller()),
-                name,
-            )?;
-        }
-        let out = self.bundle_rows(&next);
-        writer.put(next);
-        Ok(out)
-    }
-
-    /// Supersede bundle `name` by `by`, a live bundle of its family. Returns the row of `name`.
-    pub(super) fn supersede(&self, name: &str, by: &str) -> Result<DynRows, Error> {
-        let writer = self.bundle_writer();
-        let now = self.clock();
-        let settings = *self.settings.lock(&self.rt);
-        let (row, successor) = {
-            let deployed = self.deployed.read(&self.rt);
-            (
-                known(&deployed.bundles, name)?.clone(),
-                deployed.bundles.get(by).cloned(),
-            )
-        };
-        let replaces = |other: &Row| {
-            name != by && other.header.family == row.header.family && other.live(now, &settings)
-        };
-        if !successor.as_ref().is_some_and(replaces) {
-            return Err(Error::invalid(format!(
-                "bundle {name} is superseded only by another live bundle of family {}",
-                row.header.family
-            )));
-        }
-        if let State::Retired(_) = row.state {
-            return Err(Error::invalid(format!("bundle {name} is retired")));
-        }
-        let mut next = row.clone();
-        if row.state == State::Active {
-            next.state = State::Superseded(now);
-            writer.replace_bundle(&row, &next)?;
-        }
-        let out = self.bundle_rows(&next);
-        writer.put(next);
-        Ok(out)
     }
 
     pub(super) fn bundle_rows(&self, row: &Row) -> DynRows {
@@ -1190,6 +1086,113 @@ impl<R: Runtime> Engine<R> {
     }
 }
 
+impl<R: Runtime> Entered<'_, R> {
+    /// Renew the lease of bundle `name` when a renewal is due and no other write of a bundle's
+    /// row is under way.
+    pub(super) fn renew(&self, name: &str) {
+        let Some(writer) = self.try_bundle_writer() else {
+            return;
+        };
+        let now = self.clock();
+        let s = *self.settings.lock(&self.rt);
+        let Some(row) = self.deployed.read(&self.rt).bundles.get(name).cloned() else {
+            return;
+        };
+        if row.refusal(now, &s, "").is_some() || !row.renewal_due(now, &s) {
+            return;
+        }
+        let mut next = row.clone();
+        next.renewed = now;
+        // A renewal that fails leaves the lease as it was, for a later call to renew.
+        if writer.replace_bundle(self, &row, &next).is_ok() {
+            writer.put(next);
+        }
+    }
+
+    /// Supersede bundle `name` by `by`, a live bundle of its family. Returns the row of `name`.
+    pub(super) fn supersede(&self, name: &str, by: &str) -> Result<DynRows, Error> {
+        let writer = self.bundle_writer();
+        let now = self.clock();
+        let settings = *self.settings.lock(&self.rt);
+        let (row, successor) = {
+            let deployed = self.deployed.read(&self.rt);
+            (
+                known(&deployed.bundles, name)?.clone(),
+                deployed.bundles.get(by).cloned(),
+            )
+        };
+        let replaces = |other: &Row| {
+            name != by && other.header.family == row.header.family && other.live(now, &settings)
+        };
+        if !successor.as_ref().is_some_and(replaces) {
+            return Err(Error::invalid(format!(
+                "bundle {name} is superseded only by another live bundle of family {}",
+                row.header.family
+            )));
+        }
+        if let State::Retired(_) = row.state {
+            return Err(Error::invalid(format!("bundle {name} is retired")));
+        }
+        let mut next = row.clone();
+        if row.state == State::Active {
+            next.state = State::Superseded(now);
+            writer.replace_bundle(self, &row, &next)?;
+        }
+        let out = self.bundle_rows(&next);
+        writer.put(next);
+        Ok(out)
+    }
+
+    /// Refuse a bind of bundle `name` when it is retired, superseded or expired, and renew its
+    /// lease when a renewal is due. A name that is no bundle's is not refused.
+    pub(super) fn bind(&self, name: &str) -> Result<(), Error> {
+        if self.admit(name, "")? {
+            self.renew(name);
+        }
+        Ok(())
+    }
+
+    /// Run `c` when it is a command on deployment state, `retire bundle` or `supersede
+    /// bundle`, which no transaction holds. Returns its rows, `None` for any other command.
+    pub(super) fn deployment_command(
+        &self,
+        c: &Command,
+        p: &Prepared,
+    ) -> Option<Result<DynRows, Error>> {
+        match c {
+            Command::RetireBundle(b) => Some(self.retire(&bundle_name(b), p)),
+            Command::SupersedeBundle(b, by) => {
+                Some(self.supersede(&bundle_name(b), &bundle_name(by)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Retire bundle `name` for the issuer of `p`, the row and its `Retire` audit row committing
+    /// together. Returns its row.
+    pub(super) fn retire(&self, name: &str, p: &Prepared) -> Result<DynRows, Error> {
+        let writer = self.bundle_writer();
+        let now = self.clock();
+        let row = known(&self.deployed.read(&self.rt).bundles, name)?.clone();
+        let mut next = row.clone();
+        if !matches!(row.state, State::Retired(_)) {
+            next.state = State::Retired(now);
+            let t = Tables::of(self.schema());
+            let role = p.issuer.as_ref().map_or(OWNER_ROLE, |i| &i.role);
+            writer.retire_row(
+                self,
+                t.bundles,
+                (t.bundle_value(&row), t.bundle_value(&next)),
+                (role, p.caller()),
+                name,
+            )?;
+        }
+        let out = self.bundle_rows(&next);
+        writer.put(next);
+        Ok(out)
+    }
+}
+
 impl<'a, R: Runtime> BundleWriter<'a, R> {
     /// Returns the engine whose bundles this writes.
     pub(super) fn engine(&self) -> &'a Engine<R> {
@@ -1244,8 +1247,7 @@ impl<'a, R: Runtime> BundleWriter<'a, R> {
     }
 
     /// Replace the row `old` of `catalog::bundles` by `new`, in a transaction of its own.
-    fn replace_bundle(&self, old: &Row, new: &Row) -> Result<(), Error> {
-        let e = self.engine;
+    fn replace_bundle(&self, e: &Entered<'_, R>, old: &Row, new: &Row) -> Result<(), Error> {
         let t = Tables::of(e.schema());
         e.swap_row(
             e.schema(),

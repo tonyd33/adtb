@@ -8,7 +8,7 @@ use crate::runtime::Runtime;
 use crate::write::Txn;
 
 use super::super::bundle::BundleWriter;
-use super::super::{Engine, Error, RejectReason, TxnId};
+use super::super::{Engine, Entered, Error, RejectReason, TxnId};
 use super::store::{self, Changes};
 use super::tables::{CallOrigin, CallRow, RoleId, Tables, service};
 use super::{Capability, RoleAuthority, require};
@@ -50,7 +50,7 @@ impl<R: Runtime> RoleAuthority<R> {
         &self,
         session: &RoleSession<R>,
         t: &Tables<'_>,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         tx: &Txn,
         assertion: Option<&Val>,
     ) -> Result<Val, Error> {
@@ -76,6 +76,7 @@ impl<R: Runtime> RoleAuthority<R> {
             })
         ) {
             let e = self.engine.upgrade().ok_or_else(Error::closed)?;
+            let e = &e.enter()?;
             if let Some(quarantined) = e.refusal() {
                 return Err(quarantined);
             }
@@ -85,60 +86,31 @@ impl<R: Runtime> RoleAuthority<R> {
     }
 }
 
-impl<R: Runtime> Engine<R> {
-    /// Record, in a transaction of its own, that `role` running for `caller` was refused the call
-    /// of `origin`, unless a mark stops the row.
-    pub(in super::super) fn audit_denied(
+impl<R: Runtime> BundleWriter<'_, R> {
+    /// Replace `old` of the relation `bundles` by `new` and record that `who` retired `bundle`, in
+    /// a transaction of its own.
+    pub(in super::super) fn retire_row(
         &self,
-        role: &str,
-        caller: &Val,
-        origin: &CallOrigin,
+        e: &Entered<'_, R>,
+        bundles: RelId,
+        (old, new): (Val, Val),
+        who: (&str, &Val),
+        bundle: &str,
     ) -> Result<(), Error> {
-        self.audit_unless_marked(|| {
-            store::run(self, true, &mut |e, _, id, changes| {
-                Tables::new(e.schema(), id).audit_denied(e, changes, role, caller, origin)
-            })
+        store::run(e, true, &mut |e, _, id, changes| {
+            changes.delete(bundles, old.clone());
+            changes.insert(bundles, new.clone());
+            Tables::new(e.schema(), id).audit_retire(e, changes, who, bundle)
         })
     }
+}
 
-    /// Record the call `call`, in a transaction of its own charged to the call's `grant`, unless
-    /// a mark stops the row.
-    pub(super) fn audit_call(
-        &self,
-        call: &CallRow<'_>,
-        grant: Option<&Arc<Grant>>,
-    ) -> Result<(), Error> {
-        self.audit_unless_marked(|| {
-            let seq = self.audit_seq()?;
-            store::run_under(self, true, grant, &mut |e, _, id, changes| {
-                let t = Tables::new(e.schema(), id);
-                changes.insert(t.audit_relation(), t.call_row(e, seq, call)?);
-                Ok(())
-            })
-        })
-    }
+/// Returns the BLAKE3-256 hash of `text`.
+pub(super) fn text_hash(text: &str) -> [u8; 32] {
+    *blake3::hash(text.as_bytes()).as_bytes()
+}
 
-    /// Run `write`, the row of a call that changed nothing. A mark on the audit, found before or
-    /// by `write`, leaves the row unwritten and the call's answer standing.
-    fn audit_unless_marked(&self, write: impl FnOnce() -> Result<(), Error>) -> Result<(), Error> {
-        let _open = self.enter()?;
-        if self.audit_unwritable().is_some() {
-            return Ok(());
-        }
-        write().or_else(|err| match self.audit_unwritable() {
-            Some(_) => Ok(()),
-            None => Err(err),
-        })
-    }
-
-    /// Returns the failure of a change that must record a row of `catalog::audit`, while a mark
-    /// on the database, or on a constructor or index of the audit, stops that row.
-    pub(super) fn audit_unwritable(&self) -> Option<Error> {
-        let audit = Tables::new(self.schema(), TxnId(0)).audit_relation();
-        let marked = self.db.admit_relation(audit).err()?;
-        Some(self.write_error(TxnId(0), marked))
-    }
-
+impl<R: Runtime> Entered<'_, R> {
     /// Add the row of call `call`, the transaction `id`, to `tx` before its commit, charged to the
     /// call's `grant`.
     pub(super) fn audit_call_in(
@@ -174,27 +146,57 @@ impl<R: Runtime> Engine<R> {
         self.audit_seeded.store(true, Ordering::Release);
         Ok(seq)
     }
-}
 
-impl<R: Runtime> BundleWriter<'_, R> {
-    /// Replace `old` of the relation `bundles` by `new` and record that `who` retired `bundle`, in
-    /// a transaction of its own.
-    pub(in super::super) fn retire_row(
+    /// Returns the failure of a change that must record a row of `catalog::audit`, while a mark
+    /// on the database, or on a constructor or index of the audit, stops that row.
+    pub(super) fn audit_unwritable(&self) -> Option<Error> {
+        let audit = Tables::new(self.schema(), TxnId(0)).audit_relation();
+        let marked = self.db.admit_relation(audit).err()?;
+        Some(self.write_error(TxnId(0), marked))
+    }
+
+    /// Record the call `call`, in a transaction of its own charged to the call's `grant`, unless
+    /// a mark stops the row.
+    pub(super) fn audit_call(
         &self,
-        bundles: RelId,
-        (old, new): (Val, Val),
-        who: (&str, &Val),
-        bundle: &str,
+        call: &CallRow<'_>,
+        grant: Option<&Arc<Grant>>,
     ) -> Result<(), Error> {
-        store::run(self.engine(), true, &mut |e, _, id, changes| {
-            changes.delete(bundles, old.clone());
-            changes.insert(bundles, new.clone());
-            Tables::new(e.schema(), id).audit_retire(e, changes, who, bundle)
+        self.audit_unless_marked(|| {
+            let seq = self.audit_seq()?;
+            store::run_under(self, true, grant, &mut |e, _, id, changes| {
+                let t = Tables::new(e.schema(), id);
+                changes.insert(t.audit_relation(), t.call_row(e, seq, call)?);
+                Ok(())
+            })
         })
     }
-}
 
-/// Returns the BLAKE3-256 hash of `text`.
-pub(super) fn text_hash(text: &str) -> [u8; 32] {
-    *blake3::hash(text.as_bytes()).as_bytes()
+    /// Run `write`, the row of a call that changed nothing. A mark on the audit, found before or
+    /// by `write`, leaves the row unwritten and the call's answer standing.
+    fn audit_unless_marked(&self, write: impl FnOnce() -> Result<(), Error>) -> Result<(), Error> {
+        let _open = self.enter()?;
+        if self.audit_unwritable().is_some() {
+            return Ok(());
+        }
+        write().or_else(|err| match self.audit_unwritable() {
+            Some(_) => Ok(()),
+            None => Err(err),
+        })
+    }
+
+    /// Record, in a transaction of its own, that `role` running for `caller` was refused the call
+    /// of `origin`, unless a mark stops the row.
+    pub(in super::super) fn audit_denied(
+        &self,
+        role: &str,
+        caller: &Val,
+        origin: &CallOrigin,
+    ) -> Result<(), Error> {
+        self.audit_unless_marked(|| {
+            store::run(self, true, &mut |e, _, id, changes| {
+                Tables::new(e.schema(), id).audit_denied(e, changes, role, caller, origin)
+            })
+        })
+    }
 }

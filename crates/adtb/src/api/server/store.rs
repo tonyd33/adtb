@@ -7,7 +7,7 @@ use crate::exec::{Grant, Val};
 use crate::runtime::Runtime;
 use crate::write::{Bounds, Leave, Local, Text, Txn, either};
 
-use super::super::{Engine, Error, TxnId};
+use super::super::{Entered, Error, TxnId};
 
 #[derive(Default)]
 pub(super) struct Changes {
@@ -27,7 +27,7 @@ impl Changes {
     /// `None`.
     pub(super) fn apply<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         tx: &Txn,
         grant: Option<&Arc<Grant>>,
     ) -> Result<(), crate::write::Error> {
@@ -73,19 +73,19 @@ impl Changes {
 }
 
 pub(super) fn run<R: Runtime, T>(
-    e: &Engine<R>,
+    e: &Entered<'_, R>,
     write: bool,
-    body: &mut impl FnMut(&Engine<R>, &Txn, TxnId, &mut Changes) -> Result<T, Error>,
+    body: &mut impl FnMut(&Entered<'_, R>, &Txn, TxnId, &mut Changes) -> Result<T, Error>,
 ) -> Result<T, Error> {
     run_under(e, write, None, body)
 }
 
 /// Run `body` as [`run`] does, its changes charged to `grant`.
 pub(super) fn run_under<R: Runtime, T>(
-    e: &Engine<R>,
+    e: &Entered<'_, R>,
     write: bool,
     grant: Option<&Arc<Grant>>,
-    body: &mut impl FnMut(&Engine<R>, &Txn, TxnId, &mut Changes) -> Result<T, Error>,
+    body: &mut impl FnMut(&Entered<'_, R>, &Txn, TxnId, &mut Changes) -> Result<T, Error>,
 ) -> Result<T, Error> {
     let retries = e.settings.lock(&e.rt).retries;
     let mut attempt = 0;

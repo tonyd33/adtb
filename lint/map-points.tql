@@ -1,0 +1,8 @@
+-- map_points: a call that builds a mapping point of a call or a pass, or the guard that holds one.
+
+main = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"(MapPoint::pass|\bdb\.mapping)$";
+  return c;
+} | arr range;

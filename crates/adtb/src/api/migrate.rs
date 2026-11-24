@@ -13,7 +13,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::cause::{Broken, corrupt, internal};
-use super::{Error, FatalReason, Log, OpenError, Opened, RejectReason, registered};
+use super::{Error, FatalReason, Log, OpenError, Opened, RejectReason, TxnId, registered};
 
 /// An open of `pager` past its migrations, each durable once it committed. A later step of the
 /// open runs through [`Migrated::then`] and fails the open with its own failure, every migration
@@ -114,8 +114,13 @@ impl<R: Runtime> Opened<R> {
         let Some(version) = unapplied else {
             return Ok(self);
         };
-        let reason = Error::of_whole_mark(&self.db, self.parts.compiled.committed())
+        let refused = self
+            .db
+            .mapping()
+            .refusal()
             .expect("the whole-database mark an open found holds until the engine closes");
+        let schema = self.parts.compiled.committed();
+        let reason = Error::of_write(&self.db, schema, TxnId(0), refused);
         Err(OpenError::MigrationRefused { version, reason })
     }
 }

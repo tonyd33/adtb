@@ -217,7 +217,7 @@ fn damage_mapped_under_the_serializer_panics() {
         let _ser = db.session.ser.lock(&db.rt);
         assert_eq!(
             "damage is mapped under the serialization lock",
-            order_broken(|| drop(db.fail(super::Broken::ReadOnly.into())))
+            order_broken(|| drop(db.mapping().fail(super::Broken::ReadOnly.into())))
         );
     });
 }

@@ -10,7 +10,7 @@ use crate::write::{Bounds, Leave, Stop};
 
 use super::server::Judged;
 use super::text::{Issuer, Prepared};
-use super::{Engine, Error, TxnId};
+use super::{Entered, Error, TxnId};
 
 /// The bytes a queued call's metadata counts for besides its text and arguments.
 pub(super) const CALL_BYTES: usize = 256;
@@ -74,7 +74,7 @@ impl Queued {
     }
 }
 
-impl<R: Runtime> Engine<R> {
+impl<R: Runtime> Entered<'_, R> {
     /// Admit `p` to run as a call queued as `queued`, under `authority`.
     ///
     /// Refuse it: on a database quarantined whole with `Quarantined`, unless it is one run of

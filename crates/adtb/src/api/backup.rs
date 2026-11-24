@@ -15,7 +15,7 @@ use super::cause::{Broken, Failure};
 use super::error::{FatalReason, RejectReason};
 use super::statements::Refusal;
 use super::text::{DynRows, Prepared, rows};
-use super::{Database, Engine, Error, Log, OpenError, OpenOptions, Position, TxnId};
+use super::{Database, Engine, Entered, Error, Log, OpenError, OpenOptions, Position, TxnId};
 
 /// The catalog version of this engine's edition.
 pub(super) const CATALOG_VERSION: u64 = 1;
@@ -393,6 +393,101 @@ pub(super) fn resolved_root(options: &OpenOptions) -> Option<std::path::PathBuf>
 }
 
 impl<R: Runtime> Engine<R> {
+    pub(super) fn target(&self, path: &str) -> Result<String, Error> {
+        refuse_scheme(path)?;
+        let root = self.targets.lock(&self.rt).clone();
+        Ok(match root {
+            Some(root) => root.join(path).to_string_lossy().into_owned(),
+            None => path.to_owned(),
+        })
+    }
+
+    pub(super) fn envelope(&self) -> Result<Envelope, Error> {
+        let version = self
+            .catalog
+            .source()
+            .log()
+            .last()
+            .map_or(0, |migration| migration.number);
+        let hash = self
+            .hash
+            .get()
+            .map_err(|e| Error::internal(Broken::CatalogError(e)))?;
+        Ok(Envelope {
+            release: env!("CARGO_PKG_VERSION").to_owned(),
+            edition: super::bundle::EDITION.to_owned(),
+            schema_version: version,
+            schema_hash: hash.iter().map(|b| format!("{b:02x}")).collect(),
+            catalog_version: CATALOG_VERSION,
+        })
+    }
+
+    fn restore_from(
+        &self,
+        from: &str,
+        to: &str,
+        at: RestorePoint,
+        phrase: Option<&Passphrase>,
+        (p, bounds): (&Prepared, &Bounds),
+    ) -> Result<DynRows, Error> {
+        if bounds.confined {
+            return Err(Error::invalid(
+                "`restore` does not run through a server: it runs in process or on a closed file",
+            ));
+        }
+        let (source, path) = (self.target(from)?, self.target(to)?);
+        let options = OpenOptions::default();
+        let restored = restored(&self.rt, (&source, phrase), &path, at, &options)?;
+        Ok(manifest_row(p.schema(), &restored.manifest))
+    }
+}
+
+impl<R: Runtime> Entered<'_, R> {
+    fn backup_to(&self, path: &str, p: &Prepared, bounds: &Bounds) -> Result<DynRows, Error> {
+        if let Some(refusal) = self.refusal() {
+            return Err(refusal);
+        }
+        self.confine(path, bounds)?;
+        let target = self.target(path)?;
+        let stop = Stop::of(bounds, Some(self.rt.now()), None);
+        let mut stopped = None;
+        let mut visit = |_: storage::Pid, _: &mut [u8]| match stop.check(self.rt.now()) {
+            Ok(()) => true,
+            Err(e) => {
+                stopped = Some(e);
+                false
+            }
+        };
+        let name = |q| self.db.quarantined_name(q);
+        let mut run = BackupRun {
+            target: &target,
+            envelope: self.envelope()?,
+            visit: &mut visit,
+            name: &name,
+        };
+        match self.pager.backup(&mut run) {
+            Ok(manifest) => Ok(manifest_row(p.schema(), &manifest.text())),
+            Err(BackupError::Stopped) => {
+                let e = write::Error::from(stopped.unwrap_or(exec::Error::Cancelled));
+                Err(self.write_error(TxnId(0), e))
+            }
+            Err(BackupError::Quarantined) => Err(self
+                .refusal()
+                .unwrap_or_else(|| refused(BackupError::Quarantined))),
+            Err(e) => Err(refused(e)),
+        }
+    }
+
+    /// Refuse `path` of a call confined to the export roots unless its directory resolves inside
+    /// one.
+    fn confine(&self, path: &str, bounds: &Bounds) -> Result<(), Error> {
+        if !bounds.confined || self.db.files().exports_beside(path) {
+            return Ok(());
+        }
+        let outside = format!("path `{path}` is outside export_roots");
+        Err(self.write_error(TxnId(0), write::Error::Denied(outside)))
+    }
+
     /// Run `c` when it is `backup` or `restore`, whose refusals name their own reasons. Returns its
     /// rows, `None` for any other command.
     pub(super) fn file_command(
@@ -443,6 +538,28 @@ impl<R: Runtime> Engine<R> {
         }
     }
 
+    /// Returns the passphrase `term` evaluates to, if any.
+    fn passphrase(
+        &self,
+        id: TxnId,
+        tx: &Txn,
+        term: Option<&adtb_lang::kernel::Tm>,
+        p: &Prepared,
+        local: &mut Local,
+        bounds: &Bounds,
+    ) -> Result<Option<Passphrase>, Refusal> {
+        let Some(term) = term else {
+            return Ok(None);
+        };
+        let value = self.value_of(tx, p, *term, local, bounds.clone());
+        match value.map_err(|e| self.met(id, e))? {
+            Val::Text(text) => Ok(Some(Passphrase::new(text.to_string()))),
+            _ => Err(Refusal::own(Error::invalid(
+                "a passphrase is a `Text`".to_owned(),
+            ))),
+        }
+    }
+
     /// Returns the point a `restore` names. An instant answers a version no backup reaches.
     fn point_of(
         &self,
@@ -473,120 +590,5 @@ impl<R: Runtime> Engine<R> {
         Ok(at.map_or(RestorePoint::Version(0), |at| {
             RestorePoint::Position(Position::from(at))
         }))
-    }
-
-    /// Returns the passphrase `term` evaluates to, if any.
-    fn passphrase(
-        &self,
-        id: TxnId,
-        tx: &Txn,
-        term: Option<&adtb_lang::kernel::Tm>,
-        p: &Prepared,
-        local: &mut Local,
-        bounds: &Bounds,
-    ) -> Result<Option<Passphrase>, Refusal> {
-        let Some(term) = term else {
-            return Ok(None);
-        };
-        let value = self.value_of(tx, p, *term, local, bounds.clone());
-        match value.map_err(|e| self.met(id, e))? {
-            Val::Text(text) => Ok(Some(Passphrase::new(text.to_string()))),
-            _ => Err(Refusal::own(Error::invalid(
-                "a passphrase is a `Text`".to_owned(),
-            ))),
-        }
-    }
-
-    pub(super) fn target(&self, path: &str) -> Result<String, Error> {
-        refuse_scheme(path)?;
-        let root = self.targets.lock(&self.rt).clone();
-        Ok(match root {
-            Some(root) => root.join(path).to_string_lossy().into_owned(),
-            None => path.to_owned(),
-        })
-    }
-
-    pub(super) fn envelope(&self) -> Result<Envelope, Error> {
-        let version = self
-            .catalog
-            .source()
-            .log()
-            .last()
-            .map_or(0, |migration| migration.number);
-        let hash = self
-            .hash
-            .get()
-            .map_err(|e| Error::internal(Broken::CatalogError(e)))?;
-        Ok(Envelope {
-            release: env!("CARGO_PKG_VERSION").to_owned(),
-            edition: super::bundle::EDITION.to_owned(),
-            schema_version: version,
-            schema_hash: hash.iter().map(|b| format!("{b:02x}")).collect(),
-            catalog_version: CATALOG_VERSION,
-        })
-    }
-
-    /// Refuse `path` of a call confined to the export roots unless its directory resolves inside
-    /// one.
-    fn confine(&self, path: &str, bounds: &Bounds) -> Result<(), Error> {
-        if !bounds.confined || self.db.files().exports_beside(path) {
-            return Ok(());
-        }
-        let outside = format!("path `{path}` is outside export_roots");
-        Err(self.write_error(TxnId(0), write::Error::Denied(outside)))
-    }
-
-    fn backup_to(&self, path: &str, p: &Prepared, bounds: &Bounds) -> Result<DynRows, Error> {
-        if let Some(refusal) = self.refusal() {
-            return Err(refusal);
-        }
-        self.confine(path, bounds)?;
-        let target = self.target(path)?;
-        let stop = Stop::of(bounds, Some(self.rt.now()), None);
-        let mut stopped = None;
-        let mut visit = |_: storage::Pid, _: &mut [u8]| match stop.check(self.rt.now()) {
-            Ok(()) => true,
-            Err(e) => {
-                stopped = Some(e);
-                false
-            }
-        };
-        let name = |q| self.db.quarantined_name(q);
-        let mut run = BackupRun {
-            target: &target,
-            envelope: self.envelope()?,
-            visit: &mut visit,
-            name: &name,
-        };
-        match self.pager.backup(&mut run) {
-            Ok(manifest) => Ok(manifest_row(p.schema(), &manifest.text())),
-            Err(BackupError::Stopped) => {
-                let e = write::Error::from(stopped.unwrap_or(exec::Error::Cancelled));
-                Err(self.write_error(TxnId(0), e))
-            }
-            Err(BackupError::Quarantined) => Err(self
-                .refusal()
-                .unwrap_or_else(|| refused(BackupError::Quarantined))),
-            Err(e) => Err(refused(e)),
-        }
-    }
-
-    fn restore_from(
-        &self,
-        from: &str,
-        to: &str,
-        at: RestorePoint,
-        phrase: Option<&Passphrase>,
-        (p, bounds): (&Prepared, &Bounds),
-    ) -> Result<DynRows, Error> {
-        if bounds.confined {
-            return Err(Error::invalid(
-                "`restore` does not run through a server: it runs in process or on a closed file",
-            ));
-        }
-        let (source, path) = (self.target(from)?, self.target(to)?);
-        let options = OpenOptions::default();
-        let restored = restored(&self.rt, (&source, phrase), &path, at, &options)?;
-        Ok(manifest_row(p.schema(), &restored.manifest))
     }
 }

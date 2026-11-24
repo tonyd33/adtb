@@ -642,6 +642,8 @@ mod tests {
         };
         let queued = Queued::new(Priority::AdHoc, None, None, 0);
         let admitted = e
+            .enter()
+            .expect("it is open")
             .admit_program(p, &queued, Authority::Owner)
             .expect("it is admitted");
         let task = submit(

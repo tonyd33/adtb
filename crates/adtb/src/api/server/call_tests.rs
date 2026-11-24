@@ -180,6 +180,8 @@ fn a_write_call_released_while_its_abort_record_fails_settles_the_records_failur
 
 fn admitted<R: crate::runtime::Runtime>(e: &super::super::Engine<R>, p: Prepared) -> Admitted {
     let queued = Queued::new(Priority::AdHoc, None, None, 0);
-    e.admit_program(p, &queued, Authority::Owner)
+    e.enter()
+        .expect("it is open")
+        .admit_program(p, &queued, Authority::Owner)
         .expect("it is admitted")
 }

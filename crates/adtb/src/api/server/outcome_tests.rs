@@ -504,6 +504,8 @@ fn recorded(errors: &[Error]) -> (Vec<Val>, Form) {
             let origin = CallOrigin::Function { name: text("f") };
             for error in errors {
                 engine
+                    .enter()
+                    .expect("it is open")
                     .audit_call(
                         &CallRow {
                             role: "",

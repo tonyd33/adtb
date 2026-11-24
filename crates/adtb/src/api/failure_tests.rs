@@ -233,7 +233,7 @@ fn a_closed_pager_is_rejected_as_closed_once_the_database_is_marked() {
             .expect("the database is marked");
         let schema = crate::catalog::engine_schema();
         let reply = |e| {
-            let mapped = db.engine.db.fail(write::Error::Transactions(e));
+            let mapped = db.engine.db.mapping().fail(write::Error::Transactions(e));
             Error::of_write(&db.engine.db, &schema, super::TxnId(7), mapped)
         };
         assert_eq!(

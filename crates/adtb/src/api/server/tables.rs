@@ -17,7 +17,7 @@ use crate::exec::Val;
 use crate::runtime::Runtime;
 use crate::write::{self, Txn};
 
-use super::super::{Engine, Error, FatalReason, TxnId};
+use super::super::{Entered, Error, FatalReason, TxnId};
 use super::store::Changes;
 use super::{Capability, denied};
 
@@ -137,7 +137,7 @@ impl<'s> Tables<'s> {
     /// row is added.
     pub(super) fn give_row<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         tx: &Txn,
         rows: &mut Vec<Grant>,
         given: &Given<'_>,
@@ -192,7 +192,7 @@ impl<'s> Tables<'s> {
         }
     }
 
-    fn read<R: Runtime>(&self, e: &Engine<R>, tx: &Txn, r: RelId) -> Result<Vec<Val>, Error> {
+    fn read<R: Runtime>(&self, e: &Entered<'_, R>, tx: &Txn, r: RelId) -> Result<Vec<Val>, Error> {
         e.db.relation_rows(tx, r)
             .map_err(|error| e.write_error(self.call, error))
     }
@@ -202,7 +202,7 @@ impl<'s> Tables<'s> {
     /// Fail with `Internal` when `codec` refuses a row, which the heap decoded by its declared type.
     fn typed<T: Decode, R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         tx: &Txn,
         codec: &Codec<T>,
     ) -> Result<Vec<(T, Val)>, Error> {
@@ -217,7 +217,11 @@ impl<'s> Tables<'s> {
             .collect()
     }
 
-    pub(super) fn roles<R: Runtime>(&self, e: &Engine<R>, tx: &Txn) -> Result<Vec<Role>, Error> {
+    pub(super) fn roles<R: Runtime>(
+        &self,
+        e: &Entered<'_, R>,
+        tx: &Txn,
+    ) -> Result<Vec<Role>, Error> {
         let codec = Codec::<RoleRow>::new(self.schema);
         Ok(self
             .typed(e, tx, &codec)?
@@ -236,7 +240,7 @@ impl<'s> Tables<'s> {
     /// Returns the name of each role, by id.
     pub(super) fn role_names<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         tx: &Txn,
     ) -> Result<BTreeMap<i64, String>, Error> {
         Ok(self
@@ -248,7 +252,7 @@ impl<'s> Tables<'s> {
 
     pub(super) fn role<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         tx: &Txn,
         name: &str,
     ) -> Result<Role, Error> {
@@ -261,7 +265,7 @@ impl<'s> Tables<'s> {
     /// Fail with `Invalid`, naming `name`, when no role has that name.
     pub(super) fn grantee<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         tx: &Txn,
         name: &str,
     ) -> Result<(), Error> {
@@ -285,7 +289,11 @@ impl<'s> Tables<'s> {
         Val::ctor(c, fields)
     }
 
-    pub(super) fn grants<R: Runtime>(&self, e: &Engine<R>, tx: &Txn) -> Result<Vec<Grant>, Error> {
+    pub(super) fn grants<R: Runtime>(
+        &self,
+        e: &Entered<'_, R>,
+        tx: &Txn,
+    ) -> Result<Vec<Grant>, Error> {
         let codec = Codec::<RoleGrant>::new(self.schema);
         Ok(self
             .typed(e, tx, &codec)?
@@ -338,19 +346,27 @@ impl<'s> Tables<'s> {
     }
 
     /// Returns a new id of `catalog::roles`.
-    pub(super) fn next_role_id<R: Runtime>(&self, e: &Engine<R>, tx: &Txn) -> Result<i64, Error> {
+    pub(super) fn next_role_id<R: Runtime>(
+        &self,
+        e: &Entered<'_, R>,
+        tx: &Txn,
+    ) -> Result<i64, Error> {
         let highest = self.roles(e, tx)?.iter().map(|r| r.id.0).max();
         self.drawn(e, self.roles, highest)
     }
 
     /// Returns a new id of `catalog::grants`.
-    pub(super) fn next_grant_id<R: Runtime>(&self, e: &Engine<R>, tx: &Txn) -> Result<i64, Error> {
+    pub(super) fn next_grant_id<R: Runtime>(
+        &self,
+        e: &Entered<'_, R>,
+        tx: &Txn,
+    ) -> Result<i64, Error> {
         let highest = self.grants(e, tx)?.iter().map(|g| g.id).max();
         self.drawn(e, self.grants, highest)
     }
 
     /// Returns a new sequence number of `catalog::audit`.
-    pub(super) fn next_seq<R: Runtime>(&self, e: &Engine<R>, tx: &Txn) -> Result<i64, Error> {
+    pub(super) fn next_seq<R: Runtime>(&self, e: &Entered<'_, R>, tx: &Txn) -> Result<i64, Error> {
         let codec = Codec::<AuditRow>::new(self.schema);
         let rows = self.typed(e, tx, &codec)?;
         let highest = rows.iter().map(|(a, _)| a.seq).max();
@@ -360,7 +376,7 @@ impl<'s> Tables<'s> {
     /// Returns a new id of `relation` past `highest`, the highest it holds.
     fn drawn<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         relation: RelId,
         highest: Option<i64>,
     ) -> Result<i64, Error> {
@@ -375,7 +391,7 @@ impl<'s> Tables<'s> {
     /// Returns the value of each row of `catalog::credentials` of role `role`.
     pub(super) fn credentials_of<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         tx: &Txn,
         role: RoleId,
     ) -> Result<Vec<Val>, Error> {
@@ -390,7 +406,7 @@ impl<'s> Tables<'s> {
 
     pub(super) fn remove_peer_mappings<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         tx: &Txn,
         changes: &mut Changes,
         name: &str,
@@ -407,7 +423,7 @@ impl<'s> Tables<'s> {
     /// Record that `role`, running as its own service, made the deployment change `statement`.
     pub(super) fn audit<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         changes: &mut Changes,
         role: &str,
         statement: String,
@@ -426,7 +442,7 @@ impl<'s> Tables<'s> {
     /// Record that `role`, running for `caller`, was refused the call of `origin`.
     pub(super) fn audit_denied<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         changes: &mut Changes,
         role: &str,
         caller: &Val,
@@ -445,7 +461,7 @@ impl<'s> Tables<'s> {
     /// Record that `role`, running for `caller`, retired `bundle`.
     pub(super) fn audit_retire<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         changes: &mut Changes,
         (role, caller): (&str, &Val),
         bundle: &str,
@@ -463,7 +479,7 @@ impl<'s> Tables<'s> {
     /// Returns the `Call` row numbered `seq` of `call`.
     pub(super) fn call_row<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         seq: i64,
         call: &CallRow<'_>,
     ) -> Result<Val, Error> {
@@ -483,7 +499,7 @@ impl<'s> Tables<'s> {
 
     fn audit_row<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         changes: &mut Changes,
         ctor: (CatCtorId, Head),
         who: (&str, &Val),
@@ -497,7 +513,7 @@ impl<'s> Tables<'s> {
 
     fn event_row<R: Runtime>(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         seq: i64,
         (ctor, head): (CatCtorId, Head),
         (role, principal): (&str, &Val),

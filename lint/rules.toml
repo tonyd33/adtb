@@ -85,6 +85,12 @@ exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "c
 rows = { holder_builders = "zero" }
 
 [[rule]]
+query = "map-points.tql"
+include = ["crates/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "crates/adtb/src/testing/**", "crates/adtb/src/write/quarantine.rs", "crates/adtb/src/api/entered.rs", "crates/adtb/src/api/maintenance.rs", "crates/adtb/src/api/migrate.rs", "crates/adtb/src/api/reindex.rs"]
+rows = { map_points = "zero" }
+
+[[rule]]
 query = "marked-readers.tql"
 include = ["crates/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "crates/adtb-store/src/storage/**"]

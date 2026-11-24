@@ -7,8 +7,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use adtb::runtime::Threads;
-use adtb::testing::{Change, Checkpoint, Damage, Map, Pid, Plant, Quarantine, Step, StepFn};
-use adtb::{Error, FatalReason};
+use adtb::testing::{Change, Checkpoint, Damage, Knobs, Map, Pid, Plant, Quarantine, Step, StepFn};
+use adtb::{Error, FatalReason, OpenOptions};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::elle::{self, Elems, Kind, Reply, Req, Worker};
@@ -260,6 +260,15 @@ fn refused(e: &Arc<Elems>) -> ((Pid, Damage), Quarantine) {
     ((page, damage), mark)
 }
 
+/// Returns the workload's options with no background vacuum, which would map the damage at the
+/// end of its pass beside the two sides.
+fn options() -> OpenOptions {
+    OpenOptions {
+        testing: Knobs::without_background_vacuum(),
+        ..elle::options()
+    }
+}
+
 fn read_counters() -> Req {
     Req::Text("from c in counters select c.n".to_owned())
 }
@@ -269,7 +278,7 @@ fn read_counters() -> Req {
 fn run(case: Case, (i, j): (usize, usize)) -> Ran {
     let mut sim = Sim::with_files(case.seed, Config::default(), elle::created());
     process::run(&mut sim, |rt| {
-        let e = Arc::new(Elems::open(&rt, &elle::options()).expect("the workload opens"));
+        let e = Arc::new(Elems::open(&rt, &options()).expect("the workload opens"));
         let db = e.database();
         let setup = seeded(&rt, &e);
         let mut mapper = match case.mapper {
@@ -581,7 +590,7 @@ fn the_mapper_of_a_commit_racing_a_read_a_checkpoint_or_a_second_commit_marks_on
 fn an_incomplete_walk_marks_nothing_and_leaves_its_record_to_a_later_mapping() {
     let mut sim = Sim::with_files(0, Config::default(), elle::created());
     process::run(&mut sim, |rt| {
-        let e = Arc::new(Elems::open(&rt, &elle::options()).expect("the workload opens"));
+        let e = Arc::new(Elems::open(&rt, &options()).expect("the workload opens"));
         let db = e.database();
         seeded(&rt, &e);
         let reqs = vec![read_counters()];
@@ -642,7 +651,7 @@ fn an_incomplete_walk_marks_nothing_and_leaves_its_record_to_a_later_mapping() {
 fn a_call_that_succeeds_maps_the_damage_recorded_before_it() {
     let mut sim = Sim::with_files(0, Config::default(), elle::created());
     process::run(&mut sim, |rt| {
-        let e = Arc::new(Elems::open(&rt, &elle::options()).expect("the workload opens"));
+        let e = Arc::new(Elems::open(&rt, &options()).expect("the workload opens"));
         let db = e.database();
         let (_, _, mark) = damaged(&rt, &e);
         assert_eq!(

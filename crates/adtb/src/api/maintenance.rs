@@ -224,7 +224,10 @@ impl<R: Runtime> Background<R> {
         let stopped = || self.control.lock(&self.rt).stop;
         let mut io = self.rt.io();
         let mut pause = || self.wait(&mut io, self.rt.now() + MEND_POLL);
-        let mended = self.verifier.db.mend(&stopped, &mut pause);
+        let mended = {
+            let _pass = self.verifier.db.mapping();
+            self.verifier.db.mend(&stopped, &mut pause)
+        };
         let mut c = self.control.lock(&self.rt);
         c.owed = !mended.finished();
         c.mends = false;
@@ -260,7 +263,7 @@ impl<R: Runtime> Background<R> {
                 return;
             }
             let until = match db.due_vacuum(window, &skipped, last) {
-                Due::Now(rel) if budget > 0.0 => match db.vacuum_background(rel) {
+                Due::Now(rel) if budget > 0.0 => match self.vacuum(rel) {
                     Ok(Some(_)) => {
                         last = Some(rel);
                         continue;
@@ -278,6 +281,12 @@ impl<R: Runtime> Background<R> {
             };
             self.vacuum_wait(&mut io, until);
         }
+    }
+
+    /// Vacuum `rel` in the background, a pass of its own.
+    fn vacuum(&self, rel: RelId) -> Result<Option<write::Vacuumed>, write::Error> {
+        let _pass = self.verifier.db.mapping();
+        self.verifier.db.vacuum_background(rel)
     }
 
     /// Sleep until `until`, an unpark by a commit, a change of the settings or a stop.
@@ -401,8 +410,8 @@ impl<R: Runtime> Background<R> {
         }
     }
 
-    /// Check page `page`, keep what it newly finds and, at the end of the file, end the pass.
-    /// Returns whether the pass has ended, or the text of a panic in the read.
+    /// Check page `page`, mark and keep what it newly finds and map the damage recorded, and, at
+    /// the end of the file, map it again and end the pass. Returns whether the pass has ended, or the text of a panic in the read.
     fn read_page(&self, pass: &mut Pass<'_, R>, page: u64) -> Result<bool, String> {
         let v = &self.verifier;
         if page < pass.end {
@@ -413,15 +422,17 @@ impl<R: Runtime> Background<R> {
                 }
                 v.db.scrub_page(Pid(page), &pass.log)
             })?;
-            let found: BTreeSet<Found> = read
+            let mut found: BTreeSet<Found> = read
                 .into_iter()
                 .filter(|f| !pass.found.contains(f))
                 .collect();
+            if !found.is_empty() && v.keeps() {
+                let mapping = v.db.mapping();
+                let mut failed = mapping.findings(&found);
+                failed.extend(mapping.end());
+                found.extend(failed.into_iter().filter(|f| !pass.found.contains(f)));
+            }
             if !found.is_empty() {
-                if v.keeps() {
-                    let failed = v.db.quarantine_findings(&found);
-                    pass.found.extend(failed);
-                }
                 pass.found.extend(found);
                 v.keep_scrub(&self.schema, self.findings, pass.stamp, &pass.found, true);
             }
@@ -431,6 +442,10 @@ impl<R: Runtime> Background<R> {
         }
         let ended = page + 1 >= pass.end;
         if ended {
+            if v.keeps() {
+                let failed = v.db.mapping().end();
+                pass.found.extend(failed);
+            }
             v.keep_scrub(
                 &self.schema,
                 self.findings,

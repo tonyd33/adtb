@@ -19,7 +19,7 @@ use crate::write::Txn;
 use super::super::bundle::{Callable, Row, Stored};
 use super::super::cause::Broken;
 use super::super::registered::{self, Checked, Lacking, Over};
-use super::super::{Engine, Error, OWNER_ID};
+use super::super::{Engine, Entered, Error, OWNER_ID};
 use super::store::{self, Changes};
 use super::tables::{self, Given, Grant, Tables};
 use super::{
@@ -241,7 +241,7 @@ fn statement(text: &str) -> Result<Statement, Error> {
 
 /// One privilege of a grant statement being given.
 struct Giving<'a, R: Runtime> {
-    e: &'a Engine<R>,
+    e: &'a Entered<'a, R>,
     tx: &'a Txn,
     t: &'a Tables<'a>,
     calls: &'a Calls<'a, R>,
@@ -512,16 +512,16 @@ impl<R: Runtime> RoleAuthority<R> {
         let statement = statement(text)?;
         let grantee = role_name(&statement.to.text)?;
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
-        let _open = e.enter()?;
+        let e = &e.enter()?;
         let _writer = e.deployed.write(&e.rt);
-        store::run(&e, true, &mut |e, tx, id, changes| {
+        store::run(e, true, &mut |e, tx, id, changes| {
             self.grant_in(e, tx, id, changes, (session, &statement, &grantee, text))
         })
     }
 
     fn grant_in(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         tx: &Txn,
         id: super::TxnId,
         changes: &mut Changes,

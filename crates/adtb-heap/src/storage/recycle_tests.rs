@@ -9,7 +9,7 @@ use crate::storage::{
     self, BackupRun, Damage, Envelope, Finding, HEADER_LEN, Lsn, MarkFailure, Options, PageError,
     PageKind, Pager, Pid, Quarantine,
 };
-use crate::storage::{Judged, ordered_for_test};
+use crate::storage::{Judged, MapPoint, ordered_for_test};
 use crate::test_world as harness;
 use crate::verify::{self, Inventory, Problem};
 use adtb_sim::{Config, Sim, SimRuntime};
@@ -269,7 +269,7 @@ fn mapped_once(
     pager: &Pager<SimRuntime>,
 ) -> (BTreeMap<Quarantine, MarkFailure>, BTreeSet<Quarantine>) {
     let holders = |pid| pager.holders_of(pid, Phase::Running, |_| {});
-    let failed = pager.map_damage(holders, &ordered_for_test());
+    let failed = pager.map_at(&MapPoint::pass(), holders, &ordered_for_test());
     (failed, Probe::of(pager).marks())
 }
 
@@ -513,7 +513,11 @@ fn an_open_held_by_a_log_gap_quarantines_the_database_and_writes_no_mark_or_list
     let mark = |pager: &Pager<SimRuntime>| {
         let loaded = Probe::of(pager).marks();
         pager.damage_tested(pages[0], Damage::Checksum);
-        let failed = pager.map_damage(|_| Some(BTreeSet::from([heap])), &ordered_for_test());
+        let failed = pager.map_at(
+            &MapPoint::pass(),
+            |_| Some(BTreeSet::from([heap])),
+            &ordered_for_test(),
+        );
         let mapped = (pager.mapped_to(pages[0]), pager.marked_to(pages[0]));
         (loaded, failed, mapped, Probe::of(pager).marks())
     };

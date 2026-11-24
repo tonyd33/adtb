@@ -132,6 +132,24 @@ pub type OpenMarks = BTreeMap<Quarantine, Result<(), MarkFailure>>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Unheld;
 
+/// A point at which the damage recorded is mapped: an open, the end of an API call or the end
+/// of a background pass.
+#[derive(Debug)]
+pub struct MapPoint(());
+
+impl MapPoint {
+    /// Returns the point of the open `_opening`.
+    pub fn open(_opening: &Opening) -> MapPoint {
+        MapPoint(())
+    }
+
+    /// Returns the point of the end of an API call or of a background pass. Only the guard every
+    /// call and pass takes builds one.
+    pub fn pass() -> MapPoint {
+        MapPoint(())
+    }
+}
+
 impl<R: Runtime> Pager<R> {
     /// Returns the entries one list page holds.
     pub fn damage_list_capacity(&self) -> usize {
@@ -144,8 +162,8 @@ impl<R: Runtime> Pager<R> {
         self.evidence().all()
     }
 
-    /// Map each damage record not mapped this open to the objects it quarantines in the phase the
-    /// pager is in, and mark each object, each mark in the commit order `order` gives. `holders`
+    /// At the mapping point `_at`, map each damage record not mapped this open to the objects it
+    /// quarantines in the phase the pager is in, and mark each object, each mark in the commit order `order` gives. `holders`
     /// returns what holds a page, `None` when the mapping is incomplete, which leaves the record
     /// unmapped. Every record of a full list maps with no walk. Returns each object whose mark
     /// failed, with why.
@@ -159,8 +177,9 @@ impl<R: Runtime> Pager<R> {
     ///   unmapped may find those marks unset.
     /// - A record whose damage, incarnation or retirement changes before its marks are set sets no
     ///   mark and is not mapped; the record that replaced it is unmapped, for the next mapping.
-    pub fn map_damage(
+    pub fn map_at(
         &self,
+        _at: &MapPoint,
         holders: impl FnMut(Pid) -> Option<BTreeSet<Holder>>,
         order: &impl Orders,
     ) -> BTreeMap<Quarantine, MarkFailure> {
@@ -177,13 +196,13 @@ impl<R: Runtime> Pager<R> {
         self.any_unmapped() && !self.evidence().begin_mapping(true).0.is_empty()
     }
 
-    /// Map as [`Pager::map_damage`] does for a commit, leaving out each record whose last mapping
+    /// Map as [`Pager::map_at`] does for a commit, leaving out each record whose last mapping
     /// was incomplete. A page whose damage a walk meets, with no record when the mapping began,
     /// marks nothing of its own: the walk it stopped holds the record being mapped, and its own
     /// record stays unmapped. `ordered` witnesses the commit's hold of the serialization lock.
     /// Returns each object whose mark failed, with why.
     ///
-    /// Precondition: as for [`Pager::map_damage`].
+    /// Precondition: as for [`Pager::map_at`].
     pub fn map_committing(
         &self,
         holders: impl FnMut(Pid) -> Option<BTreeSet<Holder>>,

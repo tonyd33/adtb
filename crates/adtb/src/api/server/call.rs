@@ -23,7 +23,7 @@ use super::super::arrow::BATCH_ROWS;
 use super::super::command::{changes_data, holds_off_vacuum};
 use super::super::registered::Bound;
 use super::super::text::{DynRows, Prepared};
-use super::super::{Closes, Engine, Error, Halted, Position, RejectReason, TxnId};
+use super::super::{Closes, Engine, Entered, Error, Halted, Position, RejectReason, TxnId};
 use super::gate::Readmission;
 use super::result::{Completion, Layout};
 use super::tables::{CallOrigin, CallRow};
@@ -201,7 +201,7 @@ impl<R: Runtime> Call<R> {
 
     /// Refuse a call whose role may no longer make it, once, when the call leaves the queue. A
     /// refusal has its `Denied` row and writes no `Call` row.
-    fn readmit(&mut self, e: &Engine<R>) -> Result<(), Error> {
+    fn readmit(&mut self, e: &Entered<'_, R>) -> Result<(), Error> {
         let Some(call) = self.role_call.as_mut() else {
             return Ok(());
         };
@@ -233,7 +233,7 @@ impl<R: Runtime> Call<R> {
 
     /// Record a call that did not write, in a transaction of its own, unless it is recorded: a
     /// refusal for a lack of privilege as a `Denied` row, any other end as a `Call` row.
-    fn audit(&mut self, e: &Engine<R>, failed: Option<&Error>) -> Result<(), Error> {
+    fn audit(&mut self, e: &Entered<'_, R>, failed: Option<&Error>) -> Result<(), Error> {
         let Some(call) = self.role_call.take() else {
             return Ok(());
         };
@@ -246,7 +246,7 @@ impl<R: Runtime> Call<R> {
 
     /// Record the failure `err`, or the owner's request that replaces it. Returns the error to
     /// settle with.
-    fn audited(&mut self, e: &Engine<R>, err: Error) -> Error {
+    fn audited(&mut self, e: &Entered<'_, R>, err: Error) -> Error {
         let shown = match self.shared.state.lock(&self.shared.rt).request {
             Some(r) if !self.unrecorded.get() => r.error(),
             _ => err,
@@ -270,7 +270,7 @@ impl<R: Runtime> Call<R> {
     /// Run the call's phases until one waits. A phase that runs statements holds the call's
     /// grant only while it runs: the grant goes back to the budget before any wait, and the
     /// call queues for it again, ordered by its transaction's start, before the phase resumes.
-    fn advance(&mut self, e: &Engine<R>, waker: &Waker) -> Result<Step, Error> {
+    fn advance(&mut self, e: &Entered<'_, R>, waker: &Waker) -> Result<Step, Error> {
         loop {
             if !self.admitted(e, waker)? {
                 return Ok(self
@@ -300,7 +300,7 @@ impl<R: Runtime> Call<R> {
     /// Returns whether the call holds its grant, taking it from the budget's queue when its
     /// phase runs statements; else register `waker` with the queue. Fail with what stops the
     /// call while it waits.
-    fn admitted(&mut self, e: &Engine<R>, waker: &Waker) -> Result<bool, Error> {
+    fn admitted(&mut self, e: &Entered<'_, R>, waker: &Waker) -> Result<bool, Error> {
         if self.grant.is_some() || !self.phase.runs_statements() {
             return Ok(true);
         }
@@ -359,7 +359,7 @@ impl<R: Runtime> Call<R> {
         });
     }
 
-    fn start(&mut self, e: &Engine<R>) -> Result<Then, Error> {
+    fn start(&mut self, e: &Entered<'_, R>) -> Result<Then, Error> {
         let requested = self.shared.defer(|s| {
             s.started = s.request.is_none();
             (s.request, [None, None])
@@ -420,7 +420,7 @@ impl<R: Runtime> Call<R> {
 
     /// Wait, without the worker, until the deferrable read's snapshot is safe, then begin its
     /// output.
-    fn defer(&mut self, e: &Engine<R>, d: Deferring, waker: &Waker) -> Result<Then, Error> {
+    fn defer(&mut self, e: &Entered<'_, R>, d: Deferring, waker: &Waker) -> Result<Then, Error> {
         let Deferring { id, mut tx, .. } = d;
         loop {
             match e.db.defer(tx).map_err(|err| e.write_error(id, err))? {
@@ -447,7 +447,7 @@ impl<R: Runtime> Call<R> {
         }
     }
 
-    fn bounds(&self, e: &Engine<R>) -> write::Bounds {
+    fn bounds(&self, e: &Entered<'_, R>) -> write::Bounds {
         write::Bounds {
             grant: self.grant.clone(),
             confined: true,
@@ -459,7 +459,7 @@ impl<R: Runtime> Call<R> {
         }
     }
 
-    fn text<'a>(&self, e: &Engine<R>, p: &'a Prepared) -> Text<'a> {
+    fn text<'a>(&self, e: &Entered<'_, R>, p: &'a Prepared) -> Text<'a> {
         Text {
             schema: p.schema(),
             terms: p.terms(),
@@ -472,7 +472,7 @@ impl<R: Runtime> Call<R> {
 
     /// Start the output of the read `tx`, the transaction `id`: produced a unit at a time for
     /// one set-valued query, else formed whole.
-    fn read(&mut self, e: &Engine<R>, id: TxnId, tx: Txn) -> Result<Output<R>, Error> {
+    fn read(&mut self, e: &Entered<'_, R>, id: TxnId, tx: Txn) -> Result<Output<R>, Error> {
         let p = self.admitted.prepared();
         let streams = p.commands().is_empty()
             && p.items().len() == 1
@@ -542,7 +542,7 @@ impl<R: Runtime> Call<R> {
     }
 
     /// Returns `rows`, the results of the call's items, as whole sources charged to its grant.
-    fn whole(&self, e: &Engine<R>, rows: Vec<DynRows>) -> Result<Results<R>, Error> {
+    fn whole(&self, e: &Entered<'_, R>, rows: Vec<DynRows>) -> Result<Results<R>, Error> {
         let (schema, rows) = match &self.work {
             Work::Registered(b) => (b.schema().clone(), vec![b.result(e, rows)?]),
             Work::Text => (self.admitted.prepared().schema().clone(), rows),
@@ -567,7 +567,7 @@ impl<R: Runtime> Call<R> {
     }
 
     /// Run the write's attempts until one commits, fails, or waits for a transaction.
-    fn write(&mut self, e: &Engine<R>, mut w: Writing, waker: &Waker) -> Result<Then, Error> {
+    fn write(&mut self, e: &Entered<'_, R>, mut w: Writing, waker: &Waker) -> Result<Then, Error> {
         loop {
             let (id, tx) = match w.tx.take() {
                 Some(t) => t,
@@ -630,7 +630,7 @@ impl<R: Runtime> Call<R> {
     /// so a command that took effect runs once.
     fn commanding(
         &mut self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         mut c: Commanding,
         waker: &Waker,
     ) -> Result<Then, Error> {
@@ -706,7 +706,7 @@ impl<R: Runtime> Call<R> {
     /// owner asked it to stop.
     fn retry(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         w: &mut Writing,
         err: Error,
         commanded: bool,
@@ -727,7 +727,7 @@ impl<R: Runtime> Call<R> {
     /// Commit the attempt that returned `rows`, unless the owner asked the call to stop first.
     fn commit(
         &mut self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         mut w: Writing,
         id: TxnId,
         tx: Txn,
@@ -807,7 +807,12 @@ impl<R: Runtime> Call<R> {
 
     /// Form batches while capacity remains, then wait for more or end the output. On a failure,
     /// abort the read.
-    fn output(&mut self, e: &Engine<R>, mut o: Output<R>, waker: &Waker) -> Result<Then, Error> {
+    fn output(
+        &mut self,
+        e: &Entered<'_, R>,
+        mut o: Output<R>,
+        waker: &Waker,
+    ) -> Result<Then, Error> {
         match self.fill(e, &mut o, waker) {
             Ok(Some(step)) => {
                 self.phase = Phase::Output(o);
@@ -829,7 +834,12 @@ impl<R: Runtime> Call<R> {
 
     /// Form batches of `o` while capacity remains. Returns the step that waits for more, or
     /// `None` once the output is formed.
-    fn fill(&self, e: &Engine<R>, o: &mut Output<R>, waker: &Waker) -> Result<Option<Step>, Error> {
+    fn fill(
+        &self,
+        e: &Entered<'_, R>,
+        o: &mut Output<R>,
+        waker: &Waker,
+    ) -> Result<Option<Step>, Error> {
         while let Some((layout, source)) = o.results.front_mut() {
             let layout = layout.clone();
             let announce = !std::mem::replace(&mut o.announced, true);
@@ -888,7 +898,12 @@ impl<R: Runtime> Call<R> {
 
     /// Returns up to a batch of the next elements of `source`, running a unit of a production
     /// when none is pending.
-    fn take(&self, e: &Engine<R>, id: TxnId, source: &mut Source<R>) -> Result<Vec<Val>, Error> {
+    fn take(
+        &self,
+        e: &Entered<'_, R>,
+        id: TxnId,
+        source: &mut Source<R>,
+    ) -> Result<Vec<Val>, Error> {
         match source {
             Source::Whole(it, _) => Ok(it.by_ref().take(BATCH_ROWS).collect()),
             Source::Stream(s) => {
@@ -923,7 +938,7 @@ impl<R: Runtime> Call<R> {
     /// Wait for the drain acknowledgement, then commit the read and settle it.
     fn drain(
         &mut self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         tx: Option<(TxnId, Txn)>,
         waker: &Waker,
     ) -> Result<Then, Error> {
@@ -952,7 +967,7 @@ impl<R: Runtime> Call<R> {
     /// call's owner replaces.
     fn abandon(
         &self,
-        e: &Engine<R>,
+        e: &Entered<'_, R>,
         id: TxnId,
         tx: Txn,
         cause: impl FnOnce() -> Error,
@@ -1018,9 +1033,15 @@ impl<R: Runtime> Call<R> {
             Phase::Drain(tx) => tx,
             Phase::Start | Phase::Over => None,
         };
-        let failed = tx.and_then(|(id, tx)| {
-            let record = |r| Some(e.write_error(id, r));
-            e.db.abandon(tx, || None, record).err().flatten()
+        let failed = tx.and_then(|(id, tx)| match e.try_enter() {
+            Some(e) => {
+                let record = |r| Some(e.write_error(id, r));
+                e.db.abandon(tx, || None, record).err().flatten()
+            }
+            None => {
+                let record = |_| Some(Error::closed());
+                e.db.abandon(tx, || None, record).err().flatten()
+            }
         });
         if let Some(err) = failed {
             self.shared.with(|s| {
@@ -1056,7 +1077,7 @@ impl<R: Runtime> Resumable for Call<R> {
     fn run(&mut self, waker: &Waker) -> Step {
         let step = match self.engine.upgrade() {
             Some(e) => match e.enter() {
-                Ok(_open) => self
+                Ok(e) => self
                     .readmit(&e)
                     .and_then(|()| self.advance(&e, waker))
                     .map_err(|err| self.audited(&e, err)),
@@ -1077,8 +1098,7 @@ impl<R: Runtime> Resumable for Call<R> {
     fn stop(mut self: Box<Self>, why: Stopped) {
         let mut err = stopped(why);
         if let Some(e) = self.engine.upgrade()
-            && let Some(open) = e.open.try_read()
-            && *open
+            && let Some(e) = e.try_enter()
         {
             err = self.audited(&e, err);
         }

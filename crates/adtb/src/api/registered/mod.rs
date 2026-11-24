@@ -1014,14 +1014,12 @@ impl<R: Runtime> Database<R> {
     /// Fail with `Retired`, `BundleSuperseded` or `BundleExpired` for a bundle that is, and with
     /// `UnknownBundle` for a name no registration of this open has.
     pub fn registered(&self, name: &str) -> Result<Registered<R>, Error> {
-        let _open = self.engine.enter()?;
-        self.engine.bind(name)?;
+        let e = &self.engine.enter()?;
+        e.bind(name)?;
         let found = Registered::served(&self.engine, name);
         if found.is_none() {
-            self.engine
-                .db
-                .admit_database()
-                .map_err(|e| self.engine.write_error(super::TxnId(0), e))?;
+            e.db.admit_database()
+                .map_err(|err| e.write_error(super::TxnId(0), err))?;
         }
         found.ok_or_else(|| {
             Error::rejected(RejectReason::UnknownBundle {
@@ -1059,8 +1057,8 @@ impl<R: Runtime> Registered<R> {
     /// limit. The call passes admission as [`Database::query_text`] does.
     pub fn call(&self, ordinal: u32, args: &[Val], opts: &CallOptions) -> Result<Called, Error> {
         let e = self.engine()?;
-        let _open = e.enter()?;
-        let (entry, p, due) = self.admitted(&e, ordinal, args, false, || {
+        let e = &e.enter()?;
+        let (entry, p, due) = self.admitted(e, ordinal, args, false, || {
             e.principal(opts.assert.as_ref())
         })?;
         let queued = self.queued(args, opts.priority, opts.deadline);
@@ -1070,7 +1068,7 @@ impl<R: Runtime> Registered<R> {
                 e.renew(&self.checked.name);
             }
         })?;
-        let value = self.checked.encoded(entry, one(&e, entry, done.value))?;
+        let value = self.checked.encoded(entry, one(e, entry, done.value))?;
         Ok(match entry.kind {
             Callable::Txn => Called::Committed(Committed {
                 value,
@@ -1170,13 +1168,13 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         let (entry, p, due) = reg.admitted(self.engine, ordinal, args, self.read_only, || {
             Ok(self.caller.clone())
         })?;
-        let e = self.engine;
+        let e = &self.engine.enter()?;
         let admitted = e.admit_program(
             p,
             &reg.queued(args, opts.priority, opts.deadline),
             Authority::Owner,
         )?;
-        let rows = self.run(&admitted, opts, || {
+        let rows = self.run(e, &admitted, opts, || {
             if due {
                 e.renew(&reg.checked.name);
             }

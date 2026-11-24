@@ -124,7 +124,8 @@ impl<R: Runtime> Engine<R> {
     }
 
     fn rebuild_all(&self, schema: &Schema, work: &Work, job: &Job<'_, R>) {
-        let grant = match self.db.rebuild_grant() {
+        let mapping = self.db.mapping();
+        let grant = match self.db.rebuild_grant(&mapping) {
             Ok(g) => g,
             Err(cause) => {
                 if let Some(c) = cause {
@@ -156,7 +157,7 @@ impl<R: Runtime> Engine<R> {
                 online: work.online,
                 phase: &phase,
             };
-            match no_vacuum.rebuild(&rebuild, &grant) {
+            match no_vacuum.rebuild(&rebuild, &grant, &mapping) {
                 Ok(all_freed) => {
                     reclaimed &= all_freed;
                     self.keep_outcome(schema, index, work.run, None);

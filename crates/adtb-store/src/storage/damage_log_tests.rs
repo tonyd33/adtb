@@ -1,6 +1,7 @@
 //! The damage the pager records: each detection a record that a crash keeps or the next open finds
 //! again, folded by checkpoints into the damage list.
 
+use super::damage_log::MapPoint;
 use crate::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -758,7 +759,8 @@ fn a_record_superseded_during_its_walk_marks_nothing_and_what_replaced_it_maps_o
                 found: Lsn(30),
             };
             let mut walks = 0;
-            let failed = pager.map_damage(
+            let failed = pager.map_at(
+                &MapPoint::pass(),
                 |walked| {
                     walks += 1;
                     match supersede {
@@ -783,7 +785,11 @@ fn a_record_superseded_during_its_walk_marks_nothing_and_what_replaced_it_maps_o
                 pager.mapped_to(pid),
                 Probe::of(&pager).records().pages().get(&pid).copied(),
             );
-            let failed = pager.map_damage(|_| Some(BTreeSet::from([heap(2)])), &ordered_for_test());
+            let failed = pager.map_at(
+                &MapPoint::pass(),
+                |_| Some(BTreeSet::from([heap(2)])),
+                &ordered_for_test(),
+            );
             let replaced = (failed, Probe::of(&pager).marks(), pager.mapped_to(pid));
             got.push((supersede, superseded, replaced));
             let none = BTreeMap::new();
@@ -865,7 +871,11 @@ fn one_damaged_page_past_the_lists_capacity_records_the_whole_file() {
             );
             let unlisted = pager.verify().findings.contains(&Finding::Unlisted);
             assert_eq!(full, unlisted, "{n} pages");
-            pager.map_damage(|_| Some(BTreeSet::new()), &ordered_for_test());
+            pager.map_at(
+                &MapPoint::pass(),
+                |_| Some(BTreeSet::new()),
+                &ordered_for_test(),
+            );
             let database = BTreeSet::from([Quarantine::Database]);
             let marks = if full { database } else { BTreeSet::new() };
             assert_eq!(marks, Probe::of(&pager).marks(), "{n} pages");
@@ -877,7 +887,8 @@ fn one_damaged_page_past_the_lists_capacity_records_the_whole_file() {
 /// database, and how many pages it walked for.
 fn mapped_whole(pager: &Pager<SimRuntime>) -> (BTreeSet<Quarantine>, usize) {
     let mut walked = 0;
-    let failed = pager.map_damage(
+    let failed = pager.map_at(
+        &MapPoint::pass(),
         |_| {
             walked += 1;
             Some(BTreeSet::from([Holder::CommitLog]))

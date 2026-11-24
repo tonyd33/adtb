@@ -146,7 +146,7 @@ impl<R: Runtime> RoleAuthority<R> {
         };
         let caller = service(e.schema(), &session.name);
         let held = self.record_refusal(session, &caller, &origin, held)?;
-        let _open = e.enter()?;
+        let e = &e.enter()?;
         let row = e.deployed.read(&e.rt).bundles.get(bundle).cloned();
         let header = row
             .as_ref()
@@ -179,7 +179,7 @@ impl<R: Runtime> RoleAuthority<R> {
         }
         Ok(RoleBinding {
             session: session.clone(),
-            binding: Arc::new(binding(&e, &registered, &held)),
+            binding: Arc::new(binding(e, &registered, &held)),
             registered,
         })
     }

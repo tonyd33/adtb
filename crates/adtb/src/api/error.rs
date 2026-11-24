@@ -338,16 +338,6 @@ impl Error {
         Error::of_mapped(schema, txn, e, (names, |heap| db.relation_of(heap)))
     }
 
-    /// Returns the failure of a call that `db`'s whole-database mark refuses, `None` when
-    /// unmarked. Map no damage.
-    pub(super) fn of_whole_mark<R: Runtime>(
-        db: &write::Database<R>,
-        schema: &Schema,
-    ) -> Option<Error> {
-        let refused = db.database_refusal()?;
-        Some(Error::of_write(db, schema, TxnId(0), refused))
-    }
-
     /// Returns the client error of write-path failure `e`, met by transaction `txn` of a
     /// database of `schema`, each quarantined object named by `names` and each heap's relation
     /// and constructor position given by `relation`.

@@ -20,7 +20,7 @@ use crate::runtime::Runtime;
 use crate::write::{self, Bounds, HoldWait, Local, Outcome, Rejection, Text, Txn, VacuumHold};
 
 use super::text::{DynRows, Issuer, Prepared, rows};
-use super::{Capability, Engine, Error, unsupported};
+use super::{Capability, Engine, Entered, Error, unsupported};
 
 /// The rows [`Engine::swap_row`] replaces.
 pub(super) enum Old {
@@ -354,82 +354,6 @@ pub(super) fn reindexed(compiled: &Compiled, rel: RelId, index: Option<usize>) -
 }
 
 impl<R: Runtime> Engine<R> {
-    /// Run command `c` of `p` in `tx`, over `local`, what `tx` holds outside the file. Returns
-    /// its rows.
-    pub(super) fn command(
-        &self,
-        tx: &Txn,
-        p: &Prepared,
-        (c, at): (&Command, usize),
-        local: &mut Local,
-        bounds: Bounds,
-    ) -> Result<DynRows, write::Error> {
-        let schema = p.schema();
-        match c {
-            Command::Explain {
-                analyze,
-                target: Explained::Statement(t),
-            } => {
-                let one = self.text_of(p, std::slice::from_ref(t));
-                let node = self.db.explain(tx, one, *t)?;
-                let (mut node, extra) = if *analyze {
-                    self.analyzed(tx, one, node, local, bounds)?
-                } else {
-                    (node, Vec::new())
-                };
-                if let Some(holds) = p.issuer.as_ref().and_then(|i| i.holds.as_ref()) {
-                    node.hide(holds.monitor, holds.schema);
-                }
-                let ty = Ty::Record(Fields::new([
-                    ("document".into(), Ty::Base(Base::Text)),
-                    ("text".into(), Ty::Base(Base::Text)),
-                ]));
-                let mut shown = node.text();
-                for a in &extra {
-                    shown.push_str(&format!("{} {}\n", a.name, a.line));
-                }
-                let members: Vec<(&str, String)> =
-                    extra.iter().map(|a| (a.name, a.json.clone())).collect();
-                let row = Val::record(vec![Val::text(&node.document(&members)), Val::text(&shown)]);
-                Ok(rows(schema, ty, vec![row]))
-            }
-            Command::Vacuum(rel) => self.vacuumed(schema, *rel, HoldWait::of(&bounds, at)),
-            Command::Verify(rel) => {
-                let found = self.verified(schema, *rel, HoldWait::of(&bounds, at))?;
-                if let Some(issuer) = &p.issuer {
-                    self.refuse_witnesses(schema, issuer, &found)?;
-                }
-                Ok(found)
-            }
-            Command::Reindex {
-                relation,
-                index,
-                online,
-            } => {
-                let at = index.map(|_| reindexed(&p.compiled, *relation, *index));
-                self.reindex_job(schema, *relation, at.as_deref(), *online)
-            }
-            Command::SetSetting { setting, value } => {
-                let held = self.db.hold_vacuum(HoldWait::of(&bounds, at))?;
-                self.set_setting(tx, p, (*setting, *value), local, bounds, &held)
-            }
-            Command::CancelCall(key) => self.cancel_call(tx, p, *key, local, bounds),
-            Command::PrintSchema => {
-                let ty = Ty::Record(Fields::new([("text".into(), Ty::Base(Base::Text))]));
-                let row = Val::record(vec![Val::text(&self.printed_schema()?)]);
-                Ok(rows(schema, ty, vec![row]))
-            }
-            Command::Export {
-                source,
-                path,
-                sums_text,
-            } => self.export(tx, p, (*source, path, *sums_text), local, bounds),
-            other => Err(write::Error::Exec(crate::exec::Error::Unsupported(
-                format!("`{}`", word(other)),
-            ))),
-        }
-    }
-
     /// Returns the folded schema: its version and hash, then each module's declarations.
     fn printed_schema(&self) -> Result<String, write::Error> {
         let hash = self.hash.get()?;
@@ -854,6 +778,84 @@ impl<R: Runtime> Engine<R> {
         match ran {
             Ok(_) => self.db.commit(tx).map(drop),
             Err(f) => Err(self.db.abandoned(tx, f.error)),
+        }
+    }
+}
+
+impl<R: Runtime> Entered<'_, R> {
+    /// Run command `c` of `p` in `tx`, over `local`, what `tx` holds outside the file. Returns
+    /// its rows.
+    pub(super) fn command(
+        &self,
+        tx: &Txn,
+        p: &Prepared,
+        (c, at): (&Command, usize),
+        local: &mut Local,
+        bounds: Bounds,
+    ) -> Result<DynRows, write::Error> {
+        let schema = p.schema();
+        match c {
+            Command::Explain {
+                analyze,
+                target: Explained::Statement(t),
+            } => {
+                let one = self.text_of(p, std::slice::from_ref(t));
+                let node = self.db.explain(tx, one, *t)?;
+                let (mut node, extra) = if *analyze {
+                    self.analyzed(tx, one, node, local, bounds)?
+                } else {
+                    (node, Vec::new())
+                };
+                if let Some(holds) = p.issuer.as_ref().and_then(|i| i.holds.as_ref()) {
+                    node.hide(holds.monitor, holds.schema);
+                }
+                let ty = Ty::Record(Fields::new([
+                    ("document".into(), Ty::Base(Base::Text)),
+                    ("text".into(), Ty::Base(Base::Text)),
+                ]));
+                let mut shown = node.text();
+                for a in &extra {
+                    shown.push_str(&format!("{} {}\n", a.name, a.line));
+                }
+                let members: Vec<(&str, String)> =
+                    extra.iter().map(|a| (a.name, a.json.clone())).collect();
+                let row = Val::record(vec![Val::text(&node.document(&members)), Val::text(&shown)]);
+                Ok(rows(schema, ty, vec![row]))
+            }
+            Command::Vacuum(rel) => self.vacuumed(schema, *rel, HoldWait::of(&bounds, at)),
+            Command::Verify(rel) => {
+                let found = self.verified(schema, *rel, HoldWait::of(&bounds, at))?;
+                if let Some(issuer) = &p.issuer {
+                    self.refuse_witnesses(schema, issuer, &found)?;
+                }
+                Ok(found)
+            }
+            Command::Reindex {
+                relation,
+                index,
+                online,
+            } => {
+                let at = index.map(|_| reindexed(&p.compiled, *relation, *index));
+                self.reindex_job(schema, *relation, at.as_deref(), *online)
+            }
+            Command::SetSetting { setting, value } => {
+                let held = self.db.hold_vacuum(HoldWait::of(&bounds, at))?;
+                self.set_setting(tx, p, (*setting, *value), local, bounds, &held)
+            }
+            Command::CancelCall(key) => self.cancel_call(tx, p, *key, local, bounds),
+            Command::PrintSchema => {
+                let ty = Ty::Record(Fields::new([("text".into(), Ty::Base(Base::Text))]));
+                let row = Val::record(vec![Val::text(&self.printed_schema()?)]);
+                Ok(rows(schema, ty, vec![row]))
+            }
+            Command::Export {
+                source,
+                path,
+                sums_text,
+            } => self.export(tx, p, (*source, path, *sums_text), local, bounds),
+            other => Err(write::Error::Exec(crate::exec::Error::Unsupported(
+                format!("`{}`", word(other)),
+            ))),
         }
     }
 }

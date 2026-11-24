@@ -5,7 +5,7 @@ use crate::write::{self, Bounds, Local, Text, Txn};
 
 use super::admitted::Admitted;
 use super::text::DynRows;
-use super::{Engine, Error, TxnId};
+use super::{Entered, Error, TxnId};
 
 /// Why [`Engine::resumable`] stopped short.
 pub(super) enum Halted {
@@ -67,16 +67,7 @@ impl Refusal {
     }
 }
 
-impl<R: Runtime> Engine<R> {
-    /// Returns the refusal of `e`, met in the call's transaction `id`, ending it as the class of
-    /// `e` says.
-    pub(super) fn met(&self, id: TxnId, e: write::Error) -> Refusal {
-        Refusal {
-            ends: e.class().ends(),
-            error: self.write_error(id, e),
-        }
-    }
-
+impl<R: Runtime> Entered<'_, R> {
     /// Abandon `tx`, the transaction `id`, after its call failed, as
     /// [`crate::write::Database::abandon`] does: `Ok` with `cause()` once the abort is recorded,
     /// else `Err` with the record's failure.
@@ -89,27 +80,13 @@ impl<R: Runtime> Engine<R> {
         self.db.abandon(tx, cause, |e| self.write_error(id, e))
     }
 
-    /// Run the items of `admitted` as statements of `tx`, the transaction `id`, over `local`. Returns
-    /// the rows of each item that yields a result, or the failure.
-    pub(super) fn statements(
-        &self,
-        id: TxnId,
-        tx: &Txn,
-        admitted: &Admitted,
-        local: &mut Local,
-        bounds: Bounds,
-    ) -> Result<Vec<DynRows>, Failure> {
-        let bounds = Bounds {
-            suspend: false,
-            ..bounds
-        };
-        self.resumable(id, tx, admitted, local, bounds)
-            .map_err(|f| match f {
-                Halted::Blocked { .. } => {
-                    unreachable!("a run with `suspend: false` never suspends")
-                }
-                Halted::Failed(failure) => failure,
-            })
+    /// Returns the refusal of `e`, met in the call's transaction `id`, ending it as the class of
+    /// `e` says.
+    pub(super) fn met(&self, id: TxnId, e: write::Error) -> Refusal {
+        Refusal {
+            ends: e.class().ends(),
+            error: self.write_error(id, e),
+        }
     }
 
     /// Run the items of `admitted` as [`statements`](Engine::statements) does, except that a
@@ -202,7 +179,7 @@ impl<R: Runtime> Engine<R> {
                     write::Error::Rejected(r) => r.violated(),
                     _ => None,
                 };
-                let mapped = self.db.fail(f.error);
+                let mapped = self.mapping().fail(f.error);
                 Err(failed(
                     Error::of_write(&self.db, schema, id, mapped),
                     ends,
@@ -210,5 +187,28 @@ impl<R: Runtime> Engine<R> {
                 ))
             }
         }
+    }
+
+    /// Run the items of `admitted` as statements of `tx`, the transaction `id`, over `local`. Returns
+    /// the rows of each item that yields a result, or the failure.
+    pub(super) fn statements(
+        &self,
+        id: TxnId,
+        tx: &Txn,
+        admitted: &Admitted,
+        local: &mut Local,
+        bounds: Bounds,
+    ) -> Result<Vec<DynRows>, Failure> {
+        let bounds = Bounds {
+            suspend: false,
+            ..bounds
+        };
+        self.resumable(id, tx, admitted, local, bounds)
+            .map_err(|f| match f {
+                Halted::Blocked { .. } => {
+                    unreachable!("a run with `suspend: false` never suspends")
+                }
+                Halted::Failed(failure) => failure,
+            })
     }
 }

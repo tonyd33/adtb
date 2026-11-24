@@ -11,7 +11,7 @@ use super::admitted::{Admitted, Authority, CALL_BYTES, Queued};
 use super::error::FatalReason;
 use super::stop::{CancelToken, Stops};
 use super::text::{DynRows, Prepared};
-use super::{Database, Durability, Engine, Error, Position, TxnId};
+use super::{Database, Durability, Engine, Entered, Error, Position, TxnId};
 
 /// The options of an interactive transaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -84,8 +84,7 @@ impl<R: Runtime> Database<R> {
         if opts.deferrable && !opts.read_only {
             return Err(Error::invalid("only a read-only transaction is deferrable"));
         }
-        let e = &*self.engine;
-        let _open = e.enter()?;
+        let e = &self.engine.enter()?;
         let id = e.txn_id();
         e.db.admit_database()
             .map_err(|err| e.write_error(id, err))?;
@@ -103,7 +102,7 @@ impl<R: Runtime> Database<R> {
             e.begin(id)?
         };
         Ok(AdHocTransaction {
-            engine: e,
+            engine: &self.engine,
             id,
             read_only: opts.read_only,
             caller,
@@ -162,7 +161,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         params: &[(&str, Ty, Val)],
         opts: &TxnCallOptions,
     ) -> Result<Vec<DynRows>, Error> {
-        let e = self.engine;
+        let e = &self.engine.enter()?;
         let compiled = self.temps.as_ref().unwrap_or(&e.compiled);
         let p = Prepared::new(compiled, &e.explained(), text, params, self.caller.clone())?;
         for c in p.commands() {
@@ -184,7 +183,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             CALL_BYTES + text.len() + p.bytes(),
         );
         let admitted = e.admit_program(p, &queued, Authority::Owner)?;
-        let rows = self.run(&admitted, opts, || {})?;
+        let rows = self.run(e, &admitted, opts, || {})?;
         self.temps = Some(compiled);
         Ok(rows)
     }
@@ -196,12 +195,11 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     /// and before beginning execution.
     pub(super) fn run(
         &mut self,
+        e: &Entered<'_, R>,
         admitted: &Admitted,
         opts: &TxnCallOptions,
         on_ready: impl FnOnce(),
     ) -> Result<Vec<DynRows>, Error> {
-        let e = self.engine;
-        let _open = e.enter()?;
         let tx = match &self.state {
             State::Open(tx) => tx,
             State::Ended(err) => return Err(err.clone()),
@@ -225,7 +223,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             Err(failed) => failed,
         };
         if failed.ends {
-            return Err(self.end(failed.error));
+            return Err(self.end(e, failed.error));
         }
         Err(failed.error)
     }
@@ -234,14 +232,13 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     ///
     /// A database without replicas commits at `local` whatever level `_durability` names.
     pub fn commit(mut self, _durability: Option<Durability>) -> Result<Position, Error> {
-        let _open = self.engine.enter()?;
+        let e = &self.engine.enter()?;
         match std::mem::replace(&mut self.state, State::Closed) {
-            State::Open(tx) => self
-                .engine
-                .db
-                .commit(*tx)
-                .map(Position::from)
-                .map_err(|e| self.engine.write_error(self.id, e)),
+            State::Open(tx) => {
+                e.db.commit(*tx)
+                    .map(Position::from)
+                    .map_err(|err| e.write_error(self.id, err))
+            }
             State::Ended(err) => Err(err),
             State::Closed => unreachable!("a transaction is closed only as it is consumed"),
         }
@@ -250,7 +247,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     /// Roll the transaction back. A transaction of a closed database ended uncommitted when it
     /// closed.
     pub fn rollback(mut self) -> Result<(), Error> {
-        let Ok(_open) = self.engine.enter() else {
+        let Ok(e) = self.engine.enter() else {
             self.state = State::Closed;
             return Ok(());
         };
@@ -259,7 +256,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
                 clippy::disallowed_methods,
                 reason = "permanent: a rollback ends the transaction with no failure"
             )]
-            State::Open(tx) => self.engine.abort(self.id, *tx),
+            State::Open(tx) => e.abort(self.id, *tx),
             State::Ended(_) | State::Closed => Ok(()),
         }
     }
@@ -290,9 +287,9 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     /// Abandon the transaction after a call failed with `cause`, as
     /// [`crate::write::Database::abandon`] does, leaving every later call and the commit to fail
     /// with `cause`. Returns the failing call's reply.
-    fn end(&mut self, cause: Error) -> Error {
+    fn end(&mut self, e: &Entered<'_, R>, cause: Error) -> Error {
         match std::mem::replace(&mut self.state, State::Ended(cause.clone())) {
-            State::Open(tx) => crate::write::either(self.engine.abandon(self.id, *tx, || cause)),
+            State::Open(tx) => crate::write::either(e.abandon(self.id, *tx, || cause)),
             State::Ended(_) | State::Closed => cause,
         }
     }
@@ -315,8 +312,8 @@ impl<R: Runtime> Drop for AdHocTransaction<'_, R> {
     )]
     fn drop(&mut self) {
         if let State::Open(tx) = std::mem::replace(&mut self.state, State::Closed)
-            && let Ok(_open) = self.engine.enter()
-            && let Err(e) = self.engine.abort(self.id, *tx)
+            && let Ok(entered) = self.engine.enter()
+            && let Err(e) = entered.abort(self.id, *tx)
             && !std::thread::panicking()
         {
             assert!(

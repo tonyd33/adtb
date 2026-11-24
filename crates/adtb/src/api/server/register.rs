@@ -32,14 +32,14 @@ impl<R: Runtime> RoleAuthority<R> {
         bundle: &Registration,
     ) -> Result<DynRows, Error> {
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
-        let _open = e.enter()?;
+        let e = &e.enter()?;
         let writer = e.bundle_writer();
         let stored = e.deployed.read(&e.rt);
-        let (checked, claim) = decide(&e, session, bundle, &stored)?;
+        let (checked, claim) = decide(e, session, bundle, &stored)?;
         let family = &claim.row.header.family;
         let family_owner = stored.deployed.families.get(family).copied();
         drop(stored);
-        store::run(&e, true, &mut |e, tx, id, changes| {
+        store::run(e, true, &mut |e, tx, id, changes| {
             let t = Tables::new(e.schema(), id);
             self.checked(session, &t, e, tx)?;
             let by = session.id.0;
