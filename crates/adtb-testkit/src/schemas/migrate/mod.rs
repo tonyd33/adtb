@@ -12,6 +12,7 @@ use crate::Rng;
 mod model;
 mod operators;
 mod rows;
+mod structural;
 
 use rows::Effect;
 pub use rows::Rows;
@@ -182,6 +183,9 @@ pub struct Op {
     text: String,
     /// The operator breaks a precondition its operator states.
     broken: bool,
+    /// The operator replaces constructors a clause, check, constraint or default names where
+    /// that object has no exact image, which breaks the precondition that it has one.
+    unimaged: bool,
     /// Its preconditions read data, which may refuse it whole.
     data: bool,
     /// The relation or constructor relation whose rows a write deletes before the migration, so
@@ -205,6 +209,12 @@ impl Op {
     /// Returns whether the operator breaks a precondition its operator states.
     pub fn broken(&self) -> bool {
         self.broken
+    }
+
+    /// Returns whether the operator replaces constructors an object with no exact image under it
+    /// names.
+    pub fn unimaged(&self) -> bool {
+        self.unimaged
     }
 
     /// Returns whether the engine may name the operator refusing for data: its preconditions
@@ -559,6 +569,7 @@ fn op(kind: Kind, text: String) -> Op {
         kind,
         text,
         broken: false,
+        unimaged: false,
         data: false,
         empties: None,
         effect: Effect::None,
@@ -582,6 +593,13 @@ fn broken(kind: Kind, text: String) -> Op {
     Op {
         broken: true,
         ..op(kind, text)
+    }
+}
+
+fn unimaged(kind: Kind, text: String) -> Op {
+    Op {
+        unimaged: true,
+        ..broken(kind, text)
     }
 }
 

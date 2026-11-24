@@ -91,6 +91,44 @@ fn broken(kind: Kind) -> &'static [&'static str] {
     }
 }
 
+/// Returns the reasons an operator of `kind` replacing constructors that an object with no exact
+/// image under it names may be refused for.
+fn unimaged(kind: Kind) -> &'static [&'static str] {
+    match kind {
+        Kind::Split => &[
+            "the split is refused: the default of `*` has no image under it",
+            "`*` names `*`, which no new constructor keeps; state its replacements after the routing",
+            "`*` names `*`, which `*` does not keep under that name",
+            "`*` has no image under the split: its products do not hold its elements under one name",
+            "check `*` has no image under the split*",
+        ],
+        Kind::Merge => &[
+            "the merge is refused: the default of `*` has no image under it",
+            "the merge is refused: `*` of `*` names `*` in its element `*`, which has no image under it",
+            "the merge is refused: * `*` selects `*`, some but not all of its constructors",
+            "`*` has no image under the merge: the routing does not carry `*` whole",
+            "`*` has no image under the merge: its constructors' fields go to different fields",
+            "`*` ranges over some but not all of the merged constructors and has no image under the merge",
+            "check `*` has no image under the merge; drop or rewrite it in this or an earlier migration",
+            "check `*` has no image under the merge: no one field of `*` tells its constructors apart",
+        ],
+        Kind::Nest => &[
+            "the nest is refused: the default of `*` has no image under it",
+            "the nest is refused: `*` of `*` names `*` in its element `*`, which has no image under it",
+            "the nest is refused: * `*` selects `*`, some but not all of its constructors",
+            "`*` has no image under the nest",
+            "`*` ranges over some but not all of the nested constructors and has no image under the nest",
+        ],
+        Kind::Unnest => &[
+            "the unnest is refused: the default of `*` has no image under it",
+            "the unnest is refused: `*` of `*` names `*` in its element `*`, which has no image under it",
+            "the unnest is refused: * `*` selects `*`, some but not all of its constructors",
+            "`*` has no image under the unnest",
+        ],
+        _ => &[],
+    }
+}
+
 /// Returns the reasons a whole operator of `kind`, whose preconditions read data, may be
 /// refused for: the checks at apply that read rows.
 fn read(kind: Kind) -> &'static [&'static str] {
@@ -133,9 +171,17 @@ fn stated_in(reasons: &[&str], text: &str) -> bool {
 
 /// Returns whether one of `messages` is a reason a broken operator of `kind` is refused for, and
 /// each of `own`, the messages at the operator itself, is one; else the reasons it may be
-/// refused for.
-pub(super) fn stated(kind: Kind, messages: &[&str], own: &[&str]) -> Result<(), String> {
-    let reasons = broken(kind);
+/// refused for. An operator `unimaged` is refused only for an object with no exact image.
+pub(super) fn stated(
+    (kind, unimaged_shape): (Kind, bool),
+    messages: &[&str],
+    own: &[&str],
+) -> Result<(), String> {
+    let reasons = if unimaged_shape {
+        unimaged(kind)
+    } else {
+        broken(kind)
+    };
     let any = messages.iter().any(|m| stated_in(reasons, m));
     let each = own.iter().all(|m| stated_in(reasons, m));
     if any && each {

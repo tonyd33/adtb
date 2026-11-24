@@ -67,6 +67,9 @@ struct Reached {
     refused: BTreeMap<Kind, usize>,
     /// Each kind refused for a constructor it replaces that a stored tag names.
     tagged: BTreeMap<Kind, usize>,
+    /// Each kind refused for a constructor it replaces that an object with no exact image under
+    /// it names.
+    unimaged: BTreeMap<Kind, usize>,
     shapes: BTreeMap<Reach, usize>,
 }
 
@@ -77,6 +80,7 @@ impl Reached {
             (&mut self.committed, other.committed),
             (&mut self.refused, other.refused),
             (&mut self.tagged, other.tagged),
+            (&mut self.unimaged, other.unimaged),
         ] {
             for (k, n) in from {
                 *to.entry(k).or_default() += n;
@@ -117,6 +121,12 @@ impl Reached {
                     .filter(|k| !self.tagged.contains_key(k))
                     .map(|k| format!("{k:?} refused for a stored tag")),
             )
+            .chain(
+                UNIMAGED
+                    .into_iter()
+                    .filter(|k| !self.unimaged.contains_key(k))
+                    .map(|k| format!("{k:?} refused for an object with no exact image")),
+            )
             .collect();
         assert_eq!(missed, Vec::<String>::new(), "kinds under their floor of 1");
     }
@@ -130,6 +140,9 @@ const TAGGED: [Kind; 5] = [
     Kind::Unnest,
     Kind::RemoveConstructor,
 ];
+
+/// The kinds that refuse to replace a constructor an object with no exact image under them names.
+const UNIMAGED: [Kind; 3] = [Kind::Split, Kind::Merge, Kind::Unnest];
 
 /// Whether the engine applies a migration holding a `script`. It refuses every one.
 const SCRIPT_COMMITS: bool = false;
@@ -598,7 +611,7 @@ fn checked(source: &Source, m: &Migration) -> Result<bool, Finding> {
                 .map(|d| d.message.as_str())
                 .chain(r.recheck.iter().map(|d| d.diag.message.as_str()))
                 .collect();
-            if let Err(want) = reasons::stated(op.kind(), &why, &own) {
+            if let Err(want) = reasons::stated((op.kind(), op.unimaged()), &why, &own) {
                 return Err(found(
                     format!(
                         "the checker refuses a broken {:?} for another reason",
@@ -709,7 +722,7 @@ fn engine_refusal(m: &Migration, operator: &str, detail: &str) -> Option<Finding
     if let Some(b) = m.broken() {
         let op = &m.ops()[b];
         let named = op.text().lines().any(|l| l.trim() == operator);
-        return match reasons::stated(op.kind(), &lines, &[]) {
+        return match reasons::stated((op.kind(), op.unimaged()), &lines, &[]) {
             Ok(()) if named => None,
             Ok(()) => Some(found(
                 format!(
@@ -1224,6 +1237,9 @@ fn run(seed: u64, reached: &mut Reached, last: u64, instead: Option<&Migration>)
                             (Ended::Refused | Ended::Tagged(_), false) => continue,
                         };
                         *to.entry(o.kind()).or_default() += 1;
+                        if ended != Ended::Committed && o.unimaged() {
+                            *reached.unimaged.entry(o.kind()).or_default() += 1;
+                        }
                         if let (Ended::Committed, Some(r)) = (ended, o.reach()) {
                             *reached.shapes.entry(r).or_default() += 1;
                         }
