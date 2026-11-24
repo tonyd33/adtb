@@ -383,8 +383,8 @@ impl<R: Runtime> Transactions<R> {
     /// for a reader that read no commit, past the log's durable end.
     ///
     /// Fail with the failure of `check`, or with the commit's when the database is quarantined
-    /// or the record of the window is damaged. The writer is then aborted, and the failure of
-    /// its abort record returned in place of either when it fails.
+    /// or the record of the window is damaged. The writer is then aborted, and its abort
+    /// record's failure, as [`Transactions::abort`] fails, returned in place of either.
     ///
     /// Panic if `begun` did not begin in these transactions.
     pub fn commit_with<E: From<Error>>(
@@ -498,8 +498,9 @@ impl<R: Runtime> Transactions<R> {
     /// Abort the transaction of `begun`: take its id out of the running transactions, record it
     /// in the commit log and log its abort record.
     ///
-    /// Fail if the database is quarantined, or the record fails and quarantines it. The id is
-    /// then no longer running and the commit log still says it is in progress.
+    /// Fail when the record fails: the database is quarantined already, a commit log page fails
+    /// to read or verify, which quarantines it, or the pager is closed. The id is then no longer
+    /// running and the commit log still says it is in progress.
     ///
     /// Panic if `begun` did not begin in these transactions.
     pub fn abort(&self, pager: &Pager<R>, begun: Begun) -> Result<Lsn, Error> {

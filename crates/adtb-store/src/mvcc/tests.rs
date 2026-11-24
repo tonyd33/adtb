@@ -390,7 +390,6 @@ fn a_read_depends_on_concurrent_writers_only() {
 const HEAP: u32 = 10;
 const INDEX: Pid = Pid(100);
 const G: CtorId = CtorId(1);
-const A: CtorId = CtorId(2);
 const E: CtorId = CtorId(3);
 
 fn key(k: u8) -> Vec<u8> {
@@ -458,42 +457,6 @@ fn an_open_scan_leaves_tuple_reads_their_own_locks() {
     s.read_tuple(r, HEAP, tid(9, 1)).unwrap();
     s.end_scan(r, HEAP, scan, Some((&StopsEarly::tested(), &[5])));
     s.write_at(w, HEAP, tid(9, 1)).unwrap();
-    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
-}
-
-#[test]
-fn a_migration_conflicts_with_statements_at_older_versions() {
-    let mut s = Serializer::default();
-    let (old, new, m) = (rw(&mut s, 1), rw(&mut s, 2), rw(&mut s, 3));
-    s.read_schema(old, 4).unwrap();
-    s.read_schema(new, 5).unwrap();
-    s.migrate(m, 5).unwrap();
-    assert_eq!(BTreeSet::from([old]), s.readers_before(m));
-}
-
-#[test]
-fn a_bulk_load_conflicts_with_heap_locks_and_ranges_over_its_constructors() {
-    let mut s = Serializer::default();
-    let (scan, other, range, load) = (rw(&mut s, 1), rw(&mut s, 2), rw(&mut s, 3), rw(&mut s, 4));
-    s.read_heap(scan, HEAP).unwrap();
-    read_key(&mut s, other, 1, &[A]);
-    read_key(&mut s, range, 1, &[G, A]);
-    s.bulk_insert(load, &[HEAP], &[(INDEX, BTreeSet::from([G]))])
-        .unwrap();
-    assert_eq!(BTreeSet::from([scan, range]), s.readers_before(load));
-}
-
-#[test]
-fn a_split_turns_locks_on_the_rewritten_heaps_into_heap_locks_on_the_new_ones() {
-    let mut s = Serializer::default();
-    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
-    s.read_tuple(r, HEAP, tid(5, 1)).unwrap();
-    read_key(&mut s, r, 1, &[G]);
-    s.rewrite(&[HEAP], &[INDEX], &[20, 21]);
-    assert_eq!(2, s.locks(r));
-    s.insert_entry(w, INDEX, (&key(1), G), HEAP).unwrap();
-    assert!(s.writers_after(r).is_empty());
-    s.insert_heap(w, 21).unwrap();
     assert_eq!(BTreeSet::from([w]), s.writers_after(r));
 }
 

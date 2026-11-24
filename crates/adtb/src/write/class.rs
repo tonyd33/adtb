@@ -93,7 +93,8 @@ impl Broken {
             | Broken::CatalogError(_)
             | Broken::DeploymentRefused
             | Broken::NoDenial(_)
-            | Broken::Unadmitted { .. } => Class::Checker,
+            | Broken::Unadmitted { .. }
+            | Broken::NoDirectory => Class::Checker,
         }
     }
 }

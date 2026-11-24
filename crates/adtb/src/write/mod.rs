@@ -216,9 +216,7 @@ impl From<crate::heap::Error> for Error {
             crate::heap::Error::TooLarge { len, limit } => {
                 Error::Internal(Box::new(Broken::Unadmitted { len, limit }))
             }
-            crate::heap::Error::NoDirectory => {
-                panic!("a heap the write path writes has a directory")
-            }
+            crate::heap::Error::NoDirectory => Broken::NoDirectory.into(),
         }
     }
 }
@@ -229,9 +227,7 @@ impl From<vacuum::Error> for Error {
             vacuum::Error::Page(p) | vacuum::Error::Heap(crate::heap::Error::Page(p)) => p.into(),
             vacuum::Error::Index(i) => Error::from(i),
             vacuum::Error::Heap(e @ crate::heap::Error::Changed { .. }) => Error::from(e),
-            vacuum::Error::Heap(crate::heap::Error::NoDirectory) => {
-                panic!("a heap the write path writes has a directory")
-            }
+            vacuum::Error::Heap(crate::heap::Error::NoDirectory) => Broken::NoDirectory.into(),
             vacuum::Error::Heap(crate::heap::Error::TooLarge { len, limit }) => panic!(
                 "a version vacuum moves fits its history heap, as it fit its current heap: \
                  {len} bytes over the limit of {limit}"
@@ -1304,9 +1300,8 @@ impl<R: Runtime> Database<R> {
 
     /// Abort `tx` and release what it holds.
     ///
-    /// Fail when its abort record fails: the database is quarantined, an I/O failure, or the
-    /// engine is closed. The commit log then still says `tx`'s id is in progress, and this
-    /// process counts it aborted.
+    /// Fail when its abort record fails, as [`crate::mvcc::Transactions::abort`] fails. The commit
+    /// log then still says `tx`'s id is in progress, and this process counts it aborted.
     pub fn abort(&self, tx: Txn) -> Result<(), Error> {
         self.abort_held(tx.end())
     }

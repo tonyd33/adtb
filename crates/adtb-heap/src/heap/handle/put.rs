@@ -20,8 +20,8 @@ impl Heap {
     /// and its TID once its page is written. Stop at the first error `rows` or `placed` gives,
     /// taking nothing back, as `_writer` does.
     ///
-    /// Postcondition: a row is taken from `rows` only once every row before it is encoded, and at
-    /// most a page of encoded versions waits to be put.
+    /// Postcondition: a row is taken from `rows` only once every row before it is encoded, and the
+    /// encoded versions waiting to be put are shorter than a page but for the last one encoded.
     pub fn insert_all_pruning<R: Runtime, V: AsRef<[Value]>, E: From<Error>>(
         &self,
         pager: &Pager<R>,

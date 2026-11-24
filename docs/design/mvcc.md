@@ -1066,7 +1066,8 @@ snapshot markers taken within it, each with the position of the latest
 commit it reads and that commit's time. Commit times never decrease
 along positions, across restarts too: a commit records the later of
 the clock and the latest commit time the record holds. At most one
-marker is kept per position.
+marker is kept per position, and none whose snapshot is too long for
+one entry of the record.
 
 When a commit leaves no running read-write transaction and retention
 is enabled, transactions publish a marker for the resulting snapshot.

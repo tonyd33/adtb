@@ -69,8 +69,6 @@ pub enum Lock {
     Scan(u32),
     Range(Pid, BTreeSet<CtorId>),
     Index(Pid, BTreeSet<CtorId>),
-    #[cfg(test)]
-    Schema(u64),
 }
 
 /// The thresholds at which a transaction's SIREAD locks promote to coarser ones.
@@ -105,8 +103,6 @@ enum Point {
     Heap(u32),
     /// An open scan of a heap, conflicting as a heap lock does.
     Scan(u32, ScanId),
-    #[cfg(test)]
-    Schema(u64),
 }
 
 #[derive(Clone, Debug)]
@@ -359,15 +355,6 @@ impl Serializer {
         self.lock(id, Point::Heap(heap));
     }
 
-    /// Record that `id` scanned all of `heap`.
-    #[cfg(test)]
-    pub fn read_heap(&mut self, id: SerialId, heap: u32) -> Result<(), Conflict> {
-        if self.records(id)? {
-            self.lock_heap(id, heap);
-        }
-        Ok(())
-    }
-
     /// Record that `id` began a scan of `heap`, covering every version of the heap as a heap
     /// lock does until [`Serializer::end_scan`] ends it. Returns the scan, `None` when it takes
     /// no lock.
@@ -411,15 +398,6 @@ impl Serializer {
             }
         }
         self.keep_budget();
-    }
-
-    /// Record that `id` ran a statement at schema version `version`.
-    #[cfg(test)]
-    pub fn read_schema(&mut self, id: SerialId, version: u64) -> Result<(), Conflict> {
-        if self.records(id)? {
-            self.lock(id, Point::Schema(version));
-        }
-        Ok(())
     }
 
     /// Record that `id` scanned the keys of `index` between `lo` and `hi`, as encoded keys, for
@@ -601,86 +579,6 @@ impl Serializer {
         self.check(id)?;
         let readers = self.range_readers(index, |r| r.covers(key, ctor), |c| c.contains(&ctor));
         self.conflicts_in(id, readers, Some(heap))
-    }
-
-    /// Record a bulk load by `id` that fills `heaps` and adds entries for the constructors given
-    /// with each index of `indexes`.
-    #[cfg(test)]
-    pub fn bulk_insert(
-        &mut self,
-        id: SerialId,
-        heaps: &[u32],
-        indexes: &[(Pid, BTreeSet<CtorId>)],
-    ) -> Result<(), Conflict> {
-        self.check(id)?;
-        let mut readers = self.point_readers(heaps.iter().map(|&h| Point::Heap(h)));
-        for &h in heaps {
-            readers.extend(self.scan_readers(h));
-        }
-        for (index, filled) in indexes {
-            readers.extend(self.range_readers(
-                *index,
-                |r| !r.ctors.is_disjoint(filled),
-                |c| !c.is_disjoint(filled),
-            ));
-        }
-        self.conflicts_in(id, readers, None)
-    }
-
-    /// Record a migration by `id` that produces schema version `version`.
-    #[cfg(test)]
-    pub fn migrate(&mut self, id: SerialId, version: u64) -> Result<(), Conflict> {
-        self.check(id)?;
-        let readers = self
-            .points
-            .range(Point::Schema(0)..Point::Schema(version))
-            .flat_map(|(_, h)| h.iter().copied())
-            .collect();
-        self.conflicts_in(id, readers, None)
-    }
-
-    /// Replace every tuple, page and heap lock on `heaps` and every lock on `indexes` by heap
-    /// locks on each heap of `into`, for a split or merge of constructors that rewrites them.
-    #[cfg(test)]
-    pub fn rewrite(&mut self, heaps: &[u32], indexes: &[Pid], into: &[u32]) {
-        let mut holders = BTreeSet::new();
-        for (id, s) in &self.sxacts {
-            let on_heap = s.points.iter().any(|p| match p {
-                Point::Tuple(h, _) | Point::Page(h, _) | Point::Heap(h) | Point::Scan(h, _) => {
-                    heaps.contains(h)
-                }
-                Point::Schema(_) => false,
-            });
-            let on_index = indexes.iter().any(|i| {
-                s.ranges.contains_key(i) || self.indexes.get(i).is_some_and(|l| l.contains_key(id))
-            });
-            if on_heap || on_index {
-                holders.insert(*id);
-            }
-        }
-        for id in holders {
-            let old: Vec<Point> = self
-                .get(id)
-                .points
-                .iter()
-                .filter(|p| match p {
-                    Point::Tuple(h, _) | Point::Page(h, _) | Point::Heap(h) | Point::Scan(h, _) => {
-                        heaps.contains(h)
-                    }
-                    Point::Schema(_) => false,
-                })
-                .copied()
-                .collect();
-            for p in old {
-                self.unlock(id, p);
-            }
-            for i in indexes {
-                self.release_index(id, *i);
-            }
-            for &h in into {
-                self.lock(id, Point::Heap(h));
-            }
-        }
     }
 
     fn release_index(&mut self, id: SerialId, index: Pid) {
@@ -1042,8 +940,6 @@ impl Serializer {
             Point::Page(h, _) => Lock::Page(h),
             Point::Heap(h) => Lock::Heap(h),
             Point::Scan(h, _) => Lock::Scan(h),
-            #[cfg(test)]
-            Point::Schema(v) => Lock::Schema(v),
         });
         let ranges = self.ranges.iter().flat_map(|(&index, rs)| {
             rs.iter()

@@ -551,11 +551,16 @@ fn call_broken_rows() -> Vec<Row> {
             c,
             "a heap writes every row its admission passed, found 9000 bytes against the limit of 8000",
         ),
+        broken_row(
+            B::NoDirectory,
+            c,
+            "a heap the write path writes has a directory",
+        ),
     ]
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 75;
+const SLOTS: usize = 76;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -644,6 +649,7 @@ fn slot(e: &write::Error) -> usize {
             B::WholePlan(_) => 71,
             B::Compile(_) => 72,
             B::IdleDeltaReports(_) => 73,
+            B::NoDirectory => 75,
         },
     }
 }

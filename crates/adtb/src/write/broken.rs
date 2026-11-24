@@ -84,6 +84,8 @@ pub enum Broken {
         len: usize,
         limit: usize,
     },
+    /// A heap the write path writes has no directory.
+    NoDirectory,
 }
 
 /// A term's kind, equal to another when the kinds are equal, a float constant by its bits.
@@ -228,6 +230,7 @@ impl fmt::Display for Broken {
             }
             Broken::RejectedRowNotRecord => f.write_str("`RejectedRow` is a declared record"),
             Broken::NoUnique(i) => write!(f, "an upsert names unique {i} of its relation"),
+            Broken::NoDirectory => f.write_str("a heap the write path writes has a directory"),
             Broken::ReferenceUnindexed { relation, field } => write!(
                 f,
                 "a reference field has an index: {relation}.{field} has none"

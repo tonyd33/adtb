@@ -54,9 +54,6 @@ impl Heap {
     /// `next` and successor flags. Refuse the version's page as out of frame, changing nothing,
     /// when the page holds no version of this heap there or `undo`'s transaction is not its
     /// inserter or deleter as `undo` says.
-    ///
-    /// Preconditions: a successor the transaction wrote of a version it restores is taken back
-    /// first.
     pub fn take_back<R: Runtime>(&self, pager: &Pager<R>, undo: Undo) -> Result<(), Error> {
         let tid = undo.tid();
         let pid = Pid(tid.page());
