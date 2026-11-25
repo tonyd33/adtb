@@ -159,8 +159,9 @@ impl Model {
     /// Check routing `arms` over the rows of `sources` of type `t` against the products `made`,
     /// in the schema the operator gives with `sources` kept: `made` after the other
     /// constructors, every selection and reference to `sources` outside a check put to them,
-    /// with `whole` as the operator's, and the arms of `given` in the bodies, checked whole.
-    /// `built` resolves the declarations before the operator.
+    /// with `whole` as the operator's, the arms of `given` in the bodies, checked whole, and no
+    /// unique or index on a relation variable of `t`. `built` resolves the declarations before
+    /// the operator.
     ///
     /// Preconditions:
     /// - `made` are constructors of `t` that its body does not yet list.
@@ -187,6 +188,10 @@ impl Model {
         edits.extend(probe.reselect_rows(built, t, (sources, made), "the routing", whole)?);
         edits.extend(probe.arm_writes(run, built, t, (sources, &[]), given)?.0);
         probe.edit_decls(edits)?;
+        for (r, ..) in probe.rels_of(built, t) {
+            let rel = probe.relations.get_mut(&r).expect("a relation variable");
+            rel.clauses.retain(|c| !matches!(c, ClauseM::Index { .. }));
+        }
         let compiled = probe.checked_without_dependents(run)?;
         let schema = compiled.schema();
         let def = def_in(schema, t);

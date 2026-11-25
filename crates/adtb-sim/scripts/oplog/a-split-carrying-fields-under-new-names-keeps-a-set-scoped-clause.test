@@ -1,0 +1,49 @@
+# A split whose routing carries each field of its constructor under a new name takes an index in a
+# named set holding that constructor to the new name, keeping its id; its revert restores it.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: I64, x: Text } | B { k: Text }
+  add relation ts : T key id generate sequence
+  add set S of ts = A
+  add index (n) in ts.S
+
+migrate
+  module ts
+  split constructor T.A into A9 { n2: I64, x2: Text }
+    by match
+      | A c -> A9 { n2: c.n, x2: c.x }
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id select { id: i.id, clause: i.clause, dropped: i.dropped }
+----
+{ clause: "index (n2) in A9", dropped: None, id: indexes.key(1025) }
+{ clause: "key id", dropped: None, id: indexes.key(1024) }
+
+run
+  insert ts.A9 { n2: 1, x2: "a" }
+
+query rowsort
+  from a in ts.S select { n: match a | A9 x -> x.n2 }
+----
+{ n: 1 }
+
+migrate
+  module ts
+  revert 0002
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id select { id: i.id, clause: i.clause, dropped: i.dropped }
+----
+{ clause: "index (n) in A", dropped: None, id: indexes.key(1025) }
+{ clause: "key id", dropped: None, id: indexes.key(1024) }
+
+query rowsort
+  from a in ts.S select { n: match a | A x -> x.n, x: match a | A x -> x.x }
+----
+{ n: 1, x: "a" }
