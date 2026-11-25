@@ -165,7 +165,9 @@ fn listed(files: &[(FileId, ast::SchemaFile)]) -> Vec<Named> {
                     push(&mut out, KeyKind::Constraint, module(), &c.name.text);
                 }
                 Decl::Store(s) => {
-                    let vn = &s.view.name.text;
+                    let Ok(vn) = s.function().map(|v| &v.text) else {
+                        continue;
+                    };
                     let Some(result) = fns.get(&(m.as_str(), vn.as_str())) else {
                         continue;
                     };

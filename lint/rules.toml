@@ -54,6 +54,12 @@ exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
 rows = { from_raw = "ratchet" }
 
 [[rule]]
+query = "store-operand.tql"
+include = ["crates/**/*.rs"]
+exclude = ["crates/adtb-lang/src/ast.rs"]
+rows = { store_operand = "zero" }
+
+[[rule]]
 query = "prelude.tql"
 include = ["crates/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]

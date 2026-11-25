@@ -353,7 +353,9 @@ pub fn objects(
                     }
                 }
                 Decl::Store(s) => {
-                    if let Some(&ValueDef::Function(f)) = values.get(&s.view.name.text) {
+                    if let Ok(vn) = s.function()
+                        && let Some(&ValueDef::Function(f)) = values.get(&vn.text)
+                    {
                         o.view_objects(files, *file, m, f, s);
                     }
                 }
@@ -431,7 +433,9 @@ impl Objects<'_> {
         f: FnId,
         s: &ast::StoreDecl,
     ) {
-        let vn = &s.view.name.text;
+        let Ok(vn) = s.function().map(|v| &v.text) else {
+            return;
+        };
         self.named(
             Slot::View(f),
             KeyKind::Relation,

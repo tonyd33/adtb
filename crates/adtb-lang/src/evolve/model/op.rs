@@ -834,7 +834,10 @@ impl<'a> Resolving<'a> {
             OperatorKind::DefineAggregate(a) => add(Kind::Aggregate, &a.name.text, a.span),
             OperatorKind::AddConstraint(c) => add(Kind::Constraint, &c.name.text, c.span),
             OperatorKind::AddCheck(c) => add(Kind::Check, &c.name.text, c.span),
-            OperatorKind::Store(s) => add(Kind::Store, &s.view.name.text, s.span),
+            OperatorKind::Store(s) => match s.function() {
+                Ok(f) => add(Kind::Store, &f.text, s.span),
+                Err(why) => refuse_at(s.view.span(), why),
+            },
             OperatorKind::RedefineFn(f) => {
                 match self.model.find(self.module, Kind::Fn, &f.name.text) {
                     Some(Item::Fn(function)) => Ok(Op::RedefineFn {

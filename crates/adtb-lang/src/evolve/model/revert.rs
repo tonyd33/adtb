@@ -960,7 +960,7 @@ fn decl_name(text: &str) -> Option<String> {
         ast::Decl::Aggregate(a) => a.name.text.clone(),
         ast::Decl::Constraint(c) => c.name.text.clone(),
         ast::Decl::Check(c) => c.name.text.clone(),
-        ast::Decl::Store(s) => s.view.name.text.clone(),
+        ast::Decl::Store(s) => s.written(),
     })
 }
 

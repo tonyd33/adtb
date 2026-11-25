@@ -1,0 +1,8 @@
+-- store_operand: a read of the name of a store's operand outside `StoreDecl::function` and
+-- `StoreDecl::written`, which refuse or print a qualified one.
+
+main = do {
+  e <- descendants_of_kind :field_expression;
+  guard $ text e ~ r"\.view\.name$";
+  return e;
+} | arr range;

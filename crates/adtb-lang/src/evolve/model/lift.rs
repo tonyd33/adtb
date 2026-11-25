@@ -461,7 +461,7 @@ impl<'a> Lifting<'a> {
     }
 
     fn store(&self, m: &mut Model, s: &ast::StoreDecl) -> Result<u64, String> {
-        let Some(ValueDef::Function(f)) = self.value(&s.view.name.text) else {
+        let Some(ValueDef::Function(f)) = self.value(&s.function()?.text) else {
             return Err(missing("a stored view's function"));
         };
         let view = self.id(Slot::View(f))?;
@@ -500,7 +500,7 @@ impl<'a> Lifting<'a> {
             view,
             StoreM {
                 function,
-                written: s.view.name.text.clone(),
+                written: s.written(),
                 rest: self.term(Span::new(s.view.span().end as usize, s.span.end as usize)),
                 ids: held,
             },

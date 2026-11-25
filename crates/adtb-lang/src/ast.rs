@@ -602,6 +602,28 @@ pub struct StoreDecl {
     pub span: Span,
 }
 
+impl StoreDecl {
+    /// Returns the function of the declaring module the stored view names, or the refusal of
+    /// an operand naming a module.
+    pub fn function(&self) -> Result<&Ident, String> {
+        match &self.view.module {
+            None => Ok(&self.view.name),
+            Some(m) => Err(format!(
+                "`store {}::{}` is refused: a stored view names a function of its own module, unqualified",
+                m.text, self.view.name.text
+            )),
+        }
+    }
+
+    /// Returns the operand as written.
+    pub fn written(&self) -> String {
+        match &self.view.module {
+            None => self.view.name.text.clone(),
+            Some(m) => format!("{}::{}", m.text, self.view.name.text),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AggregateDecl {
     pub name: Ident,

@@ -308,6 +308,9 @@ impl Builder<'_> {
     }
 
     fn store(&mut self, file: FileId, module: ModuleId, s: &ast::StoreDecl) {
+        if let Err(why) = s.function() {
+            return self.err(file, s.view.span(), why);
+        }
         match self.schema.lookup_value(module, &s.view) {
             Ok(ValueDef::Function(f)) => {
                 let def = &self.schema.functions[f.0 as usize];
@@ -322,10 +325,7 @@ impl Builder<'_> {
                     return self.err(
                         file,
                         s.view.span(),
-                        format!(
-                            "a stored view returns a `Set`; `{}` does not",
-                            s.view.name.text
-                        ),
+                        format!("a stored view returns a `Set`; `{}` does not", s.written()),
                     );
                 }
                 if def.stored.is_some() {
@@ -336,7 +336,7 @@ impl Builder<'_> {
             Ok(_) => self.err(
                 file,
                 s.view.span(),
-                format!("`{}` is not a function", s.view.name.text),
+                format!("`{}` is not a function", s.written()),
             ),
             Err(e) => self.err(file, s.view.span(), e),
         }

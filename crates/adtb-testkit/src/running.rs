@@ -121,7 +121,7 @@ pub fn decl_key(d: &Decl) -> (&'static str, String) {
         Decl::Fn(f) => ("fn", f.name.text.clone()),
         Decl::Constraint(c) => ("constraint", c.name.text.clone()),
         Decl::Check(c) => ("check", c.name.text.clone()),
-        Decl::Store(s) => ("store", s.view.name.text.clone()),
+        Decl::Store(s) => ("store", s.written()),
         Decl::Aggregate(a) => ("aggregate", a.name.text.clone()),
     }
 }

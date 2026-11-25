@@ -1,0 +1,39 @@
+# `store` names an unqualified function of the migration's own module. A qualified operand is
+# refused naming it, whether or not the migration's module declares a function of that name.
+seed 1
+use empty
+
+migrate
+  module other
+  add module other
+  define fn f () -> Set ({ a: Text }) = from x in ["p"] select { a: x }
+
+migrate
+  module auth
+  add module auth
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "store other::f", detail: "`store other::f` is refused: a stored view names a function of its own module, unqualified" } } }
+  module auth
+  store other::f
+
+migrate
+  module auth
+  define fn f () -> Set Text = from x in ["q"] select x
+
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "store other::f", detail: "`store other::f` is refused: a stored view names a function of its own module, unqualified" } } }
+  module auth
+  store other::f
+
+migrate
+  module auth
+  store f
+
+query rowsort
+  from r in catalog::relations where r.name == "f" select { m: r.module, kind: r.kind }
+----
+{ kind: Stored, m: "auth" }
+
+query rowsort
+  auth::f()
+----
+"q"
