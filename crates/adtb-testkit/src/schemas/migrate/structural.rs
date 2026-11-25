@@ -35,6 +35,9 @@ impl Model {
             None => *rng.pick_some(&can)?,
         };
         let wrong = broke && shape.is_none();
+        if !broke && shape.is_none() && self.version % 3 == 1 && self.renamable(i, c) {
+            return Some(self.renamed_split(rng, (i, c)));
+        }
         let mut out = if broke { Vec::new() } else { self.seeded(i, c) };
         let steer = self.unique_alone(i, c);
         let path = self.ctor_path(i, c);
@@ -143,6 +146,7 @@ impl Model {
             ctor: src.name.clone(),
             flag: (products > 1).then(|| src.fields[products - 2].name.clone()),
             products: names,
+            renamed: Vec::new(),
         };
         let states = vec![state; made.len()];
         let unbuilt =
@@ -150,6 +154,87 @@ impl Model {
         self.replace(i, &[c], made, states);
         out.push(op(Kind::Split, text).with(effect).reaching(unbuilt));
         Some(out)
+    }
+
+    /// Returns a split of constructor `c` of relation `i` into one product carrying each field
+    /// under a fresh name, after an `add field` of a tag naming `c` on half its draws, applying
+    /// them to the model.
+    fn renamed_split(&mut self, rng: &mut Rng, (i, c): (usize, usize)) -> Vec<Op> {
+        let mut out: Vec<Op> = self.tag_of(rng, i, &[c], false).into_iter().collect();
+        let path = self.ctor_path(i, c);
+        let name = self.ctor_name(i);
+        let src = self.rel(i).ctors[c].clone();
+        let renamed: Vec<(String, String)> = src
+            .fields
+            .iter()
+            .map(|f| (f.name.clone(), self.field_name(i)))
+            .collect();
+        let fields: Vec<Field> = src
+            .fields
+            .iter()
+            .zip(&renamed)
+            .map(|(f, (_, to))| Field {
+                name: to.clone(),
+                ..f.clone()
+            })
+            .collect();
+        let decls: Vec<String> = fields
+            .iter()
+            .map(|f| self.s.field_decl(self.rel(i), f))
+            .collect();
+        let carry: Vec<String> = renamed
+            .iter()
+            .map(|(from, to)| format!("{to}: c.{from}"))
+            .collect();
+        let text = format!(
+            "split constructor {path} into {name} {{ {} }}\n  by match\n    | {} c -> {name} {{ {} }}",
+            decls.join(", "),
+            src.name,
+            carry.join(", ")
+        );
+        let r = &mut self.s.rels[i];
+        for k in r.uniques.iter_mut().chain(&mut r.indexes) {
+            if let Some((_, to)) = renamed.iter().find(|(from, _)| *from == k.field) {
+                k.field.clone_from(to);
+            }
+        }
+        let effect = Effect::Split {
+            rel: r.name.clone(),
+            ty: r.ty.clone(),
+            ctor: src.name,
+            flag: None,
+            products: vec![name.clone()],
+            renamed,
+        };
+        let state = r.states[c];
+        let made = Ctor { name, fields };
+        self.replace(i, &[c], vec![made], vec![state]);
+        out.push(
+            op(Kind::Split, text)
+                .with(effect)
+                .reaching(Some(Reach::RenamedCarry)),
+        );
+        out
+    }
+
+    /// Returns whether a split of constructor `c` of relation `i` may carry each field under a
+    /// new name: no default, check or constraint names a field of `c`, and every unique or
+    /// index naming a field of `c` is scoped to `c` alone.
+    fn renamable(&self, i: usize, c: usize) -> bool {
+        let r = self.rel(i);
+        let own = |f: &str| r.ctors[c].field(f).is_some();
+        let alone = |k: &Clause| !own(&k.field) || k.ctors.as_deref() == Some(&[c][..]);
+        !r.ctors[c].fields.is_empty()
+            && r.uniques.iter().chain(&r.indexes).all(alone)
+            && r.checks
+                .iter()
+                .all(|k| k.ctors.as_ref().is_some_and(|cs| !cs.contains(&c)))
+            && r.defaults.iter().all(|(d, _, _)| *d != c)
+            && self
+                .s
+                .constraints
+                .iter()
+                .all(|k| k.rel != i || !k.ctors.contains(&c))
     }
 
     /// Returns whether a unique of relation `i` is scoped to constructor `c` alone.

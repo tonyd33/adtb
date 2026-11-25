@@ -88,6 +88,8 @@ pub(super) enum Effect {
         ctor: String,
         flag: Option<String>,
         products: Vec<String>,
+        /// Each field of `ctor` the routing carries under another name, with that name.
+        renamed: Vec<(String, String)>,
     },
     /// Rows of each source go to `product`, `field` holding the nullary constructor at the
     /// source's position among `sources`.
@@ -190,6 +192,18 @@ impl Effect {
 
     /// Take `field`, of constructors `cs` of relation `rel`, to the name this effect gives it.
     pub(super) fn rename_field(&self, rel: &str, cs: &BTreeSet<String>, field: &mut String) {
+        if let Effect::Split {
+            rel: r,
+            ctor,
+            renamed,
+            ..
+        } = self
+            && r == rel
+            && cs.contains(ctor)
+            && let Some((_, to)) = renamed.iter().find(|(from, _)| from == field)
+        {
+            to.clone_into(field);
+        }
         if let Effect::RenameField {
             rel: r,
             ctor,
@@ -282,6 +296,7 @@ impl Effect {
                 ctor,
                 flag,
                 products,
+                renamed,
                 ..
             } => {
                 if let [product] = products.as_slice() {
@@ -300,6 +315,13 @@ impl Effect {
                         }
                         None => &products[0],
                     };
+                    let mut moved: Vec<(String, Value)> = Vec::new();
+                    for (from, into) in renamed {
+                        if let Some(v) = fs.remove(from) {
+                            moved.push((into.clone(), v));
+                        }
+                    }
+                    fs.extend(moved);
                     (to.clone(), fs)
                 })?;
             }

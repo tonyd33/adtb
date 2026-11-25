@@ -241,6 +241,9 @@ fn carried_by_name(
 struct Rewrite {
     gone: BTreeSet<usize>,
     rescoped: Vec<(usize, Vec<Term>)>,
+    /// The clauses that keep their scope and id, by position, with their elements over the
+    /// merged constructor.
+    carried: Vec<(usize, Vec<Term>)>,
     added: Vec<ClauseM>,
 }
 
@@ -345,6 +348,11 @@ impl Model {
         let rels: Vec<u64> = rewrites.keys().copied().collect();
         for (r, w) in rewrites {
             let rel = self.relations.get_mut(&r).expect("a relation variable");
+            for (at, carried) in w.carried {
+                if let ClauseM::Index { elems, .. } = &mut rel.clauses[at] {
+                    *elems = carried;
+                }
+            }
             for (at, parts) in w.rescoped {
                 if let ClauseM::Index { id, scope, was, .. } = &mut rel.clauses[at] {
                     Model::reimage(id, was);
@@ -541,15 +549,14 @@ impl Model {
                     "`{shown}` ranges over some but not all of the merged constructors and has no image under the merge"
                 ));
             }
-            let parts = match cl.rescoped {
-                Some(parts) => parts,
-                None if fields == cl.elems => continue,
-                None => match &self.relations[&cl.relation].clauses[cl.at] {
-                    ClauseM::Index { scope: Some(s), .. } => s.parts.clone(),
-                    _ => return broken("a scoped clause without a scope"),
-                },
+            let Some(elems) = self.product_elems(t, (cl.relation, cl.at), &fields, &[c]) else {
+                return broken("the merged constructor holds each field the routing carries to it");
             };
             let w = out.entry(cl.relation).or_default();
+            let Some(parts) = cl.rescoped else {
+                w.carried.push((cl.at, elems));
+                continue;
+            };
             if fields == cl.elems {
                 w.rescoped.push((cl.at, parts));
                 continue;
@@ -559,7 +566,7 @@ impl Model {
                 id: None,
                 was: cl.id.into_iter().collect(),
                 kind: cl.kind,
-                elems: fields.iter().map(|f| Term::text(f)).collect(),
+                elems,
                 scope: Some(Scope {
                     listed: parts.len() > 1,
                     parts,

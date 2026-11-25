@@ -274,6 +274,17 @@ impl Term {
             .copied()
     }
 
+    /// Returns the objects each name of the term holds, a name at a time.
+    pub(super) fn held_names(&self) -> Vec<&[Obj]> {
+        self.0
+            .iter()
+            .filter_map(|p| match p {
+                Piece::Name { ids, .. } => Some(ids.as_slice()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Hold each name of an object `map` maps by the object it maps it to.
     pub(super) fn remap(&mut self, map: &BTreeMap<Obj, Obj>) {
         for p in &mut self.0 {
@@ -404,6 +415,21 @@ impl Term {
         if from < range.end {
             self.0.push(Piece::Text(text[from..range.end].to_string()));
         }
+    }
+
+    /// Returns the term with its first name held by `ids` and written `written`, `None` when it
+    /// holds no name.
+    pub(in crate::evolve) fn with_head(mut self, ids: Vec<Obj>, written: &str) -> Option<Term> {
+        let head = self
+            .0
+            .iter_mut()
+            .find(|p| matches!(p, Piece::Name { .. }))?;
+        *head = Piece::Name {
+            ids,
+            written: written.to_string(),
+            pun: false,
+        };
+        Some(self)
     }
 
     /// Returns the term with each name held by id `id` of `space` also held by id `also` of it.

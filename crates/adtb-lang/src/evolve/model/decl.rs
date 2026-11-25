@@ -674,6 +674,7 @@ impl Model {
                     );
                 }
                 self.schema_now(run)?;
+                self.one_field_per_element(id)?;
                 self.fields.get_mut(&id).expect("the field").name = to.clone();
                 Resolved::RenameField {
                     field: id,
@@ -683,6 +684,55 @@ impl Model {
             _ => return broken("a rename of this kind of object"),
         };
         Ok((resolved, Vec::new()))
+    }
+
+    /// Refuse renaming field `f` when a clause names it together with a field of another
+    /// constructor as one element: the rename would split that element in two.
+    fn one_field_per_element(&self, f: u64) -> Res<()> {
+        let owner = self.fields[&f].owner;
+        let others = |held: &mut dyn Iterator<Item = u64>| -> Vec<u64> {
+            let fs: Vec<u64> = held.collect();
+            if !fs.contains(&f) {
+                return Vec::new();
+            }
+            fs.into_iter()
+                .filter_map(|x| Some(self.fields.get(&x)?.owner))
+                .filter(|&o| o != owner && self.ctors.contains_key(&o))
+                .collect()
+        };
+        for rel in self.relations.values() {
+            for c in &rel.clauses {
+                let elems: Vec<Vec<u64>> = match c {
+                    ClauseM::Index { elems: ts, .. } | ClauseM::Key { fields: ts, .. } => ts
+                        .iter()
+                        .flat_map(Term::held_names)
+                        .map(|n| {
+                            n.iter()
+                                .filter(|o| o.0 == Space::Field)
+                                .map(|o| o.1)
+                                .collect()
+                        })
+                        .collect(),
+                    ClauseM::Default { .. } | ClauseM::Computed { .. } | ClauseM::Volatile => {
+                        Vec::new()
+                    }
+                };
+                for e in elems {
+                    let shared = others(&mut e.into_iter());
+                    if let Some(o) = shared.first() {
+                        return refuse(format!(
+                            "`{}` of `{}` names `{}` of `{}` and of `{}` as one element",
+                            self.clause_text(c),
+                            rel.name,
+                            self.fields[&f].name,
+                            self.ctors[&owner].name,
+                            self.ctors[o].name
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn stage(

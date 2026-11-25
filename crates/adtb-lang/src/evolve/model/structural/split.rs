@@ -68,6 +68,9 @@ struct Rewrites {
     clauses_of: BTreeMap<u64, (BTreeSet<usize>, Vec<Added>)>,
     replaced_at: BTreeMap<u64, Vec<usize>>,
     rescoped: Vec<(u64, usize, Vec<Term>)>,
+    /// The clauses that keep their scope and id, by relation variable and position, with their
+    /// elements over the products.
+    carried: Vec<(u64, usize, Vec<Term>)>,
 }
 
 /// A split of constructor `ctor`, named `source`, into `products`, whose fields `shapes` gives.
@@ -103,17 +106,6 @@ impl Image<'_> {
             };
             self.shapes.iter().find(|s| !keeps(s)).map(|(p, _)| (f, p))
         })
-    }
-
-    /// Returns whether every product keeps element `f` under its name.
-    fn kept(&self, f: &str) -> bool {
-        let head = element_head(f).0;
-        self.is_header(f)
-            || self.products.iter().all(|p| {
-                self.carries
-                    .iter()
-                    .any(|(x, y, q, z)| *x == self.source && y == head && q == p && z == head)
-            })
     }
 
     /// Returns `elems` as product `p` holds them, `None` when it keeps not every one.
@@ -459,6 +451,10 @@ impl Model {
     ) -> Res<Rewrites> {
         let mut out = Rewrites::default();
         let (c, source, carries) = (image.ctor, &image.source, image.carries);
+        let product_id = |n: &String| {
+            let at = image.products.iter().position(|p| p == n);
+            made[at.expect("a product of the split")]
+        };
         for cl in self.scoped(built, t, &[c], made) {
             out.clauses_of.entry(cl.relation).or_default();
             let Some(reached) = &cl.reached else { continue };
@@ -485,6 +481,7 @@ impl Model {
                 }
                 continue;
             }
+            let written = sel_text(&self.scope_written(cl.relation, cl.at));
             let lost = cl.elems.iter().rev().find(|f| {
                 let head = element_head(f).0;
                 !image.is_header(f) && !carries.iter().any(|(x, y, _, _)| x == source && y == head)
@@ -493,10 +490,16 @@ impl Model {
                 && replacements.is_empty()
             {
                 return refuse(format!(
-                    "`{shown} in {source}` names `{f}`, which no new constructor keeps; state its replacements after the routing"
+                    "`{shown} in {written}` names `{f}`, which no new constructor keeps; state its replacements after the routing"
                 ));
             }
-            if cl.rescoped.is_none() && cl.elems.iter().all(|f| image.kept(f)) {
+            if cl.rescoped.is_none() {
+                let Some(elems) = self.carried_elems(t, (cl.relation, cl.at), image, made) else {
+                    return refuse(format!(
+                        "`{shown} in {written}` has no image under the split: its products do not hold its elements under one name"
+                    ));
+                };
+                out.carried.push((cl.relation, cl.at, elems));
                 continue;
             }
             let entry = out.clauses_of.entry(cl.relation).or_default();
@@ -519,7 +522,7 @@ impl Model {
                     .collect(),
                 _ => {
                     return refuse(format!(
-                        "`{shown} in {source}` has no image under the split: its products do not hold its elements under one name"
+                        "`{shown} in {written}` has no image under the split: its products do not hold its elements under one name"
                     ));
                 }
             };
@@ -534,9 +537,31 @@ impl Model {
                 match entry.1.iter_mut().find(|(x, _)| *x == text) {
                     Some((_, ClauseM::Index { was: held, .. })) => held.extend(was),
                     Some(_) => {}
-                    None => entry
-                        .1
-                        .push((text, index_clause(cl.kind, &fs, &names, was))),
+                    None => {
+                        let ids: Vec<u64> = names.iter().map(&product_id).collect();
+                        let Some(elems) = self.product_elems(t, (cl.relation, cl.at), &fs, &ids)
+                        else {
+                            return broken("a product holds each field the routing carries to it");
+                        };
+                        let scope = Scope {
+                            parts: ids
+                                .iter()
+                                .zip(&names)
+                                .map(|(&p, n)| Term::name((Space::Shared, p), n))
+                                .collect(),
+                            listed: names.len() > 1,
+                        };
+                        entry.1.push((
+                            text,
+                            ClauseM::Index {
+                                id: None,
+                                was,
+                                kind: cl.kind,
+                                elems,
+                                scope: Some(scope),
+                            },
+                        ));
+                    }
                 }
             }
         }
@@ -552,6 +577,12 @@ impl Model {
             .copied()
             .chain(rw.rescoped.iter().map(|r| r.0))
             .collect();
+        for (r, at, carried) in rw.carried {
+            let rel = self.relations.get_mut(&r).expect("a relation variable");
+            if let ClauseM::Index { elems, .. } = &mut rel.clauses[at] {
+                *elems = carried;
+            }
+        }
         for (r, at, parts) in rw.rescoped {
             let rel = self.relations.get_mut(&r).expect("a relation variable");
             if let ClauseM::Index { id, scope, was, .. } = &mut rel.clauses[at] {
@@ -623,6 +654,28 @@ impl Model {
             });
         }
         Ok(out)
+    }
+
+    /// Returns the elements of clause `at` of relation variable `r` of type `t` over the split's
+    /// products `made`, each held by the field of every product the routing carries the
+    /// source's field to; `None` when the products do not hold them under one name.
+    fn carried_elems(
+        &self,
+        t: u64,
+        (r, at): (u64, usize),
+        image: &Image,
+        made: &[u64],
+    ) -> Option<Vec<Term>> {
+        let ClauseM::Index { elems, .. } = &self.relations[&r].clauses[at] else {
+            return None;
+        };
+        let printed: Vec<String> = elems.iter().map(|e| e.print(self)).collect();
+        let mut images = image.products.iter().map(|p| image.image(&printed, p));
+        let first = images.next()??;
+        if images.any(|x| x.as_ref() != Some(&first)) {
+            return None;
+        }
+        self.product_elems(t, (r, at), &first, made)
     }
 
     /// Returns the scope of clause `at` of relation variable `r` as written.

@@ -10,7 +10,7 @@ use crate::ast::{self, CtorSel};
 use crate::check::{self, Ref};
 use crate::evolve::RowFn;
 use crate::evolve::carry::{self, Carry, Plan, Structural};
-use crate::evolve::ctor::Carries;
+use crate::evolve::ctor::{Carries, element_head};
 use crate::schema::{Schema, Stage};
 use crate::span::FileId;
 use crate::types::TypeId;
@@ -193,6 +193,41 @@ impl Model {
             rel.clauses = out;
         }
         Ok(())
+    }
+
+    /// Returns the elements of clause `at` of relation variable `r` of type `t` as the
+    /// constructors `made` hold them, each written as in `fs`: a header element as it is, any
+    /// other held by the field of its name of each of `made`. `None` when one has no such field.
+    pub(super) fn product_elems(
+        &self,
+        t: u64,
+        (r, at): (u64, usize),
+        fs: &[String],
+        made: &[u64],
+    ) -> Option<Vec<Term>> {
+        let ClauseM::Index { elems, .. } = &self.relations[&r].clauses[at] else {
+            return None;
+        };
+        let header = self.header_names(t);
+        elems
+            .iter()
+            .zip(fs)
+            .map(|(e, f)| {
+                let (head, rest) = element_head(f);
+                if header.iter().any(|h| h == head) {
+                    return Some(e.clone());
+                }
+                let ids: Vec<Obj> = made
+                    .iter()
+                    .map(|&p| Some((Space::Field, self.field_of(t, Some(p), head)?)))
+                    .collect::<Option<_>>()?;
+                Some(
+                    e.clone().with_head(ids.clone(), head).unwrap_or_else(|| {
+                        Term::concat([Term::names(ids, head), Term::text(rest)])
+                    }),
+                )
+            })
+            .collect()
     }
 
     /// Refuse as the operator `what` replacing the constructors `sources` of type `t` a unique

@@ -185,10 +185,16 @@ pub enum Reach {
     TransientLossySplit,
     /// A merge dropping a field, of constructors of a type the migration adds and drops.
     TransientLossyMerge,
+
+    /// A broken `rename field` of a field a unique or index names together with the field of
+    /// that name of another constructor.
+    SharedElementRenamed,
+    /// A split whose routing carries each field of its constructor under a new name.
+    RenamedCarry,
 }
 
 impl Reach {
-    pub const ALL: [Reach; 13] = [
+    pub const ALL: [Reach; 15] = [
         Reach::MergeAcrossStages,
         Reach::MovedDownAction,
         Reach::ArmLater,
@@ -202,6 +208,8 @@ impl Reach {
         Reach::TransientMoveDown,
         Reach::TransientLossySplit,
         Reach::TransientLossyMerge,
+        Reach::SharedElementRenamed,
+        Reach::RenamedCarry,
     ];
 
     /// Returns whether the shape is an operator whose inverse refuses while it is built, on a

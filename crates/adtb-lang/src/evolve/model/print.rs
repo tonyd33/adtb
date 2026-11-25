@@ -249,6 +249,13 @@ impl Model {
         }
     }
 
+    /// Returns clause `c` as written.
+    pub(super) fn clause_text(&self, c: &ClauseM) -> String {
+        let mut out = Printed::default();
+        self.print_clause(c, &mut out);
+        out.text
+    }
+
     fn print_clause(&self, c: &ClauseM, out: &mut Printed) {
         match c {
             ClauseM::Key {

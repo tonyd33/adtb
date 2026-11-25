@@ -1,0 +1,72 @@
+# A split takes the elements of a clause naming no replaced constructor to the fields its carry
+# maps them to, keeping the clause's id and written scope; its revert restores both. A clause
+# whose elements the products hold under different names is refused naming the clause.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { x: Text, y: Text } | B { x: Text }
+  add relation ts : T key id generate sequence
+  add set S of ts = A
+  add index (y) in ts.S
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id select { id: i.id, clause: i.clause, dropped: i.dropped }
+----
+{ clause: "index (y) in A", dropped: None, id: indexes.key(1025) }
+{ clause: "key id", dropped: None, id: indexes.key(1024) }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "split constructor T.A into A1 { x: Text, y: Text } | A2 { x: Text, y: Text }", detail: "`index (y) in S` has no image under the split: its products do not hold its elements under one name" } } }
+  module ts
+  split constructor T.A into A1 { x: Text, y: Text } | A2 { x: Text, y: Text }
+    by match
+      | A { x, y } -> A1 { x: y, y: x }
+
+migrate
+  module ts
+  split constructor T.A into A1 { x: Text, y: Text }
+    by match
+      | A { x, y } -> A1 { x: y, y: x }
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id select { id: i.id, clause: i.clause, dropped: i.dropped }
+----
+{ clause: "index (x) in A1", dropped: None, id: indexes.key(1025) }
+{ clause: "key id", dropped: None, id: indexes.key(1024) }
+
+query rowsort
+  from s in catalog::named_sets, m in catalog::set_members, c in catalog::constructors
+    where m.set == s.id and m.ctor == c.id and s.dropped == None select { s: s.name, c: c.name }
+----
+{ c: "A1", s: "S" }
+
+migrate
+  module ts
+  revert 0002
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id select { id: i.id, clause: i.clause, dropped: i.dropped }
+----
+{ clause: "index (y) in A", dropped: None, id: indexes.key(1025) }
+{ clause: "key id", dropped: None, id: indexes.key(1024) }
+
+migrate
+  module ts
+  split constructor T.A into A1 { x: Text, y: Text }
+    by match
+      | A { x, y } -> A1 { x: y, y: x }
+
+migrate
+  module ts
+  drop index (x) in ts.S
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id select { id: i.id, clause: i.clause, dropped: i.dropped }
+----
+{ clause: "key id", dropped: None, id: indexes.key(1024) }

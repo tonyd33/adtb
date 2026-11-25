@@ -1,0 +1,39 @@
+# Renaming a constructor's field is refused, naming the clause, when a clause names that field
+# and the field of another constructor as one element.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { z: Text } | B { z: Text }
+  add relation ts : T key id generate sequence
+  add set S of ts = A | B
+  add index (z) in ts.S
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "rename field T.A.z to z9", detail: "`index (z) in S` of `ts` names `z` of `A` and of `B` as one element" } } }
+  module ts
+  rename field T.A.z to z9
+
+migrate
+  module ts
+  add index (z) in ts.A
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "rename field T.A.z to z9", detail: "`index (z) in S` of `ts` names `z` of `A` and of `B` as one element" } } }
+  module ts
+  rename field T.A.z to z9
+
+migrate
+  module ts
+  drop index (z) in ts.S
+
+migrate
+  module ts
+  rename field T.A.z to z9
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id select { clause: i.clause, dropped: i.dropped }
+----
+{ clause: "index (z9) in A", dropped: None }
+{ clause: "key id", dropped: None }

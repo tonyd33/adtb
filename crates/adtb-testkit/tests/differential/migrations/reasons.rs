@@ -51,7 +51,11 @@ fn broken(kind: Kind) -> &'static [&'static str] {
             "the field of `*` holds no declared sum",
             "the field of `*` holds no declared sum without a header and parameters",
         ],
-        Kind::AddField | Kind::RenameField => &["`*` already has a field `*`"],
+        Kind::AddField => &["`*` already has a field `*`"],
+        Kind::RenameField => &[
+            "`*` already has a field `*`",
+            "`*` of `*` names `*` of `*` and of `*` as one element",
+        ],
         Kind::DropField | Kind::MoveFieldDown | Kind::AddDefault => &["`*` has no field `*`"],
         Kind::MoveFieldUp => &["`*` already has a field `*`; the header cannot take it"],
         Kind::AlterField => &["`on delete` is allowed only on a `Key` field or an `Option` of one"],

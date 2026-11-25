@@ -654,8 +654,12 @@ keeps its rows, keys, indexes, constraints and grants; a renamed field
 keeps its values and grants. Every schema object naming the renamed
 object is rewritten. A rename is refused when the new name is already
 taken in its scope (the module for types and relations, the relation
-variable for sets, the constructor or header for fields). Bundles
-pinned before the rename keep the old name at their version (§7).
+variable for sets, the constructor or header for fields). Renaming a
+constructor's field is refused when a key, unique or index names that
+field and a field of another constructor as one element, as
+`index (z) in S` does over `A.z` and `B.z`; the refusal names the
+clause. Bundles pinned before the rename keep the old name at their
+version (§7).
 
 ### 4.6 Split a constructor
 

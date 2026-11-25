@@ -191,6 +191,11 @@ impl Model {
         if self.retag_target(i, c) {
             return None;
         }
+        if self.version % 4 < 2
+            && let Some(ops) = self.shared_field(i, c)
+        {
+            return Some(ops);
+        }
         let name = self.field_name(i);
         let tagged: Vec<usize> = (0..self.s.rels.len())
             .filter(|&j| j != i && self.rel(j).sum && !self.rel(j).enabled().is_empty())
@@ -301,10 +306,87 @@ impl Model {
         Some(vec![op(Kind::DropField, text).with(effect)])
     }
 
+    /// Returns a broken `rename field` of one of `fields` that a unique or index names together
+    /// with the field of its name of another constructor.
+    fn shared_rename(&mut self, fields: &[(usize, usize, Field)]) -> Option<Vec<Op>> {
+        let (j, d, g) = fields
+            .iter()
+            .find(|(j, d, g)| {
+                let r = self.rel(*j);
+                r.uniques.iter().chain(&r.indexes).any(|k| {
+                    k.field == g.name
+                        && k.ctors
+                            .as_ref()
+                            .is_none_or(|cs| cs.len() > 1 && cs.contains(d))
+                }) && r.ctors.len() > 1
+            })?
+            .clone();
+        let path = self.field_path(j, Some(d), &g.name);
+        let to = self.field_name(j);
+        let text = format!("rename field {path} to {to}");
+        Some(vec![
+            broken(Kind::RenameField, text).reaching(Some(Reach::SharedElementRenamed)),
+        ])
+    }
+
+    /// Returns an `add field` to constructor `c` of sum relation `i` of an integer or text field
+    /// of the name and type of one another constructor holds, then an index over every
+    /// constructor holding it, adding both to the model.
+    fn shared_field(&mut self, i: usize, c: usize) -> Option<Vec<Op>> {
+        let r = self.rel(i);
+        if !r.sum {
+            return None;
+        }
+        let f = r
+            .ctors
+            .iter()
+            .flat_map(|k| &k.fields)
+            .find(|f| {
+                matches!(f.ty, Ty::Int | Ty::Text)
+                    && r.ctors[c].field(&f.name).is_none()
+                    && r.header.iter().all(|h| h.name != f.name)
+            })?
+            .clone();
+        let text = format!(
+            "add field {}: {} fill {}",
+            self.field_path(i, Some(c), &f.name),
+            self.s.ty_name(&f.ty),
+            literal(&f.ty, false),
+        );
+        let effect = Effect::AddField {
+            rel: r.name.clone(),
+            ctor: Some(r.ctors[c].name.clone()),
+            field: f.name.clone(),
+            value: literal_value(&f.ty, false),
+        };
+        self.s.rels[i].ctors[c]
+            .fields
+            .push(Field::new(&f.name, f.ty.clone()));
+        let r = self.rel(i);
+        let holding = r.holding(&f.name, &f.ty);
+        let index = format!("add index ({}) in {}", f.name, r.target(Some(&holding)));
+        self.s.rels[i].indexes.push(Clause {
+            field: f.name,
+            ctors: Some(holding),
+            name: String::new(),
+        });
+        Some(vec![
+            op(Kind::AddField, text).with(effect),
+            op(Kind::AddIndex, index),
+        ])
+    }
+
     pub(super) fn rename_field(&mut self, rng: &mut Rng, broke: bool) -> Option<Vec<Op>> {
         let fields = self.own_fields();
         let (i, c, f) = rng.pick_some(&fields)?.clone();
         let path = self.field_path(i, Some(c), &f.name);
+        if broke
+            && self.version % 4 < 2
+            && let Some(ops) = self.shared_rename(&fields)
+        {
+            return Some(ops);
+        }
+
         if broke {
             let r = self.rel(i);
             let taken = r.ctors[c]
