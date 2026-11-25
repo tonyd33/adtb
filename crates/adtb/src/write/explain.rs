@@ -4,7 +4,7 @@
 use adtb_lang::kernel::{Kind, Tm};
 use adtb_lang::types::{RelId, Ty};
 
-use crate::plan::explain::{Arm, Describe, Node, ctor_name};
+use crate::plan::explain::{Arm, Describe, Node, ctor_of};
 use crate::runtime::Runtime;
 
 use super::delta::CheckPlan;
@@ -115,9 +115,10 @@ impl<R: Runtime> Stmt<'_, R> {
                 let mut n = Node::new("Route by constructor", "", Vec::new());
                 for (c, _, w) in arms {
                     let child = self.write_node(d, w);
+                    let (ctor, name) = ctor_of(self.schema(), &ty, c);
                     n.arms.push(Arm {
-                        ctor: c,
-                        name: ctor_name(self.schema(), &ty, c),
+                        ctor,
+                        name,
                         child: child?,
                     });
                 }

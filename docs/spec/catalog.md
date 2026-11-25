@@ -1655,10 +1655,13 @@ empty. Each replan adds a row and marks the previous one
 - Each node is an object with a member `"kind"` naming its operator,
   `"estimate"` its estimated rows, and `"children"` an array of nodes.
 - A routing node has an array `"arms"` of objects, each with members
-  `"ctor"` (the constructor id), `"name"` and `"child"`.
+  `"ctor"`, `"name"` and `"child"`.
 - Every read of a sum has an array `"pruned"` of objects with members
   `"ctor"`, `"name"` and `"stage"`, whose value is `"compile"` or
   `"start"`.
+- `"ctor"` is the constructor's catalog id, as `catalog::constructors`
+  holds it. A constructor with no catalog id, such as one of an
+  anonymous sum, has no `"ctor"` member.
 - Under `explain analyze`, each node has a member `"actual"` with
   members `"rows"`, `"loops"`, `"time_us"` and `"storage"`, the last
   an implementation-defined string.

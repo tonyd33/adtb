@@ -23,7 +23,7 @@ scripts/probes/plan-values.test:57: the plan differs at `.root.children[0].arms[
   actual:   nothing
 scripts/probes/plan-values.test:69: the plan differs at `.root.children[0].arms`
   expected: [{"child":{},"name":"EmailPass"},{"child":{},"name":"Google"}]
-  actual:   [{"child":{"children":[{"children":[],"detail":"","estimate":null,"kind":"Emit","pruned":[]}],"detail":"","estimate":null,"kind":"Chain","pruned":[]},"ctor":0,"name":"EmailPass"},{"child":{"children":[{"children":[],"detail":"","estimate":null,"kind":"Emit","pruned":[]}],"detail":"","estimate":null,"kind":"Chain","pruned":[]},"ctor":1,"name":"Google"},{"child":{"children":[{"children":[],"detail":"","estimate":null,"kind":"Emit","pruned":[]}],"detail":"","estimate":null,"kind":"Chain","pruned":[]},"ctor":2,"name":"Apple"}]
+  actual:   [{"child":{"children":[{"children":[],"detail":"","estimate":null,"kind":"Emit","pruned":[]}],"detail":"","estimate":null,"kind":"Chain","pruned":[]},"ctor":1028,"name":"EmailPass"},{"child":{"children":[{"children":[],"detail":"","estimate":null,"kind":"Emit","pruned":[]}],"detail":"","estimate":null,"kind":"Chain","pruned":[]},"ctor":1029,"name":"Google"},{"child":{"children":[{"children":[],"detail":"","estimate":null,"kind":"Emit","pruned":[]}],"detail":"","estimate":null,"kind":"Chain","pruned":[]},"ctor":1030,"name":"Apple"}]
 scripts/probes/plan-values.test:80: the plan differs at `.root.actual.rows`
   expected: 3
   actual:   2

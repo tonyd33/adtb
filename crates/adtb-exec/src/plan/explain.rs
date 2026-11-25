@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
+use adtb_lang::ids::CatCtorId;
 use adtb_lang::kernel::Agg;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
@@ -34,7 +35,7 @@ pub struct Node {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Arm {
-    pub ctor: u32,
+    pub ctor: Option<CatCtorId>,
     pub name: String,
     pub child: Node,
 }
@@ -42,7 +43,7 @@ pub struct Arm {
 /// A constructor a read leaves out, and whether types or parameters pruned it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pruned {
-    pub ctor: u32,
+    pub ctor: Option<CatCtorId>,
     pub name: String,
     pub at_start: bool,
 }
@@ -151,20 +152,18 @@ impl Node {
         ];
         if !self.arms.is_empty() {
             let arms = self.arms.iter().map(|a| {
-                object(&[
-                    ("ctor".to_string(), a.ctor.to_string()),
-                    ("name".to_string(), json_text(&a.name)),
-                    ("child".to_string(), a.child.json()),
-                ])
+                let mut members = ctor_member(a.ctor);
+                members.push(("name".to_string(), json_text(&a.name)));
+                members.push(("child".to_string(), a.child.json()));
+                object(&members)
             });
             members.push(("arms".to_string(), array(arms)));
         }
         let pruned = self.pruned.iter().map(|p| {
-            object(&[
-                ("ctor".to_string(), p.ctor.to_string()),
-                ("name".to_string(), json_text(&p.name)),
-                ("stage".to_string(), json_text(stage(p.at_start))),
-            ])
+            let mut members = ctor_member(p.ctor);
+            members.push(("name".to_string(), json_text(&p.name)));
+            members.push(("stage".to_string(), json_text(stage(p.at_start))));
+            object(&members)
         });
         members.push(("pruned".to_string(), array(pruned)));
         if !self.reads.is_empty() {
@@ -238,19 +237,33 @@ fn array(xs: impl Iterator<Item = String>) -> String {
     format!("[{}]", xs.collect::<Vec<_>>().join(", "))
 }
 
-/// Returns the name of constructor `c` of a value of type `ty`, or its number when the type
-/// is not a sum.
-pub fn ctor_name(schema: &Schema, ty: &Ty, c: u32) -> String {
-    let name = match crate::exec::types::repr(schema, ty) {
-        Ty::Data { def, .. } => schema
-            .ty(def)
-            .ctors()
-            .get(c as usize)
-            .map(|k| k.name.clone()),
-        Ty::Sum { ctors, .. } => ctors.get(c as usize).map(|(n, _)| n.clone()),
-        _ => None,
+/// Returns the `ctor` member of a constructor with catalog id `id`, none without one.
+fn ctor_member(id: Option<CatCtorId>) -> Vec<(String, String)> {
+    id.map(|c| ("ctor".to_string(), c.raw().to_string()))
+        .into_iter()
+        .collect()
+}
+
+/// Returns the catalog id and the name of constructor `c` of a value of type `ty`: no id for
+/// a constructor the catalog does not hold, and its number for a name when the type is not a
+/// sum.
+pub fn ctor_of(schema: &Schema, ty: &Ty, c: u32) -> (Option<CatCtorId>, String) {
+    let (id, name) = match crate::exec::types::repr(schema, ty) {
+        Ty::Data { def, .. } => (
+            schema
+                .ty(def)
+                .ctor_at(c)
+                .and_then(|k| schema.ids().ctor_id(k)),
+            schema
+                .ty(def)
+                .ctors()
+                .get(c as usize)
+                .map(|k| k.name.clone()),
+        ),
+        Ty::Sum { ctors, .. } => (None, ctors.get(c as usize).map(|(n, _)| n.clone())),
+        _ => (None, None),
     };
-    name.unwrap_or_else(|| format!("#{c}"))
+    (id, name.unwrap_or_else(|| format!("#{c}")))
 }
 
 /// The builder of the operators of plans over one schema and catalog.
@@ -327,12 +340,13 @@ impl<'a> Describe<'a> {
         )
     }
 
-    /// Returns the constructor name of `c` of relation `r`'s sum.
-    fn rel_ctor(&self, r: RelId, c: u32) -> String {
-        let rel = self.schema.relation(r);
-        self.schema.ty(rel.elem_def).ctors()[c as usize]
-            .name
-            .clone()
+    /// Returns the catalog id and the name of constructor `c` of relation `r`'s sum; no id when the
+    /// catalog does not hold it.
+    fn rel_ctor(&self, r: RelId, c: u32) -> (Option<CatCtorId>, String) {
+        let def = self.schema.relation(r).elem_def;
+        let ty = self.schema.ty(def);
+        let id = ty.ctor_at(c).and_then(|k| self.schema.ids().ctor_id(k));
+        (id, ty.ctors()[c as usize].name.clone())
     }
 
     fn eval(&self, plan: &Plan, e: &Eval) -> Node {
@@ -347,10 +361,13 @@ impl<'a> Describe<'a> {
                 let mut n = Node::new("Route by constructor", "", Vec::new());
                 n.arms = arms
                     .iter()
-                    .map(|(c, _, a)| Arm {
-                        ctor: *c,
-                        name: ctor_name(self.schema, ty, *c),
-                        child: self.eval(plan, a),
+                    .map(|(c, _, a)| {
+                        let (ctor, name) = ctor_of(self.schema, ty, *c);
+                        Arm {
+                            ctor,
+                            name,
+                            child: self.eval(plan, a),
+                        }
                     })
                     .collect();
                 n
@@ -361,10 +378,13 @@ impl<'a> Describe<'a> {
                 n.arms = l
                     .routes
                     .iter()
-                    .map(|(c, h)| Arm {
-                        ctor: *c,
-                        name: self.heap_ctor(*h, *c),
-                        child: Node::new("Fetch", self.heap(*h), Vec::new()),
+                    .map(|(c, h)| {
+                        let (ctor, name) = self.heap_ctor(*h, *c);
+                        Arm {
+                            ctor,
+                            name,
+                            child: Node::new("Fetch", self.heap(*h), Vec::new()),
+                        }
                     })
                     .collect();
                 n.pruned = self.pruned(l.index, l.routes.iter().map(|(c, _)| *c));
@@ -401,10 +421,10 @@ impl<'a> Describe<'a> {
         }
     }
 
-    fn heap_ctor(&self, h: HeapId, c: u32) -> String {
+    fn heap_ctor(&self, h: HeapId, c: u32) -> (Option<CatCtorId>, String) {
         match self.heaps.get(&h) {
             Some((r, _)) => self.rel_ctor(*r, c),
-            None => format!("#{c}"),
+            None => (None, format!("#{c}")),
         }
     }
 
@@ -418,10 +438,13 @@ impl<'a> Describe<'a> {
         let rel = self.schema.relation(*r);
         (0..self.schema.ty(rel.elem_def).ctors().len() as u32)
             .filter(|c| !routed.contains(c))
-            .map(|c| Pruned {
-                ctor: c,
-                name: self.rel_ctor(*r, c),
-                at_start: false,
+            .map(|c| {
+                let (ctor, name) = self.rel_ctor(*r, c);
+                Pruned {
+                    ctor,
+                    name,
+                    at_start: false,
+                }
             })
             .collect()
     }
@@ -480,10 +503,13 @@ impl<'a> Describe<'a> {
                 let mut n = Node::new("Route at start", "", Vec::new());
                 n.arms = arms
                     .iter()
-                    .map(|(c, _, a)| Arm {
-                        ctor: *c,
-                        name: ctor_name(self.schema, ty, *c),
-                        child: self.spine(plan, a),
+                    .map(|(c, _, a)| {
+                        let (ctor, name) = ctor_of(self.schema, ty, *c);
+                        Arm {
+                            ctor,
+                            name,
+                            child: self.spine(plan, a),
+                        }
                     })
                     .collect();
                 n
@@ -536,10 +562,13 @@ impl<'a> Describe<'a> {
                 let mut n = Node::new("Route by constructor", "", Vec::new());
                 n.arms = arms
                     .iter()
-                    .map(|(c, _, a)| Arm {
-                        ctor: *c,
-                        name: ctor_name(self.schema, ty, *c),
-                        child: chained(a),
+                    .map(|(c, _, a)| {
+                        let (ctor, name) = ctor_of(self.schema, ty, *c);
+                        Arm {
+                            ctor,
+                            name,
+                            child: chained(a),
+                        }
                     })
                     .collect();
                 n
@@ -561,10 +590,13 @@ impl<'a> Describe<'a> {
                 let mut n = Node::new(kind, detail, Vec::new());
                 n.arms = routes
                     .iter()
-                    .map(|r| Arm {
-                        ctor: r.ctor,
-                        name: self.heap_ctor(r.heap, r.ctor),
-                        child: chained(&r.chain),
+                    .map(|r| {
+                        let (ctor, name) = self.heap_ctor(r.heap, r.ctor);
+                        Arm {
+                            ctor,
+                            name,
+                            child: chained(&r.chain),
+                        }
                     })
                     .collect();
                 n.pruned = self.pruned(*index, routes.iter().map(|r| r.ctor));
