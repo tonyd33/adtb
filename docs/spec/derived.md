@@ -64,7 +64,8 @@ store open_by_user
 function with no parameters; `store` of a function with parameters is
 refused. `store` of a function whose result is not a `Set` is refused.
 `f` names a function of the migration's own module, unqualified;
-`store m::f` is refused, naming the operand. `unstore f` is its inverse.
+`store m::f` and `unstore m::f` are refused, naming the operand.
+`unstore f` is its inverse.
 
 Storing a view does not change what it denotes. Every read of `f()`
 returns the value of `f`'s body at the reader's snapshot and schema

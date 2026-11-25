@@ -1,5 +1,6 @@
-# `store` names an unqualified function of the migration's own module. A qualified operand is
-# refused naming it, whether or not the migration's module declares a function of that name.
+# `store` and `unstore` name an unqualified function of the migration's own module. A qualified
+# operand is refused naming it, whether or not the migration's module declares a function of that
+# name.
 seed 1
 use empty
 
@@ -37,3 +38,15 @@ query rowsort
   auth::f()
 ----
 "q"
+
+migrate
+  module other
+  store f
+
+migrate refused MigrationRefused { version: 6, reason: Rejected { reason: SchemaRefused { operator: "unstore other::f", detail: "`unstore other::f` is refused: a stored view names a function of its own module, unqualified" } } }
+  module auth
+  unstore other::f
+
+migrate
+  module other
+  unstore f

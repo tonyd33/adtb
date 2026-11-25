@@ -501,7 +501,10 @@ impl<'a> Lifting<'a> {
             StoreM {
                 function,
                 written: s.written(),
-                rest: self.term(Span::new(s.view.span().end as usize, s.span.end as usize)),
+                rest: self.term(Span::new(
+                    s.operand_span().end as usize,
+                    s.span.end as usize,
+                )),
                 ids: held,
             },
         );

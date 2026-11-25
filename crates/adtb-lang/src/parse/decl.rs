@@ -361,11 +361,7 @@ impl Parser<'_> {
         while let Some(c) = self.relation_clause(false)? {
             clauses.push(c);
         }
-        Ok(StoreDecl {
-            view,
-            clauses,
-            span: self.span_from(start),
-        })
+        Ok(StoreDecl::new(view, clauses, self.span_from(start)))
     }
 
     fn two_binders(&mut self) -> PResult<(Ident, Ident)> {

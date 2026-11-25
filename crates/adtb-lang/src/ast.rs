@@ -597,22 +597,29 @@ pub struct CheckDecl {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoreDecl {
-    pub view: QName,
+    view: QName,
     pub clauses: Vec<RelationClause>,
     pub span: Span,
 }
 
 impl StoreDecl {
+    pub(crate) fn new(view: QName, clauses: Vec<RelationClause>, span: Span) -> StoreDecl {
+        StoreDecl {
+            view,
+            clauses,
+            span,
+        }
+    }
+
     /// Returns the function of the declaring module the stored view names, or the refusal of
     /// an operand naming a module.
     pub fn function(&self) -> Result<&Ident, String> {
-        match &self.view.module {
-            None => Ok(&self.view.name),
-            Some(m) => Err(format!(
-                "`store {}::{}` is refused: a stored view names a function of its own module, unqualified",
-                m.text, self.view.name.text
-            )),
-        }
+        stored_function("store", &self.view)
+    }
+
+    /// Returns the span of the operand.
+    pub fn operand_span(&self) -> Span {
+        self.view.span()
     }
 
     /// Returns the operand as written.
@@ -621,6 +628,18 @@ impl StoreDecl {
             None => self.view.name.text.clone(),
             Some(m) => format!("{}::{}", m.text, self.view.name.text),
         }
+    }
+}
+
+/// Returns the function of the declaring module that operand `q` of a `verb` names, or the
+/// refusal of an operand naming a module.
+pub fn stored_function<'a>(verb: &str, q: &'a QName) -> Result<&'a Ident, String> {
+    match &q.module {
+        None => Ok(&q.name),
+        Some(m) => Err(format!(
+            "`{verb} {}::{}` is refused: a stored view names a function of its own module, unqualified",
+            m.text, q.name.text
+        )),
     }
 }
 

@@ -147,7 +147,7 @@
 "crates/adtb-heap/src/vacuum/pace.rs" = 4
 "crates/adtb-heap/src/vacuum/run.rs" = 21
 "crates/adtb-heap/src/verify/mod.rs" = 14
-"crates/adtb-lang/src/ast.rs" = 164
+"crates/adtb-lang/src/ast.rs" = 163
 "crates/adtb-lang/src/check/adhoc.rs" = 3
 "crates/adtb-lang/src/check/mod.rs" = 25
 "crates/adtb-lang/src/check/txn.rs" = 2

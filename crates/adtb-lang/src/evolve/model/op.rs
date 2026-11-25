@@ -836,7 +836,7 @@ impl<'a> Resolving<'a> {
             OperatorKind::AddCheck(c) => add(Kind::Check, &c.name.text, c.span),
             OperatorKind::Store(s) => match s.function() {
                 Ok(f) => add(Kind::Store, &f.text, s.span),
-                Err(why) => refuse_at(s.view.span(), why),
+                Err(why) => refuse_at(s.operand_span(), why),
             },
             OperatorKind::RedefineFn(f) => {
                 match self.model.find(self.module, Kind::Fn, &f.name.text) {
@@ -859,7 +859,10 @@ impl<'a> Resolving<'a> {
             OperatorKind::DropAggregate(q) => Ok(Op::Drop(self.decl(Kind::Aggregate, q)?)),
             OperatorKind::DropConstraint(q) => Ok(Op::Drop(self.decl(Kind::Constraint, q)?)),
             OperatorKind::DropCheck(q) => Ok(Op::Drop(self.decl(Kind::Check, q)?)),
-            OperatorKind::Unstore(q) => Ok(Op::Drop(self.decl(Kind::Store, q)?)),
+            OperatorKind::Unstore(q) => match ast::stored_function("unstore", q) {
+                Ok(_) => Ok(Op::Drop(self.decl(Kind::Store, q)?)),
+                Err(why) => refuse_at(q.span(), why),
+            },
             OperatorKind::DropSet(s, r) => Ok(Op::Drop(Item::Set(self.set(s, r)?))),
             OperatorKind::RenameType(q, to) => rename((Space::Shared, self.ty(q)?), to),
             OperatorKind::RenameRelation(q, to) => rename((Space::Shared, self.relation(q)?), to),

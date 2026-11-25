@@ -653,6 +653,13 @@ impl Schema {
         TypeName::built_in(text).ok_or_else(|| no_type(text))
     }
 
+    /// Returns the value the operand of stored view `s` of module `module` names, or why it names
+    /// none.
+    pub fn stored_view(&self, module: ModuleId, s: &ast::StoreDecl) -> Result<ValueDef, String> {
+        let name = s.function()?.clone();
+        self.lookup_value(module, &ast::QName { module: None, name })
+    }
+
     /// Resolve a lowercase schema name seen from `module`.
     pub fn lookup_value(&self, module: ModuleId, name: &ast::QName) -> Result<ValueDef, String> {
         self.lookup_value_in(module, name, None)

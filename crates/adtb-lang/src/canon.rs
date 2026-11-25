@@ -548,8 +548,8 @@ pub fn decl_refs(schema: &Schema, module: ModuleId, d: &Decl) -> Vec<(Span, Ref)
             relation_ref_refs(schema, module, &c.on, &mut refs);
         }
         Decl::Store(s) => {
-            if let Ok(ValueDef::Function(f)) = schema.lookup_value(module, &s.view) {
-                refs.push((s.view.span(), Ref::Function(f)));
+            if let Ok(ValueDef::Function(f)) = schema.stored_view(module, s) {
+                refs.push((s.operand_span(), Ref::Function(f)));
                 if let Ty::Set(elem) = &schema.function(f).result
                     && let Ty::Data { def, .. } = elem.as_ref()
                 {

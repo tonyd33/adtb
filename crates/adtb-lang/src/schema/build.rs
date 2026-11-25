@@ -308,37 +308,27 @@ impl Builder<'_> {
     }
 
     fn store(&mut self, file: FileId, module: ModuleId, s: &ast::StoreDecl) {
-        if let Err(why) = s.function() {
-            return self.err(file, s.view.span(), why);
-        }
-        match self.schema.lookup_value(module, &s.view) {
+        let at = s.operand_span();
+        match self.schema.stored_view(module, s) {
             Ok(ValueDef::Function(f)) => {
                 let def = &self.schema.functions[f.0 as usize];
                 if !def.params.is_empty() || !def.type_params.is_empty() {
-                    return self.err(
-                        file,
-                        s.view.span(),
-                        "a stored view is a function with no parameters",
-                    );
+                    return self.err(file, at, "a stored view is a function with no parameters");
                 }
                 if !matches!(def.result, Ty::Set(_)) {
                     return self.err(
                         file,
-                        s.view.span(),
+                        at,
                         format!("a stored view returns a `Set`; `{}` does not", s.written()),
                     );
                 }
                 if def.stored.is_some() {
-                    return self.err(file, s.view.span(), "this view is stored twice");
+                    return self.err(file, at, "this view is stored twice");
                 }
                 self.schema.defs_mut().functions[f.0 as usize].stored = Some(s.clone());
             }
-            Ok(_) => self.err(
-                file,
-                s.view.span(),
-                format!("`{}` is not a function", s.written()),
-            ),
-            Err(e) => self.err(file, s.view.span(), e),
+            Ok(_) => self.err(file, at, format!("`{}` is not a function", s.written())),
+            Err(e) => self.err(file, at, e),
         }
     }
 
