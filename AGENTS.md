@@ -124,6 +124,7 @@ The `xtask` crate's commands and the conformance runner:
 Before writing code a correctness rule depends on, state the rule and what enforces it: the type system, a lint, a test that searches, or nothing with a written reason. Prefer them in that order.
 
 - Do not stand a string or a position in for identity, or a panic in for an error, or a per-path check in for one gate.
+- Build a refusal where the fact that failed is known, naming what it is about. A lookup serving several callers says which thing it missed; no caller guesses a message or a blame.
 - A bug fix's report states its cause and what stops the next instance of that cause. Fix the cause when it is in reach. If a fix only handles the input in hand, say so.
 - A limit states the rule it comes from, not only the value that passes today.
 
@@ -164,7 +165,8 @@ local files.
   history. No em dashes, external citations, rule IDs or Markdown bold in
   comments.
 - Write doc comments in the imperative, or as "Returns ...". State real
-  contracts as labelled preconditions and postconditions.
+  contracts as labelled preconditions and postconditions. A postcondition
+  holds on every return, an early one included.
 - Preserve existing `TODO`, `FIXME`, `IMPROVE` and `NOTE` comments through
   refactors. Do not invent speculative notes on the maintainer's behalf.
 - An `#[expect]` reason states what would have to change to remove it.
@@ -185,7 +187,8 @@ file states. Behaviour inside one subsystem lives with its code. A
 rule belongs to the lowest tier that can observe it. Treat any spec
 change an implementation asks for as suspect: patch the spec only for
 undecided or contradictory observable behaviour, never to promote an
-internal choice into a promise.
+internal choice into a promise. A change that adds behaviour users observe, a
+refusal or where a result goes, states it in the spec part that owns it.
 
 ## Design rulings
 

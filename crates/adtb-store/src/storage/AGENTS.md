@@ -13,6 +13,10 @@ tests of `damage_log.rs` read both tables from it.
   by an image that starts a chain; `DirtyTable::changing` panics otherwise.
 - A failed storage operation panics only through `fatal`; the row `storage_io_panics` of
   `lint/rules.toml` finds any other panic over one.
+- The latch bound and the pool's frame reserve are sums over every holder, the daemons
+  included. A new holder of a latch or a frame raises the sum it belongs to, and a test runs every
+  holder at its bound at once.
+- A value standing for a held resource gives it back on drop, or cannot be dropped unconsumed.
 - The engine's tests that open a database sit in `crates/adtb/src/storage/`.
 
 Tests: `cargo nextest run -p adtb-store -E 'test(/^storage::/)'`;

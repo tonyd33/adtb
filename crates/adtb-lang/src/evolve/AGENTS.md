@@ -18,6 +18,9 @@ its refusals and its revert is [evolution.md](../../../../docs/spec/evolution.md
   built, as one demanding a fill does.
 - The revert law: a revert right after an exact migration restores its schema and rows, and a
   revert of that revert applies it again.
+- An inverse holds after any later migration too: it restores what its migration dropped by id
+  from the model before it, never by a name re-read now, and refuses a later change it cannot
+  undo with a stated reason. Test a revert of an earlier migration after later ones.
 - A finding the migration search can draw but no fix has met is held off by a `SEARCH_*` switch
   in `crates/adtb-testkit/src/schemas/mod.rs`; the fix deletes its switch.
 
