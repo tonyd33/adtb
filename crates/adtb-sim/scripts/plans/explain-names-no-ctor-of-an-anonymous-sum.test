@@ -1,0 +1,13 @@
+# An arm routing a value of an anonymous sum, whose constructors have no catalog id, has no
+# `ctor` member.
+use users
+
+plan
+  explain from k in (from i in identities.EmailPass select (if i.email == "a" then ByEmail { email: i.email } else ByOther { id: i.email })), j in identities.Google
+    where match k | ByEmail e -> e.email == j.gid | ByOther o -> o.id == j.gid
+    select j.gid
+----
+{"format": 1, "root": {"children": [{"arms": [
+  {"name": "ByEmail", "ctor": null},
+  {"name": "ByOther", "ctor": null}
+]}]}}

@@ -49,7 +49,8 @@
 //!   `rows` and `loops` of `actual`; each of a node's `children` against any node below it in
 //!   preorder, through children and arms, the first after the one the child before matched. An
 //!   empty `children` or `actual` differs. Each node of the plan holds `kind`, `estimate` and the
-//!   array `children`, and each arm, pruned constructor and `actual` its members.
+//!   array `children`, and each arm, pruned constructor and `actual` its members. A member
+//!   stated as `null` matches one the plan omits.
 //! - `probe plan`: the body, one explain sent as a `command` is; the rows after `----` are the
 //!   lines of its `text`, in order. An explain that runs its statement differs.
 //! - `probe checks NAME`: the rows are, for each incremental check of constraint or check NAME, by

@@ -151,13 +151,13 @@ fn unshaped(v: &Json, at: &str, names: &[&str]) -> Result<(), Miss> {
     each("root", &node)?;
     each("child", &node)?;
     each("children", &node)?;
-    each("arms", &ARM)?;
-    each("pruned", &PRUNED)?;
+    each("arms", &["name", "child"])?;
+    each("pruned", &["name", "stage"])?;
     each("actual", &ACTUAL)
 }
 
 /// Check each member of `want` that `known` names against the same member of `got` with
-/// `each`; any other member differs.
+/// `each`, a `null` one matching a member `got` omits; any other member differs.
 fn members(
     at: &str,
     want: &Json,
@@ -175,6 +175,7 @@ fn members(
         }
         match got.get(name) {
             Some(g) => each(&at, name, w, g)?,
+            None if w.is_null() => {}
             None => return Err((at, w.to_string(), shown(None))),
         }
     }
