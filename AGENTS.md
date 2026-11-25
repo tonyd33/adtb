@@ -124,6 +124,7 @@ The `xtask` crate's commands and the conformance runner:
 Before writing code a correctness rule depends on, state the rule and what enforces it: the type system, a lint, a test that searches, or nothing with a written reason. Prefer them in that order.
 
 - Do not stand a string or a position in for identity, or a panic in for an error, or a per-path check in for one gate.
+- An unknown, blank or unparsed case fails closed. Never map it to the nearest harmless variant or answer it with a broad fallback.
 - Build a refusal where the fact that failed is known, naming what it is about. A lookup serving several callers says which thing it missed; no caller guesses a message or a blame.
 - A bug fix's report states its cause and what stops the next instance of that cause. Fix the cause when it is in reach. If a fix only handles the input in hand, say so.
 - A limit states the rule it comes from, not only the value that passes today.
@@ -170,6 +171,8 @@ local files.
 - Preserve existing `TODO`, `FIXME`, `IMPROVE` and `NOTE` comments through
   refactors. Do not invent speculative notes on the maintainer's behalf.
 - An `#[expect]` reason states what would have to change to remove it.
+- A doc, comment, test name or report claims only what the code or a command
+  shows. "No behaviour change", "held by the type" and "every X" each need that evidence.
 - Before finishing, read the diff and run `cargo xtask lint`.
 
 ## Specification
