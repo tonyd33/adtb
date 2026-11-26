@@ -63,6 +63,8 @@ For a fresh clone, host prerequisites and optional editor setup, read
   which the dev shell puts on PATH. `lint/rules.toml` declares each query's file set and rows; a
   zero row prints each site as `FILE:LINE: ROW`, and a ratchet row fails when a file's count
   differs from its entry in `lint/allowlist.toml` (none counts as 0): the counts only fall.
+  Each row declares `why`, the harm it stops, and `fix`, what to write instead; the lint prints
+  both under the row's failures and refuses a row without them.
   `--counts` prints the allowlist for the tree; `--against REV` fails on an entry above the
   allowlist at REV, so a rise is a maintainer's act on main. The rows: the comment rules of
   `house.tql`, struct fields visible past their module, decode panics, engine names, catalog

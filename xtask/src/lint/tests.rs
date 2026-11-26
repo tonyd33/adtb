@@ -14,9 +14,30 @@ fn rule(query: &str, rows: &[(&str, Kind)]) -> Rule {
         exclude: Vec::new(),
         rows: rows
             .iter()
-            .map(|&(row, kind)| (row.to_owned(), kind))
+            .map(|&(row, kind)| {
+                let declared = Row {
+                    kind,
+                    why: format!("{row} harms"),
+                    fix: format!("{row} fixed"),
+                };
+                (row.to_owned(), declared)
+            })
             .collect(),
     }
+}
+
+fn lines(problems: &[Problem]) -> Vec<&str> {
+    problems.iter().map(|p| p.line.as_str()).collect()
+}
+
+fn sorted_lines(problems: &[Problem]) -> Vec<String> {
+    let mut lines: Vec<String> = problems.iter().map(|p| p.line.clone()).collect();
+    lines.sort();
+    lines
+}
+
+fn fixture_text(name: &str) -> String {
+    String::from_utf8(fixture(name)).expect("the fixture is UTF-8")
 }
 
 fn counts(entries: &[(&str, &str, u64)]) -> Counts {
@@ -51,7 +72,10 @@ fn named_sites_are_findings_of_zero_rows_and_counts_of_ratchet_rows() {
     assert_eq!(
         tally,
         Ok(Tally {
-            findings: vec!["crates/a/src/lib.rs:4: em-dash".to_owned()],
+            findings: vec![Problem::of(
+                "em-dash",
+                "crates/a/src/lib.rs:4: em-dash".to_owned()
+            )],
             counts: counts(&[("doc-verb", "crates/a/src/lib.rs", 2)]),
         })
     );
@@ -100,10 +124,12 @@ fn unnamed_ranges_are_findings_on_their_first_line() {
     assert_eq!(
         tally,
         Ok(Tally {
-            findings: vec![
-                "crates/a/src/lib.rs:12: prelude_positions".to_owned(),
-                "crates/a/src/lib.rs:21: prelude_positions".to_owned(),
-            ],
+            findings: [12, 21]
+                .map(|line| Problem::of(
+                    "prelude_positions",
+                    format!("crates/a/src/lib.rs:{line}: prelude_positions")
+                ))
+                .into(),
             counts: Counts::new(),
         })
     );
@@ -116,7 +142,10 @@ fn a_zero_row_count_above_zero_is_a_finding() {
     assert_eq!(
         tally,
         Ok(Tally {
-            findings: vec!["crates/a/src/lib.rs: engine_names: 5 sites".to_owned()],
+            findings: vec![Problem::of(
+                "engine_names",
+                "crates/a/src/lib.rs: engine_names: 5 sites".to_owned()
+            )],
             counts: Counts::new(),
         })
     );
@@ -205,10 +234,9 @@ fn an_em_dash_in_a_comment_or_string_is_a_finding() {
     let output = query(repository(), "house.tql", &files, 1).expect("tql exits 0");
     let mut tally = Tally::default();
     apply(&house, &BTreeSet::new(), &output, &mut tally).expect("the fixture parses");
-    tally.findings.sort();
     let file = "xtask/src/lint/fixtures/em_dash.rs.txt";
     assert_eq!(
-        tally.findings,
+        sorted_lines(&tally.findings),
         [1, 2, 3, 5, 6].map(|line| format!("{file}:{line}: em-dash"))
     );
 }
@@ -228,8 +256,7 @@ fn every_weak_refusal_form_is_a_finding_and_a_bound_or_exact_one_is_not() {
         .map(|line| format!("{file}:{line}: weak_refusals"))
         .collect();
     expected.sort();
-    tally.findings.sort();
-    assert_eq!(tally.findings, expected);
+    assert_eq!(sorted_lines(&tally.findings), expected);
 }
 
 /// Returns each site the capability and serializer rules find in fixture `name`: each finding of
@@ -265,7 +292,7 @@ fn capability_sites(name: &str) -> Vec<String> {
         let output = query(repository(), &r.query, &files, 1).expect("tql exits 0");
         apply(r, &BTreeSet::new(), &output, &mut tally).expect("the fixture parses");
     }
-    let mut sites = tally.findings;
+    let mut sites = sorted_lines(&tally.findings);
     for (row, files) in tally.counts {
         for (file, n) in files {
             if n > 0 {
@@ -412,7 +439,7 @@ fn a_ratchet_count_must_equal_its_entry() {
         ("doc-verb", "x.rs", 1),
     ]);
     assert_eq!(
-        ratchet(&rules, &found, &listed),
+        lines(&ratchet(&rules, &found, &listed)),
         [
             "lint/allowlist.toml: [doc-verb] is no ratchet row of lint/rules.toml",
             "vanished.rs: crate_fields has 0, allowed 1: stale, delete the entry",
@@ -438,7 +465,7 @@ fn an_entry_may_not_rise_above_the_base() {
         ("r", "rose.rs", 2),
     ]);
     assert_eq!(
-        rises(&listed, &base, "main"),
+        lines(&rises(&listed, &base, "main")),
         [
             "new.rs: r allows 1, the allowlist at main allows 0: a rise is the lead's act on main",
             "rose.rs: r allows 3, the allowlist at main allows 2: a rise is the lead's act on main",
@@ -492,4 +519,53 @@ fn globs_match_by_component() {
     ] {
         assert_eq!(glob::matches(pattern, path), matched, "{pattern} on {path}");
     }
+}
+
+#[test]
+fn a_row_without_a_why_or_a_fix_or_with_an_unknown_key_is_refused_by_its_rule_and_row() {
+    assert_eq!(
+        parse_rules(&fixture_text("rules_unexplained.toml")).map(|rules| rules.len()),
+        Err([
+            "lint/rules.toml: rule 0 (house.tql): the row blank_why has no why",
+            "lint/rules.toml: rule 0 (house.tql): the row misspelled has the unknown key fixes",
+            "lint/rules.toml: rule 0 (house.tql): the row misspelled has no fix",
+            "lint/rules.toml: rule 0 (house.tql): the row no_fix has no fix",
+            "lint/rules.toml: rule 1 (engine.tql): the row bare is a string, not a table of kind, why and fix",
+        ]
+        .join("\n"))
+    );
+}
+
+#[test]
+fn a_row_two_rules_explain_differently_is_refused() {
+    assert_eq!(
+        parse_rules(&fixture_text("rules_differ.toml")).map(|rules| rules.len()),
+        Err("lint/rules.toml: rule 0 (engine.tql) and rule 1 (engine-var.tql) declare the row engine_names with a different kind, why or fix".to_owned())
+    );
+}
+
+#[test]
+fn each_failing_row_prints_its_why_and_fix_once_under_its_sites() {
+    let rules = parse_rules(&fixture_text("rules_explained.toml")).expect("the fixture parses");
+    let problems = [
+        Problem::of("rise", "a.rs:3: rise".to_owned()),
+        Problem::of("ratchet", "a.rs: ratchet has 2, allowed 1".to_owned()),
+        Problem::of("rise", "b.rs:9: rise".to_owned()),
+        Problem {
+            row: None,
+            line: "lint/allowlist.toml: [gone] is no ratchet row of lint/rules.toml".to_owned(),
+        },
+    ];
+    assert_eq!(
+        report(&rules, &problems),
+        "lint/allowlist.toml: [gone] is no ratchet row of lint/rules.toml
+a.rs: ratchet has 2, allowed 1
+  why: A ratchet site holds what it should not.
+  fix: Write the other form; a renamed form does not count.
+a.rs:3: rise
+b.rs:9: rise
+  why: A rise lets the harm back in.
+  fix: Remove the site; hiding it does not count.
+"
+    );
 }

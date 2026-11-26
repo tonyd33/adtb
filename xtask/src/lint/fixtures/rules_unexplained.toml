@@ -1,0 +1,27 @@
+[[rule]]
+query = "house.tql"
+include = ["crates/**/*.rs"]
+
+[rule.rows.explained]
+kind = "zero"
+why = "w"
+fix = "f"
+
+[rule.rows.no_fix]
+kind = "zero"
+why = "w"
+
+[rule.rows.misspelled]
+kind = "zero"
+why = "w"
+fixes = "f"
+
+[rule.rows.blank_why]
+kind = "ratchet"
+why = "  "
+fix = "f"
+
+[[rule]]
+query = "engine.tql"
+include = ["crates/**/*.rs"]
+rows = { bare = "ratchet" }

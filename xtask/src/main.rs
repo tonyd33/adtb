@@ -98,7 +98,8 @@ enum Task {
     ///
     /// Print `FILE:LINE: ROW` for each site of a zero row, and each file whose count of a
     /// ratchet row differs from its entry in `lint/allowlist.toml`, a missing entry counting as
-    /// 0. Fails when it prints.
+    /// 0, each failing row's lines followed once by its `why` and `fix`. Fails when it prints, and
+    /// when a row of `lint/rules.toml` lacks a `why` or a `fix`.
     Lint {
         /// Also fail when an entry of the allowlist is above the one of the allowlist at REV.
         #[arg(long, value_name = "REV")]

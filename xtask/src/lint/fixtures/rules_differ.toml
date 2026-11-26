@@ -1,0 +1,17 @@
+[[rule]]
+query = "engine.tql"
+include = ["crates/**/*.rs"]
+
+[rule.rows.engine_names]
+kind = "ratchet"
+why = "A name stands in for an id."
+fix = "Use the id."
+
+[[rule]]
+query = "engine-var.tql"
+include = ["crates/adtb/src/**/*.rs"]
+
+[rule.rows.engine_names]
+kind = "ratchet"
+why = "A name stands in for an id."
+fix = "Use the id, as the other rule says."

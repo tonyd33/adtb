@@ -1,16 +1,56 @@
 # Each rule runs `tql` with lint/QUERY over the files matching an include glob and no exclude glob
 # (`*` within a path component, `**` across components, relative to the root) and feeds its rows:
 # a zero row prints each site, a ratchet row's per-file counts must equal lint/allowlist.toml.
+# Each row states `why`, the harm it stops, and `fix`, what to write instead and the rewrites that
+# do not count as one; `cargo xtask lint` prints both under the row's failures.
 
 [[rule]]
 query = "house.tql"
 include = ["crates/**/*.rs", "xtask/**/*.rs"]
-rows = { em-dash = "zero", bold = "zero", section-sign = "zero", rule-id = "zero", doc-verb = "zero", expect-reason = "zero" }
+
+[rule.rows.em-dash]
+kind = "zero"
+why = "An em dash appends a clause that restates or justifies the sentence before it."
+fix = "End the sentence with a period and cut what only justified it; an en dash, a double hyphen or an escaped em dash in its place does not count."
+
+[rule.rows.bold]
+kind = "zero"
+why = "Markdown bold in a comment is emphasis the source does not render."
+fix = "Write the sentence plain; `__bold__` or another emphasis marker in its place does not count."
+
+[rule.rows.section-sign]
+kind = "zero"
+why = "A section sign cites a document a reader of the source cannot resolve."
+fix = "State what the section says; the word section with its number, or a file path, in its place does not count."
+
+[rule.rows.rule-id]
+kind = "zero"
+why = "A rule or ticket id cites a list a reader of the source cannot resolve."
+fix = "State the rule the id names; a ticket number, a lowercase id or a file citation in its place does not count."
+
+[rule.rows.doc-verb]
+kind = "zero"
+why = "A doc comment in the third person describes the item where it should tell a caller what it does."
+fix = "Write the doc comment in the imperative, or as `Returns ...`; a third person verb the row does not list, or a `#[doc = ..]` attribute, is the same fault."
+
+[rule.rows.expect-reason]
+kind = "zero"
+why = "An `#[expect]` with no reason hides what must change before it can go."
+fix = "Give it a `reason` stating what would have to change to remove it; an `#[allow]` or an empty reason in its place does not count."
 
 [[rule]]
 query = "structure.tql"
 include = ["crates/*/src/**/*.rs"]
-rows = { pub_fields = "ratchet", crate_fields = "ratchet" }
+
+[rule.rows.pub_fields]
+kind = "ratchet"
+why = "A `pub` field lets any caller break the invariant its type keeps."
+fix = "Make the field private and give callers operations that keep the type's invariant; a `&mut` getter, a setter, a `DerefMut` impl or a public constructor taking every field still lends the field and does not count."
+
+[rule.rows.crate_fields]
+kind = "ratchet"
+why = "A field visible past its module lets the rest of the crate break the invariant its type keeps."
+fix = "Make the field private and give the crate operations that keep the type's invariant; a `&mut` getter, a setter, a `DerefMut` impl or a constructor taking every field still lends the field and does not count."
 
 [[rule]]
 query = "structure.tql"
@@ -23,18 +63,30 @@ include = [
   "crates/adtb-exec/src/exec/store.rs",
 ]
 exclude = ["**/tests.rs", "**/*_tests.rs"]
-rows = { decode_panics = "ratchet" }
+
+[rule.rows.decode_panics]
+kind = "ratchet"
+why = "A panic in a decode of page bytes turns damage on disk into a crash where a refusal should name the damage."
+fix = "Return `Result` with the damage cause; `Result::unwrap(x)`, `std::panic!`, `.map(Option::unwrap)` or a helper returning `!` in its place does not count."
 
 [[rule]]
 query = "structure.tql"
 include = ["crates/adtb/src/catalog/codec/mod.rs", "crates/adtb/src/write/past.rs"]
-rows = { adtb_decode_panics = "zero" }
+
+[rule.rows.adtb_decode_panics]
+kind = "zero"
+why = "A panic in a decode of catalog or past bytes turns damage on disk into a crash where a refusal should name the damage."
+fix = "Return `Result` with the damage cause; `Result::unwrap(x)`, `std::panic!`, `.map(Option::unwrap)` or a helper returning `!` in its place does not count."
 
 [[rule]]
 query = "engine.tql"
 include = ["crates/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
-rows = { engine_names = "ratchet" }
+
+[rule.rows.engine_names]
+kind = "ratchet"
+why = "An engine module, relation, type or constructor looked up by its spelling can find a user object of that name."
+fix = "Name it by its id: a relation by `engine_rel` through `catalog::engine_relation`, a type by `engine_type`, a constructor by `engine_ctor`; a const holding the name, `.eq(..)`, `matches!`, `if let` or an array's `contains` in its place does not count."
 
 [[rule]]
 query = "engine-var.tql"
@@ -45,19 +97,31 @@ include = [
   "crates/adtb-store/src/**/*.rs",
 ]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
-rows = { engine_names = "ratchet" }
+
+[rule.rows.engine_names]
+kind = "ratchet"
+why = "An engine module, relation, type or constructor looked up by its spelling can find a user object of that name."
+fix = "Name it by its id: a relation by `engine_rel` through `catalog::engine_relation`, a type by `engine_type`, a constructor by `engine_ctor`; a const holding the name, `.eq(..)`, `matches!`, `if let` or an array's `contains` in its place does not count."
 
 [[rule]]
 query = "from-raw.tql"
 include = ["crates/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
-rows = { from_raw = "ratchet" }
+
+[rule.rows.from_raw]
+kind = "ratchet"
+why = "Decoding a raw value as one catalog id kind can make an id of the wrong kind, or of nothing stored."
+fix = "Take the id from the catalog read or the value that holds it typed; `from_raw` or `Stored::new` under a `use .. as` rename, a type alias, a turbofish or passed as a value does not count."
 
 [[rule]]
 query = "prelude.tql"
 include = ["crates/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
-rows = { prelude_positions = "zero" }
+
+[rule.rows.prelude_positions]
+kind = "zero"
+why = "A constructor position written as a number names a prelude constructor by where it sits today."
+fix = "Name it with `schema::prelude::ctor`; a const or a cast holding the number does not count."
 
 [[rule]]
 query = "sys-rows.tql"
@@ -67,7 +131,11 @@ include = [
   "crates/adtb/src/api/settings.rs",
   "crates/adtb/src/api/verify.rs",
 ]
-rows = { sys_rows = "zero" }
+
+[rule.rows.sys_rows]
+kind = "zero"
+why = "A `sys::` row whose fields are listed in place, or whose constructor is a literal position, breaks silently when the relation's fields change."
+fix = "Build it with `write::EngineRow`, placing each field by its id; a helper that lists the fields in place does not count."
 
 [[rule]]
 query = "simtest.tql"
@@ -86,66 +154,110 @@ include = [
   "crates/adtb-store/src/**/*_tests.rs",
   "crates/adtb-store/src/**/test_world/**/*.rs",
 ]
-rows = { sim_test_opens = "ratchet" }
+
+[rule.rows.sim_test_opens]
+kind = "ratchet"
+why = "A test's own open helper copies how a database opens, so a change to the open reaches only the shared helpers."
+fix = "Open through `adtb_simkit::open` or `test_world::fixture::Storage`, or call `Database::open_in` in the test's own body; a helper of another name, a closure or a macro that opens does not count."
 
 [[rule]]
 query = "holder-builders.tql"
 include = ["crates/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "crates/adtb/src/catalog/structures.rs"]
-rows = { holder_builders = "zero" }
+
+[rule.rows.holder_builders]
+kind = "zero"
+why = "A holder built in place can name the wrong engine module for its relation's pages."
+fix = "Call `catalog::structures::relation_holder` or `index_holder`; a helper elsewhere that fills `engine_module` does not count."
 
 [[rule]]
 query = "decoded-index.tql"
 include = ["crates/adtb-exec/src/exec/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
-rows = { decoded_index = "zero" }
+
+[rule.rows.decoded_index]
+kind = "zero"
+why = "An id read from a value may lie past the slice it indexes, and the index then panics."
+fix = "Look it up with `.get(..)` and refuse a miss as internal, naming the id; binding the id to a variable first and indexing with it does not count."
 
 [[rule]]
 query = "catch-unwind.tql"
 include = ["crates/adtb/src/**/*.rs", "crates/adtb-exec/src/**/*.rs", "crates/adtb-store/src/**/*.rs", "crates/adtb-heap/src/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "crates/adtb-exec/src/exec/host.rs", "crates/adtb-store/src/ranks.rs"]
-rows = { catch_unwind = "zero" }
+
+[rule.rows.catch_unwind]
+kind = "zero"
+why = "Catching a panic lets a thread run on with the state the panic left half changed."
+fix = "Let the panic crash the process; `catch_unwind` under another path or name, or a thread joined to read its panic, does not count."
 
 [[rule]]
 query = "map-points.tql"
 include = ["crates/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "crates/adtb/src/testing/**", "crates/adtb/src/write/quarantine.rs", "crates/adtb/src/api/entered.rs", "crates/adtb/src/api/maintenance.rs", "crates/adtb/src/api/migrate.rs", "crates/adtb/src/api/reindex.rs"]
-rows = { map_points = "zero" }
+
+[rule.rows.map_points]
+kind = "zero"
+why = "A mapping point built outside a call's or a pass's own guard maps damage at a point other than an open, the end of a call or pass, or a commit."
+fix = "Use the mapping point of the call or pass that runs; a helper that builds one for you does not count."
 
 [[rule]]
 query = "marked-readers.tql"
 include = ["crates/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "crates/adtb-store/src/storage/**"]
-rows = { marked_readers = "zero" }
+
+[rule.rows.marked_readers]
+kind = "zero"
+why = "Reading the database's own mark misses the damage of the commit log that refuses the database whole."
+fix = "Ask `refused_whole`, or `database_marked` where the commit log's damage is out of scope; reading the marks through a variable or a helper does not count."
 
 [[rule]]
 query = "api-aborts.tql"
 include = ["crates/adtb/src/api/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
-rows = { api_aborts = "zero" }
+
+[rule.rows.api_aborts]
+kind = "zero"
+why = "An API path that ends a transaction with `Database::abort` skips `abandon`, which after a failure records the abort, counts a failed record and chooses the call's reply."
+fix = "End a transaction after a failure with `abandon`, and one with no failure with `Entered::abort`; `Database::abort` through a helper or a receiver not named `db` does not count."
 
 [[rule]]
 query = "refusal.tql"
 include = ["crates/**/*.rs"]
-rows = { weak_refusals = "zero" }
+
+[rule.rows.weak_refusals]
+kind = "zero"
+why = "A test that checks only that a refusal happened, or part of its text, passes on the wrong refusal."
+fix = "Assert with `adtb_testkit::refused_as`, its value and whole reason; a substring check through another variable, `matches!` with a partial `Err` pattern, or an `is_ok` result stored and asserted later does not count."
 
 [[rule]]
 query = "storage-io.tql"
 include = ["crates/adtb-store/src/storage/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
-rows = { storage_io_panics = "zero" }
+
+[rule.rows.storage_io_panics]
+kind = "zero"
+why = "A panic over a failed storage operation other than `fatal` loses the failure's cause."
+fix = "Pass the failure to `fatal`, or refuse it as a stated refusal; `.expect` or `.unwrap` of it through a helper does not count."
 
 [[rule]]
 query = "replay.tql"
 include = ["crates/adtb/src/catalog/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "crates/adtb/src/catalog/*_testing.rs"]
-rows = { source_replays = "zero" }
+
+[rule.rows.source_replays]
+kind = "zero"
+why = "A migration applied to a source, or a source checked, outside the functions named for it can apply a migration twice or out of order with the log."
+fix = "Call `Catalog::apply`, `fold_from_empty`, `enforcing`, `held`, `chain` or `chained_last`; a new function that does the same under another name does not count."
 
 [[rule]]
 query = "hash-replays.tql"
 include = ["crates/adtb/src/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
-rows = { hash_replays = "zero" }
+
+[rule.rows.hash_replays]
+kind = "zero"
+why = "A version's hash computed from the log away from the functions named for it can disagree with the hash its `catalog::migrations` row stores."
+fix = "Read the stored hash; compute one only in `version_hash`, `unchained`, `same_hash` or `applied`; a new function that chains the log under another name does not count."
 
 [[rule]]
 query = "catalog-transactions.tql"
@@ -157,7 +269,11 @@ exclude = [
   "crates/adtb/src/catalog/transaction.rs",
   "crates/adtb/src/catalog/root.rs",
 ]
-rows = { catalog_transactions = "zero" }
+
+[rule.rows.catalog_transactions]
+kind = "zero"
+why = "A catalog transaction begun or ended outside the transaction module can end half done and leave what a failed one made."
+fix = "Go through the catalog's transaction module, which ends each transaction whole; a helper elsewhere that calls the same functions does not count."
 
 [[rule]]
 query = "catalog-reads.tql"
@@ -170,7 +286,11 @@ exclude = [
   "crates/adtb/src/catalog/roots_heap.rs",
   "crates/adtb/src/catalog/keyed.rs",
 ]
-rows = { catalog_reads = "zero" }
+
+[rule.rows.catalog_reads]
+kind = "zero"
+why = "A read of a heap's versions in the catalog outside `catalog::read` skips judging the heap against the pager's marks."
+fix = "Read through `catalog::read`; the same call through a helper in another catalog module does not count."
 
 [[rule]]
 query = "catalog-compiles.tql"
@@ -182,7 +302,11 @@ exclude = [
   "crates/adtb/src/catalog/hosts.rs",
   "crates/adtb/src/catalog/keying.rs",
 ]
-rows = { catalog_compiles = "zero" }
+
+[rule.rows.catalog_compiles]
+kind = "zero"
+why = "A compile in the catalog away from the functions that refuse what the executor does not run lets such a form through with no refusal naming its object."
+fix = "Compile through the functions of `catalog::hosts` and `catalog::keying`; a helper elsewhere that calls the compiler does not count."
 
 [[rule]]
 query = "defs-only.tql"
@@ -194,7 +318,11 @@ include = [
   "crates/adtb-lang/src/resolve.rs",
 ]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "crates/adtb-lang/src/check/adhoc.rs"]
-rows = { schema_labels = "zero" }
+
+[rule.rows.schema_labels]
+kind = "zero"
+why = "A check, analysis or normalisation that reads a schema's catalog ids or write states can judge a schema built from its declarations alone, which holds neither, differently from the labelled schema."
+fix = "Judge from the declarations alone, reaching catalog ids only in `check::adhoc`; a method of the same ids under another name does not count."
 
 [[rule]]
 query = "domain.tql"
@@ -208,7 +336,11 @@ exclude = [
   "crates/adtb-reference/**",
   "crates/adtb-testkit/**",
 ]
-rows = { domain_copies = "zero" }
+
+[rule.rows.domain_copies]
+kind = "zero"
+why = "A bound of a scalar's domain written outside its definition drifts from the bound the engine enforces."
+fix = "Call `date_in_range`, `time_in_range`, `decimal_in_range` or `Base::fit_int`, and name a day `MICROS_PER_DAY`; the bound in a const of your own does not count."
 
 [[rule]]
 query = "undo.tql"
@@ -219,34 +351,88 @@ include = [
   "crates/adtb-store/src/**/*.rs",
 ]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
-rows = { discarded_heap_writes = "zero" }
+
+[rule.rows.discarded_heap_writes]
+kind = "zero"
+why = "Forgetting a heap write's `Undoable` skips the drop check that `record` or `kept` consumed it, so the write can lose its take-back."
+fix = "Consume it with `record` or `kept`; leaking it, or holding it in a value that never drops, does not count."
 
 [[rule]]
 query = "runners.tql"
 include = ["crates/adtb-sim/src/**/*.rs", "crates/adtb-simkit/src/**/*.rs", "crates/adtb-testkit/src/**/*.rs"]
-rows = { generic_runners = "zero" }
+
+[rule.rows.generic_runners]
+kind = "zero"
+why = "A pub runner generic over a closure puts every test's body in one codegen unit, which slows the test build."
+fix = "Take the body as `Box<dyn FnOnce ..>`, `&dyn Fn ..` or `&mut dyn FnMut ..`; an `impl Fn` argument is the same generic and does not count."
 
 [[rule]]
 query = "capabilities.tql"
 include = ["crates/**/*.rs"]
-rows = { abandons_impls = "ratchet", unchecked_impls = "ratchet", stops_early_judgements = "ratchet", admitted_leaves = "ratchet", system_leaves = "ratchet", owner_authorities = "ratchet" }
+
+[rule.rows.abandons_impls]
+kind = "ratchet"
+why = "An `Abandons` impl lets a writer keep its heap writes with no take-back."
+fix = "Record each heap write's take-back; an impl through a renamed import or a macro is a `capability_renames` site, not a fix."
+
+[rule.rows.unchecked_impls]
+kind = "ratchet"
+why = "An `UncheckedWriter` impl lets a writer skip the SIREAD check of a version it supersedes, which can miss a serialization conflict."
+fix = "Write through the checked writer; an impl through a renamed import or a macro is a `capability_renames` site, not a fix."
+
+[rule.rows.stops_early_judgements]
+kind = "ratchet"
+why = "`StopsEarly::judged` lets a scan keep page locks on only the pages it read, which misses a conflict when the judgement is wrong."
+fix = "Let the scan lock what it covers; a call through a renamed import or a macro is a `capability_renames` site, not a fix."
+
+[rule.rows.admitted_leaves]
+kind = "ratchet"
+why = "`Leave::admitted` is the leave to run a call's statements, which the admission gate alone may give."
+fix = "Take the leave the admission gate gave the call; a call through a renamed import or a macro is a `capability_renames` site, not a fix."
+
+[rule.rows.system_leaves]
+kind = "ratchet"
+why = "`Leave::system` runs statements for no caller, in a grant of no limit."
+fix = "Run the statements under the caller's leave; a call through a renamed import or a macro is a `capability_renames` site, not a fix."
+
+[rule.rows.owner_authorities]
+kind = "ratchet"
+why = "`Authority::Owner` admits a call with every privilege."
+fix = "Admit the call with its caller's authority; a use through a renamed import or a macro is a `capability_renames` site, not a fix."
 
 [[rule]]
 query = "capability-names.tql"
 include = ["crates/**/*.rs"]
-rows = { capability_renames = "zero" }
+
+[rule.rows.capability_renames]
+kind = "zero"
+why = "A capability imported, re-exported or aliased under another name, or named inside a macro, hides its impl or call from the capability rows."
+fix = "Name the capability by its own name outside a macro, where its row counts it; any other alias is the same site."
 
 [[rule]]
 query = "serializer.tql"
 include = ["crates/**/*.rs"]
 exclude = ["crates/adtb-lang/**", "**/tests.rs", "**/*_tests.rs", "**/tests/**"]
-rows = { serializer_writes = "zero", changed_conflicts = "zero" }
+
+[rule.rows.serializer_writes]
+kind = "zero"
+why = "`write_at` called outside `Superseded::check` can check a write against the SIREAD locks before its page change, which misses a conflict."
+fix = "Check through the `Superseded` a heap write returns; a helper that calls `write_at` for you does not count."
+
+[rule.rows.changed_conflicts]
+kind = "zero"
+why = "`Conflict::changed` outside the heap's latch checks can blame a conflict on the wrong heap."
+fix = "Refuse through `Refused::of_heap` or `WriteTarget::check`; a helper that builds the conflict for you does not count."
 
 [[rule]]
 query = "failure-text.tql"
 include = ["crates/adtb/src/**/*.rs", "crates/adtb-exec/src/**/*.rs", "crates/adtb-heap/src/verify/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "**/testing/**", "**/testing.rs", "**/*_testing.rs"]
-rows = { debug_text = "zero" }
+
+[rule.rows.debug_text]
+kind = "zero"
+why = "A `Debug` placeholder's text can reach a client in an error, a detail or a verify finding, and changes with the type's derive."
+fix = "Write the value from its own `Display`; `Debug` text formatted through a helper or a nested `format!` does not count."
 
 [[rule]]
 query = "catalog-begins.tql"
@@ -258,7 +444,11 @@ exclude = [
   "**/test_world/**",
   "crates/adtb/src/catalog/*_testing.rs",
 ]
-rows = { change_begins = "zero" }
+
+[rule.rows.change_begins]
+kind = "zero"
+why = "A catalog transaction takes no serializer entry, so one begun outside the open and create sequence can run beside user transactions unserialized with them."
+fix = "Begin it in the function of the open and create sequence that owns the change; a helper those functions call that begins it does not count."
 
 [[rule]]
 query = "write-collections.tql"
@@ -272,9 +462,17 @@ include = [
   "crates/adtb/src/write/keyed.rs",
   "crates/adtb/src/write/change.rs",
 ]
-rows = { write_collections = "ratchet" }
+
+[rule.rows.write_collections]
+kind = "ratchet"
+why = "A collection the write path builds outside a grant holds rows no call's grant charges."
+fix = "Build it through the grant the call holds, as `ChangeSet::new`, `Violations::new` and `UndoLog::new` do; a turbofish `collect`, `vec![x]`, `with_capacity`, `HashSet::new` or `to_vec` in its place does not count."
 
 [[rule]]
 query = "evolve-builds.tql"
 include = ["crates/adtb-lang/src/evolve/**/*.rs"]
-rows = { evolve_builds = "zero" }
+
+[rule.rows.evolve_builds]
+kind = "zero"
+why = "A build in the migration checker outside `BuildInputs::build` can take an input the memo's key does not compare, so the memo and that build can answer the same key differently."
+fix = "Build through `BuildInputs::build`; a helper that calls `build_ahead` or `build_with` for you does not count."

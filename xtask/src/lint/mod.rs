@@ -22,8 +22,7 @@ const RULES: &str = "lint/rules.toml";
 
 const TQL_VERSION: &str = "0.4.0";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     /// Every site is a finding.
     Zero,
@@ -34,18 +33,53 @@ enum Kind {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Rules {
-    rule: Vec<Rule>,
+    rule: Vec<Declared>,
 }
 
-/// One run of a query over one file set, and the rows it feeds.
+/// A rule as `lint/rules.toml` writes it.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Rule {
+struct Declared {
     query: String,
     include: Vec<String>,
     #[serde(default)]
     exclude: Vec<String>,
-    rows: BTreeMap<String, Kind>,
+    rows: BTreeMap<String, toml::Value>,
+}
+
+/// One run of a query over one file set, and the rows it feeds.
+#[derive(Debug)]
+struct Rule {
+    query: String,
+    include: Vec<String>,
+    exclude: Vec<String>,
+    rows: BTreeMap<String, Row>,
+}
+
+/// A row a rule feeds, with the text `cargo xtask lint` prints under its failures.
+#[derive(Debug, PartialEq, Eq)]
+struct Row {
+    kind: Kind,
+    /// The harm the row stops.
+    why: String,
+    /// What to write instead, and the rewrites that do not count as a fix.
+    fix: String,
+}
+
+/// A line `cargo xtask lint` prints, under the row it is about when it is about one.
+#[derive(Debug, PartialEq, Eq)]
+struct Problem {
+    row: Option<String>,
+    line: String,
+}
+
+impl Problem {
+    fn of(row: &str, line: String) -> Self {
+        Self {
+            row: Some(row.to_owned()),
+            line,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -58,7 +92,7 @@ enum Measure {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Tally {
     /// `FILE:LINE: ROW`, or `FILE: ROW: N sites` for a count, for each site of a zero row.
-    findings: Vec<String>,
+    findings: Vec<Problem>,
     counts: Counts,
 }
 
@@ -82,26 +116,129 @@ pub fn run(root: &Path, against: Option<&str>, counts: bool) -> Result<(), Strin
     if problems.is_empty() {
         return Ok(());
     }
-    write_stdout(&(problems.join("\n") + "\n"))?;
+    write_stdout(&report(&rules, &problems))?;
     Err(format!("{STEP} failed: {} problems", problems.len()))
 }
 
 fn rules(root: &Path) -> Result<Vec<Rule>, String> {
-    let rules: Rules = toml::from_str(&read(root, RULES)?).map_err(|e| format!("{RULES}: {e}"))?;
-    let mut kinds = BTreeMap::new();
-    for (index, rule) in rules.rule.iter().enumerate() {
-        if rule.rows.is_empty() {
-            return Err(format!("{RULES}: rule {index} has no rows"));
+    parse_rules(&read(root, RULES)?)
+}
+
+/// Returns the rules `text` declares.
+///
+/// Postconditions: every rule has a row; every row has a kind, a `why` and a `fix` that are not
+/// blank, and no other key; a row two rules declare has the same kind, `why` and `fix` in both.
+fn parse_rules(text: &str) -> Result<Vec<Rule>, String> {
+    let rules: Rules = toml::from_str(text).map_err(|e| format!("{RULES}: {e}"))?;
+    let mut refused = Vec::new();
+    let mut parsed: Vec<Rule> = Vec::new();
+    for (index, declared) in rules.rule.into_iter().enumerate() {
+        let name = format!("rule {index} ({})", declared.query);
+        if declared.rows.is_empty() {
+            return Err(format!("{RULES}: {name} has no rows"));
         }
-        for (row, &kind) in &rule.rows {
-            if *kinds.entry(row).or_insert(kind) != kind {
+        let mut rows = BTreeMap::new();
+        for (row, value) in &declared.rows {
+            match parse_row(value) {
+                Ok(parsed_row) => {
+                    rows.insert(row.clone(), parsed_row);
+                }
+                Err(faults) => refused.extend(
+                    faults
+                        .into_iter()
+                        .map(|fault| format!("{RULES}: {name}: the row {row} {fault}")),
+                ),
+            }
+        }
+        for (row, declared_row) in &rows {
+            let earlier = parsed
+                .iter()
+                .enumerate()
+                .find_map(|(i, rule)| rule.rows.get(row).map(|r| (i, rule, r)));
+            if let Some((other, rule, earlier)) = earlier
+                && earlier != declared_row
+            {
                 return Err(format!(
-                    "{RULES}: the row {row} is declared both zero and ratchet"
+                    "{RULES}: rule {other} ({}) and {name} declare the row {row} with a different kind, why or fix",
+                    rule.query
                 ));
             }
         }
+        parsed.push(Rule {
+            query: declared.query,
+            include: declared.include,
+            exclude: declared.exclude,
+            rows,
+        });
     }
-    Ok(rules.rule)
+    if refused.is_empty() {
+        Ok(parsed)
+    } else {
+        Err(refused.join("\n"))
+    }
+}
+
+/// Returns the row `value` declares: a table of `kind`, `why` and `fix`. Otherwise returns each
+/// fault, as the rest of a sentence about the row.
+fn parse_row(value: &toml::Value) -> Result<Row, Vec<String>> {
+    let Some(table) = value.as_table() else {
+        return Err(vec![format!(
+            "is a {}, not a table of kind, why and fix",
+            value.type_str()
+        )]);
+    };
+    let mut faults: Vec<String> = table
+        .keys()
+        .filter(|key| !["kind", "why", "fix"].contains(&key.as_str()))
+        .map(|key| format!("has the unknown key {key}"))
+        .collect();
+    let kind = match table.get("kind").and_then(toml::Value::as_str) {
+        Some("zero") => Some(Kind::Zero),
+        Some("ratchet") => Some(Kind::Ratchet),
+        _ => {
+            faults.push("has no kind zero or ratchet".to_owned());
+            None
+        }
+    };
+    let mut text = |key: &str| match table.get(key).and_then(toml::Value::as_str) {
+        Some(text) if !text.trim().is_empty() => Some(text.to_owned()),
+        _ => {
+            faults.push(format!("has no {key}"));
+            None
+        }
+    };
+    let why = text("why");
+    let fix = text("fix");
+    match (kind, why, fix) {
+        (Some(kind), Some(why), Some(fix)) if faults.is_empty() => Ok(Row { kind, why, fix }),
+        _ => Err(faults),
+    }
+}
+
+/// Returns the text `cargo xtask lint` prints for `problems`: the lines about no row, then each
+/// row's lines followed once by its `why` and `fix`.
+fn report(rules: &[Rule], problems: &[Problem]) -> String {
+    let mut by_row: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut text = String::new();
+    for problem in problems {
+        match &problem.row {
+            Some(row) => by_row.entry(row).or_default().push(&problem.line),
+            None => text.push_str(&format!("{}\n", problem.line)),
+        }
+    }
+    for (row, lines) in by_row {
+        for line in lines {
+            text.push_str(&format!("{line}\n"));
+        }
+        match rules.iter().find_map(|rule| rule.rows.get(row)) {
+            Some(declared) => text.push_str(&format!(
+                "  why: {}\n  fix: {}\n",
+                declared.why, declared.fix
+            )),
+            None => text.push_str(&format!("  {RULES} declares no row {row}\n")),
+        }
+    }
+    text
 }
 
 fn tally(root: &Path, rules: &[Rule]) -> Result<Tally, String> {
@@ -109,8 +246,8 @@ fn tally(root: &Path, rules: &[Rule]) -> Result<Tally, String> {
     let mut tally = Tally::default();
     for (index, rule) in rules.iter().enumerate() {
         let name = format!("rule {index} ({})", rule.query);
-        for (row, kind) in &rule.rows {
-            if *kind == Kind::Ratchet {
+        for (row, declared) in &rule.rows {
+            if declared.kind == Kind::Ratchet {
                 tally.counts.entry(row.clone()).or_default();
             }
         }
@@ -242,7 +379,7 @@ fn apply(
                         }
                     },
                 };
-                record(rule.rows[&row], &row, file, measure, tally);
+                record(rule.rows[&row].kind, &row, file, measure, tally);
             }
         }
     }
@@ -259,9 +396,13 @@ fn apply(
 
 fn record(kind: Kind, row: &str, file: &str, measure: Measure, tally: &mut Tally) {
     match (kind, measure) {
-        (Kind::Zero, Measure::Site(line)) => tally.findings.push(format!("{file}:{line}: {row}")),
+        (Kind::Zero, Measure::Site(line)) => tally
+            .findings
+            .push(Problem::of(row, format!("{file}:{line}: {row}"))),
         (Kind::Zero, Measure::Count(0)) => {}
-        (Kind::Zero, Measure::Count(n)) => tally.findings.push(format!("{file}: {row}: {n} sites")),
+        (Kind::Zero, Measure::Count(n)) => tally
+            .findings
+            .push(Problem::of(row, format!("{file}: {row}: {n} sites"))),
         (Kind::Ratchet, measure) => {
             let n = match measure {
                 Measure::Count(n) => n,
@@ -308,17 +449,20 @@ fn decode(value: &Value) -> Result<Vec<(Option<String>, Measure)>, String> {
 
 /// Returns a line for each file whose count of a ratchet row differs from its allowlist entry,
 /// and for each allowlisted row no rule declares a ratchet.
-fn ratchet(rules: &[Rule], counts: &Counts, listed: &Counts) -> Vec<String> {
+fn ratchet(rules: &[Rule], counts: &Counts, listed: &Counts) -> Vec<Problem> {
     let ratchets: BTreeSet<&str> = rules
         .iter()
         .flat_map(|rule| rule.rows.iter())
-        .filter(|&(_, &kind)| kind == Kind::Ratchet)
+        .filter(|(_, row)| row.kind == Kind::Ratchet)
         .map(|(row, _)| row.as_str())
         .collect();
-    let mut problems: Vec<String> = listed
+    let mut problems: Vec<Problem> = listed
         .keys()
         .filter(|row| !ratchets.contains(row.as_str()))
-        .map(|row| format!("{}: [{row}] is no ratchet row of {RULES}", allowlist::PATH))
+        .map(|row| Problem {
+            row: None,
+            line: format!("{}: [{row}] is no ratchet row of {RULES}", allowlist::PATH),
+        })
         .collect();
     let empty = BTreeMap::new();
     for row in ratchets {
@@ -329,8 +473,11 @@ fn ratchet(rules: &[Rule], counts: &Counts, listed: &Counts) -> Vec<String> {
             let have = found.get(file).copied().unwrap_or(0);
             let want = allowed.get(file).copied().unwrap_or(0);
             if have > want {
-                problems.push(format!(
-                    "{file}: {row} has {have}, allowed {want}: remove the sites, do not raise the allowlist"
+                problems.push(Problem::of(
+                    row,
+                    format!(
+                        "{file}: {row} has {have}, allowed {want}: remove the sites, do not raise the allowlist"
+                    ),
                 ));
             } else if have < want {
                 let fix = if have == 0 {
@@ -338,8 +485,9 @@ fn ratchet(rules: &[Rule], counts: &Counts, listed: &Counts) -> Vec<String> {
                 } else {
                     format!("lower the entry to {have}")
                 };
-                problems.push(format!(
-                    "{file}: {row} has {have}, allowed {want}: stale, {fix}"
+                problems.push(Problem::of(
+                    row,
+                    format!("{file}: {row} has {have}, allowed {want}: stale, {fix}"),
                 ));
             }
         }
@@ -349,7 +497,7 @@ fn ratchet(rules: &[Rule], counts: &Counts, listed: &Counts) -> Vec<String> {
 
 /// Returns a line for each entry of `listed` above the one of `base`, an absent entry counting
 /// as 0.
-fn rises(listed: &Counts, base: &Counts, revision: &str) -> Vec<String> {
+fn rises(listed: &Counts, base: &Counts, revision: &str) -> Vec<Problem> {
     let mut problems = Vec::new();
     for (row, files) in listed {
         for (file, &count) in files {
@@ -359,8 +507,11 @@ fn rises(listed: &Counts, base: &Counts, revision: &str) -> Vec<String> {
                 .copied()
                 .unwrap_or(0);
             if count > before {
-                problems.push(format!(
-                    "{file}: {row} allows {count}, the allowlist at {revision} allows {before}: a rise is the lead's act on main"
+                problems.push(Problem::of(
+                    row,
+                    format!(
+                        "{file}: {row} allows {count}, the allowlist at {revision} allows {before}: a rise is the lead's act on main"
+                    ),
                 ));
             }
         }

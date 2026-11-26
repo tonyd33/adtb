@@ -1,0 +1,22 @@
+[[rule]]
+query = "house.tql"
+include = ["crates/**/*.rs"]
+
+[rule.rows.rise]
+kind = "zero"
+why = "A rise lets the harm back in."
+fix = "Remove the site; hiding it does not count."
+
+[rule.rows.quiet]
+kind = "zero"
+why = "A quiet row has no site here."
+fix = "Nothing to fix."
+
+[[rule]]
+query = "structure.tql"
+include = ["crates/*/src/**/*.rs"]
+
+[rule.rows.ratchet]
+kind = "ratchet"
+why = "A ratchet site holds what it should not."
+fix = "Write the other form; a renamed form does not count."
