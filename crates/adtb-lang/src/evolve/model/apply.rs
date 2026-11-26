@@ -1,7 +1,7 @@
 use super::field::Maps;
 use super::lift::Lifting;
 use super::op::{Fail, Op, Refused, Res, Resolving, broken, refuse};
-use super::run::{Built, Gave, Late, Run};
+use super::run::{Built, Gave, Late, Run, checked_in_migration};
 use super::*;
 use crate::ast::{MigrationFile, OperatorKind};
 use crate::canon::Names;
@@ -34,6 +34,9 @@ pub(in crate::evolve) struct Migrated {
     /// For each structural operator that cannot carry a grant no later grant operator states,
     /// every such grant's refusal.
     uncarried: BTreeMap<usize, Vec<Diag>>,
+    /// The declarations each of whose failures in the declarations the migration leaves a
+    /// refusal of `ops` reports.
+    covered: BTreeSet<Item>,
 }
 
 impl Migrated {
@@ -132,7 +135,8 @@ impl Migrated {
                 let key = (item, d.diag.message.clone());
                 let reported = refusals
                     .iter()
-                    .any(|(k, r)| r.message == d.diag.message && held[*k].contains(&key));
+                    .any(|(k, r)| r.message == d.diag.message && held[*k].contains(&key))
+                    || self.covered.contains(&item);
                 (!reported).then(|| blame(&key))
             })
             .collect();
@@ -283,6 +287,7 @@ impl Model {
                     | OperatorKind::RenameField(..)
             );
             let applied = next.operator_as(&mut run, &op.kind).and_then(|x| {
+                next.indexes_hold(&model)?;
                 if renames {
                     next.faithful(&model, &mut run)?;
                 }
@@ -331,6 +336,7 @@ impl Model {
             }
             afters.push(model.clone());
         }
+        let covered = model.refuse_gone(m, &mut ops, &afters)?;
         let mut uncarried: BTreeMap<usize, Vec<Diag>> = BTreeMap::new();
         for u in std::mem::take(&mut model.unstated) {
             if let Some(k) = m.operators.iter().position(|op| op.span == u.span) {
@@ -370,10 +376,6 @@ impl Model {
         }
         let names = (naming && checks).then(|| {
             model.name_late(&mut run);
-            let missed = run.take_missed();
-            if !missed.is_empty() {
-                return Err(missed);
-            }
             let copied = std::mem::take(&mut model.naming).into_names()?;
             let mut names = run.take_noted();
             names.extend(copied);
@@ -390,7 +392,40 @@ impl Model {
             checks,
             names,
             uncarried,
+            covered,
         })
+    }
+
+    /// Refuse, for each relation variable with a unique or index naming a set or a function the
+    /// migration dropped, the operator [`crate::evolve::blamed`] blames, `afters` the model after
+    /// each operator, naming the first such clause. Returns those relation variables'
+    /// declarations, whose every failure the refusals report.
+    fn refuse_gone(
+        &self,
+        m: &MigrationFile,
+        ops: &mut [Result<ResolvedOp, Refused>],
+        afters: &[Model],
+    ) -> Result<BTreeSet<Item>, String> {
+        let mut covered = BTreeSet::new();
+        for g in self.named_gone() {
+            let r = g.relation();
+            if !covered.insert(Item::Relation(r)) {
+                continue;
+            }
+            let holds = |k: usize| {
+                afters[k]
+                    .relations
+                    .get(&r)
+                    .is_some_and(|x| x.names_gone_key(g.keys()))
+            };
+            let Some(k) = crate::evolve::blamed(afters.len(), holds) else {
+                return Err(
+                    "a unique or index names an object no state after an operator names".into(),
+                );
+            };
+            ops[k] = Err(Refused::at(m.operators[k].span, g.refusal()));
+        }
+        Ok(covered)
     }
 
     /// Put back each constraint and check of `kept` that `prior` declares and this model does not.
@@ -846,7 +881,11 @@ fn unbuilt_move(maps: &[crate::evolve::RowMap], after: &Model) -> Option<String>
 /// Returns each failure of the declarations `model` holds, by the declaration it is in and its
 /// message.
 fn failures(model: &Model) -> BTreeSet<(Item, String)> {
-    let Err(ds) = model.replay_source().check() else {
+    let Err(ds) = model
+        .replay_source()
+        .schema()
+        .and_then(checked_in_migration)
+    else {
         return BTreeSet::new();
     };
     ds.into_iter()

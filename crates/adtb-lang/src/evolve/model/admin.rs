@@ -1,7 +1,7 @@
 use super::field::Applied;
 use super::lift::Lifting;
 use super::op::{Fail, Res, broken, refuse, refuse_at, refuse_diag, refuse_diags};
-use super::run::{Late, Run, unbuilt};
+use super::run::{Late, Run, checked_in_migration, unbuilt};
 use super::*;
 use crate::ast;
 use crate::canon::{Names, canonical_term};
@@ -183,7 +183,7 @@ impl Model {
                 };
             }
         };
-        if let Err(ds) = check::check_schema(built.schema())
+        if let Err(ds) = checked_in_migration(built.schema())
             && let Some(d) = ds.iter().filter(|d| own(d.file)).min_by_key(|d| d.file.0)
         {
             return refuse_diag(&d.diag);

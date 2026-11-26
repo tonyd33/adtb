@@ -1,5 +1,5 @@
 use super::op::{Fail, Res, broken, refuse_at, unchecked};
-use super::run::{Built, Decls, Late, Run};
+use super::run::{Built, Decls, Late, Run, checked_in_migration};
 use super::*;
 use crate::ast::{self, Fill};
 use crate::canon::{Names, canonical_term};
@@ -41,7 +41,7 @@ impl Model {
             Ok(s) => s,
             Err(ds) => return unchecked(&ds),
         };
-        match check::check_schema(schema) {
+        match checked_in_migration(schema) {
             Ok(c) => Ok(c),
             Err(ds) => unchecked(&ds),
         }

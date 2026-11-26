@@ -1,26 +1,18 @@
 use super::field::Applied;
-use super::indexes::{Held, NewIndex};
+use super::indexes::{DropName, DropPart, Held, NewIndex, Part};
 use super::lift::Lifting;
 use super::op::{Fail, Res, broken, refuse, refuse_at, refuse_diag};
-use super::run::{Built, Decls, Late, Run};
+use super::run::{Built, Decls, Late, Run, unbuilt};
 use super::*;
 use crate::ast::{self, Expr, RelationClause};
-use crate::canon::canonical_term;
+use crate::canon::{Names, canonical_term};
+use crate::check;
 use crate::evolve::{Clause, Resolved};
+use crate::ids::{KeyKind, ObjectKey, Owner};
 use crate::lex::{Tok, lex};
+use crate::schema::same::{self, Place};
 use crate::span::{FileId, Span};
 use crate::types::RelId;
-
-/// Returns the tokens of `text`, joined by spaces.
-fn joined(text: &str) -> String {
-    lex(text)
-        .0
-        .iter()
-        .filter(|t| t.tok != Tok::Eof)
-        .map(|t| &text[t.span.range()])
-        .collect::<Vec<_>>()
-        .join(" ")
-}
 
 /// Returns the text of a constructor selection as a refusal names it: ` in C` or ` in (C | D)`,
 /// empty without one.
@@ -82,21 +74,11 @@ impl Model {
     }
 
     /// Returns the relation variable `r` is in `schema`.
-    fn rel_in(schema: &crate::schema::Schema, r: u64) -> Res<RelId> {
+    pub(super) fn rel_in(schema: &crate::schema::Schema, r: u64) -> Res<RelId> {
         match schema.ids().relation_of(cat_rel(r)) {
             Some(rel) => Ok(rel),
             None => broken("a relation variable the built schema does not hold"),
         }
-    }
-
-    /// Append `clause` to relation variable `r` and build as [`Model::rebuilt_relation`] does.
-    fn appended(&mut self, run: &mut Run, r: u64, clause: ClauseM) -> Res<Option<(Built, FileId)>> {
-        self.relations
-            .get_mut(&r)
-            .expect("a resolved relation variable")
-            .clauses
-            .push(clause);
-        self.rebuilt_relation(run, r)
     }
 
     /// Build after an operator changed the clauses of relation variable `r`. Returns the build
@@ -148,22 +130,33 @@ impl Model {
         elems: Term,
         on: &ast::RelationRef,
     ) -> Res<Applied> {
-        if let Some(sel) = &on.sel {
-            let built = self.schema_now(run)?;
-            let rel = Self::rel_in(built.schema(), r)?;
-            if let Err(e) = built.schema().relation_sel(rel, sel) {
-                return refuse_at(on.span, e);
+        let parts = match &on.sel {
+            None => None,
+            Some(sel) => {
+                let built = self.schema_now(run)?;
+                let rel = Self::rel_in(built.schema(), r)?;
+                if let Err(e) = built.schema().relation_sel(rel, sel) {
+                    return refuse_at(on.span, e);
+                }
+                let names = crate::evolve::sel_idents(sel);
+                let found = scope_objects(
+                    built.schema(),
+                    rel,
+                    &names.iter().map(|&c| c.clone()).collect::<Vec<_>>(),
+                );
+                let Some(parts) = names
+                    .iter()
+                    .zip(found)
+                    .map(|(c, o)| Some(Part::held(o?, &c.text)))
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return broken(
+                        "a scope the checker resolves names no constructor or named set",
+                    );
+                };
+                Some(parts)
             }
-        }
-        let names: Vec<&ast::Ident> = match &on.sel {
-            None => Vec::new(),
-            Some(ast::CtorSel::One(c)) => vec![c],
-            Some(ast::CtorSel::Many(cs)) => cs.iter().collect(),
         };
-        let parts = on
-            .sel
-            .as_ref()
-            .map(|_| names.iter().map(|c| Term::text(&c.text)).collect());
         let index = self.fresh(Space::Index);
         let new = NewIndex::new(kind, vec![elems], parts, Vec::new()).identified(index);
         self.relations
@@ -224,7 +217,10 @@ impl Model {
     }
 
     /// Drop the one unique or index over `fields` of the relation variable `on` names whose
-    /// scope is the one `on` writes.
+    /// scope is the one `on` writes. The drop's names resolve as the checker resolves them
+    /// against the declarations without the uniques and indexes naming an object the migration
+    /// dropped; a name that resolves to none is one only with such an object of the clause it is
+    /// compared with.
     pub(super) fn drop_index(
         &mut self,
         run: &mut Run,
@@ -233,55 +229,88 @@ impl Model {
         fields: &[Expr],
         on: &ast::RelationRef,
     ) -> Res<Applied> {
-        let built = self.schema_now(run)?;
-        let schema = built.schema();
-        let rel = Self::rel_in(schema, r)?;
-        let want_scope = schema
-            .written_scope(rel, on.sel.as_ref())
-            .or_else(|e| refuse_at(on.span, e))?;
-        let want: Vec<String> = fields
-            .iter()
-            .map(|e| run.text()[e.span.range()].to_string())
-            .collect();
-        let tokens: Vec<String> = want.iter().map(|w| joined(w)).collect();
-        let defs = &schema.relation(rel).indexes;
-        let mut found = Vec::new();
-        let mut ix = 0;
-        for (k, held) in self.relations[&r].indexes() {
-            let d = &defs[ix];
-            ix += 1;
-            let texts: Vec<&str> = (0..d.fields.len()).map(|j| d.text(j)).collect();
-            if held.kind() == kind
-                && d.written() == want_scope.as_deref()
-                && texts.len() == tokens.len()
-                && texts.iter().zip(&tokens).all(|(a, b)| a == b)
-            {
-                found.push((k, ix - 1));
-            }
-        }
         let word = match kind {
             IndexKind::Unique => "unique",
             IndexKind::Plain => "index",
             IndexKind::Interval => "interval index",
         };
         let rname = self.relations[&r].name.clone();
-        let shown = scope_shown(on.sel.as_ref());
-        let (k, at) = match found.as_slice() {
-            [] => {
-                return refuse(format!(
-                    "`{rname}` has no {word} ({}){shown}",
-                    want.join(", ")
-                ));
-            }
+        let want: Vec<&str> = fields.iter().map(|e| &run.text()[e.span.range()]).collect();
+        let missing = format!(
+            "`{rname}` has no {word} ({}){}",
+            want.join(", "),
+            scope_shown(on.sel.as_ref())
+        );
+        let module = run.module().to_string();
+        let held = self.without_gone();
+        let schema = match held.schema(&run.ahead(&held)) {
+            Ok(s) => s,
+            Err(ds) => return unbuilt(&ds),
+        };
+        let rel = Self::rel_in(&schema, r)?;
+        let scope = on.sel.as_ref().map(|sel| {
+            let idents: Vec<ast::Ident> = crate::evolve::sel_idents(sel)
+                .into_iter()
+                .cloned()
+                .collect();
+            let found = scope_objects(&schema, rel, &idents);
+            idents
+                .iter()
+                .zip(found)
+                .map(|(c, o)| match o {
+                    Some(o) => DropPart::Held(o),
+                    None => DropPart::Unheld(ObjectKey::named(
+                        KeyKind::Set,
+                        Owner::Object(Space::Shared, r),
+                        &c.text,
+                    )),
+                })
+                .collect::<Vec<_>>()
+        });
+        let refs = |reach: Option<&BTreeSet<u64>>| {
+            let ctors: Option<Vec<u32>> = reach.map(|cs| {
+                let mut out: Vec<u32> = cs
+                    .iter()
+                    .filter_map(|&c| self.ctor_index(&schema, c))
+                    .collect();
+                out.sort_unstable();
+                out.dedup();
+                out
+            });
+            check::element_refs(&schema, rel, ctors.as_ref(), fields)
+        };
+        let found = self.indexes_dropped(r, (kind, scope.as_deref()), &mut |reach| {
+            let (refs, checked) = refs(reach);
+            let names = noted(&schema, &refs);
+            fields
+                .iter()
+                .map(|e| {
+                    same::placed_tree(e, &mut |q, p| drop_name(&names, &checked, &module, (q, p)))
+                })
+                .collect()
+        });
+        let k = match found.as_slice() {
             [k] => *k,
+            [] => {
+                if let Some(sel) = &on.sel
+                    && let Err(e) = schema.written_scope(rel, Some(sel))
+                {
+                    return refuse_at(on.span, e);
+                }
+                let own = scope.as_deref().and_then(|ps| self.drop_reach(ps));
+                if let Some(at) = self.unmatched_name(&schema, (r, own, &module), fields, &refs) {
+                    return refuse_at(at, format!("no `{}` in scope", &run.text()[at.range()]));
+                }
+                return refuse(missing);
+            }
             _ => return broken("a relation variable holds a unique or an index twice"),
         };
         if run.is_copying() {
-            let Some(i) = self.decl_at(Item::Relation(r)) else {
-                return broken("a dropped clause's relation variable has no declaration");
-            };
-            let file = FileId(i as u32);
-            run.read(&built, file, &defs[at].fields, fields);
+            let reach = self.relations[&r]
+                .index_at(k)
+                .and_then(|h| h.reach(self))
+                .map(|cs| cs.into_iter().collect::<BTreeSet<u64>>());
+            run.note(&schema, &refs(reach.as_ref()).0);
         }
         let Some(index) = self
             .relations
@@ -298,6 +327,68 @@ impl Model {
             _ => Resolved::DropIndex { index },
         };
         Ok((resolved, Vec::new(), Ok(Vec::new())))
+    }
+
+    /// Returns the constructors a drop's scope `parts` reaches, `None` when a part of it names
+    /// nothing the model holds.
+    fn drop_reach(&self, parts: &[DropPart]) -> Option<BTreeSet<u64>> {
+        let mut out = BTreeSet::new();
+        for p in parts {
+            match p {
+                DropPart::Held((Space::Set, s)) => out.extend(self.set_reach(*s)),
+                DropPart::Held((_, c)) => {
+                    out.insert(*c);
+                }
+                DropPart::Unheld(_) => return None,
+            }
+        }
+        Some(out)
+    }
+
+    /// Returns the first name of `fields`, a drop in module `module` over relation variable `r`
+    /// written with a scope reaching `own`, that resolves through `refs` under neither that
+    /// scope, a scope a unique or index of `r` reaches, nor every constructor, and spells no
+    /// object the migration dropped that one of them names.
+    fn unmatched_name(
+        &self,
+        schema: &crate::schema::Schema,
+        (r, own, module): (u64, Option<BTreeSet<u64>>, &str),
+        fields: &[Expr],
+        refs: &dyn Fn(Option<&BTreeSet<u64>>) -> ElementRefs,
+    ) -> Option<Span> {
+        let rel = &self.relations[&r];
+        let mut reaches: Vec<Option<BTreeSet<u64>>> = vec![None];
+        if own.is_some() {
+            reaches.push(own);
+        }
+        for (_, h) in rel.indexes() {
+            let reach = h.reach(self).map(|cs| cs.into_iter().collect());
+            if !reaches.contains(&reach) {
+                reaches.push(reach);
+            }
+        }
+        let mut unmatched: Option<Vec<Span>> = None;
+        for reach in &reaches {
+            let (refs, checked) = refs(reach.as_ref());
+            let names = noted(schema, &refs);
+            let mut here = Vec::new();
+            for e in fields {
+                same::placed_tree(e, &mut |q, p| {
+                    let n = drop_name(&names, &checked, module, (q, p));
+                    if let Some(w @ DropName::Unheld { .. }) = &n
+                        && !rel.names_dropped(w)
+                    {
+                        here.push(q.span());
+                    }
+                    n
+                });
+            }
+            unmatched = Some(match unmatched {
+                None => here,
+                Some(was) => was.into_iter().filter(|s| here.contains(s)).collect(),
+            });
+        }
+        unmatched?.first().copied()
     }
 
     /// Returns the position of computed field `field` among relation variable `r`'s clauses.
@@ -374,13 +465,11 @@ impl Model {
         expr: Term,
     ) -> Res<Applied> {
         let computed = self.fresh(Space::Computed);
-        let clause = ClauseM::Computed {
-            id: Some(computed),
-            name: field.text.clone(),
-            ty,
-            expr,
-        };
-        let Some((built, file)) = self.appended(run, r, clause)? else {
+        self.relations
+            .get_mut(&r)
+            .expect("a resolved relation variable")
+            .push_computed(computed, field.text.clone(), ty, expr);
+        let Some((built, file)) = self.rebuilt_relation(run, r)? else {
             let k = self.relations[&r].clauses.len() - 1;
             self.clause_typed(run, r, k, None)?;
             self.computed_unbuilt.insert((r, computed));
@@ -422,18 +511,13 @@ impl Model {
         expr: Term,
     ) -> Res<Applied> {
         let k = self.computed_at(r, field)?;
-        if let ClauseM::Computed {
-            ty: held_ty,
-            expr: held_expr,
-            ..
-        } = &mut self
+        if !self
             .relations
             .get_mut(&r)
             .expect("the relation variable")
-            .clauses[k]
+            .redefine_computed(k, ty, expr)
         {
-            *held_ty = ty;
-            *held_expr = expr;
+            return broken("a computed field's position holds another clause");
         }
         let Some((built, file)) = self.rebuilt_relation(run, r)? else {
             self.clause_typed(run, r, k, None)?;
@@ -469,14 +553,11 @@ impl Model {
         field: &ast::Ident,
     ) -> Res<Applied> {
         let k = self.computed_at(r, field)?;
-        let ClauseM::Computed {
-            id: Some(computed), ..
-        } = self
+        let Some(computed) = self
             .relations
             .get_mut(&r)
             .expect("the relation variable")
-            .clauses
-            .remove(k)
+            .remove_computed(k)
         else {
             return broken("a dropped computed field held no id");
         };
@@ -549,4 +630,68 @@ fn written_span(decls: &impl Decls, file: FileId, k: usize) -> Res<Span> {
         RelationClause::Computed(n, _, e) => Ok(n.span.to(e.span)),
         _ => broken("a default or computed field the model printed as another clause"),
     }
+}
+
+/// The names of elements the checker resolved, and the spans of the expressions that check.
+type ElementRefs = (Vec<(Span, check::Ref)>, Vec<Span>);
+
+/// Returns the constructor or named set each of `idents`, a scope of relation `rel`, names in
+/// `schema` as the checker resolves it, `None` for one it resolves to neither.
+pub(super) fn scope_objects(
+    schema: &crate::schema::Schema,
+    rel: RelId,
+    idents: &[ast::Ident],
+) -> Vec<Option<Obj>> {
+    let sel = ast::CtorSel::Many(idents.to_vec());
+    let names = noted(schema, &check::scope_refs(schema, rel, &sel));
+    idents
+        .iter()
+        .map(|c| ids_at(&names, c.span).into_iter().next())
+        .collect()
+}
+
+/// Returns the names `refs` resolve, `schema` holding what they name.
+fn noted(schema: &crate::schema::Schema, refs: &[(Span, check::Ref)]) -> Names {
+    let mut names = Names::default();
+    for (span, r) in refs {
+        names.note(schema, *span, r);
+    }
+    names
+}
+
+/// Returns the objects `names` resolves the name at `span` to.
+fn ids_at(names: &Names, span: Span) -> BTreeSet<Obj> {
+    names
+        .ids_within(span.range())
+        .filter(|(r, ..)| *r == span.range())
+        .flat_map(|(_, ids, _)| ids.iter().copied())
+        .collect()
+}
+
+/// Returns what `names` resolves name `q` of a dropped element to: its objects, `None` for an
+/// object with no catalog id, which its text names, and its text when it resolves to nothing.
+/// A name inside an expression of `checked` resolves; an unqualified one is of `module`.
+fn drop_name(
+    names: &Names,
+    checked: &[Span],
+    module: &str,
+    (q, place): (&ast::QName, Place),
+) -> Option<DropName> {
+    let ids = ids_at(names, q.name.span);
+    if !ids.is_empty() {
+        return Some(DropName::Objects(ids));
+    }
+    let at = q.name.span;
+    if names.get(at).is_some()
+        || checked
+            .iter()
+            .any(|c| c.start <= at.start && at.end <= c.end)
+    {
+        return None;
+    }
+    Some(DropName::Unheld {
+        module: q.module.as_ref().map_or(module, |m| &m.text).to_string(),
+        name: q.name.text.clone(),
+        place,
+    })
 }

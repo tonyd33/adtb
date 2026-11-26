@@ -1,13 +1,23 @@
 use std::ops::Range;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Model, Obj};
+use crate::ast::Expr;
 use crate::canon::Names;
 use crate::evolve::Written;
 use crate::evolve::model::inverse::{Late, Recreated, dropped, word};
 use crate::ids::{FIRST_LOG_ID, ObjectKey, Space};
 use crate::schema::Adder;
+use crate::schema::same::{Tree, tree};
+use crate::span::Span;
+
+/// What a name of a term resolves to: the objects it holds, or the keys of dropped ones.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Bound {
+    Objects(BTreeSet<Obj>),
+    Keys(BTreeSet<ObjectKey>),
+}
 
 /// Text written in the language, each name in it held as the objects it resolves to.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -49,6 +59,18 @@ enum Piece {
 }
 
 impl Piece {
+    /// Returns the text the piece holds as written.
+    fn written(&self) -> &str {
+        match self {
+            Piece::Text(s)
+            | Piece::Copy { text: s, .. }
+            | Piece::Arm { text: s, .. }
+            | Piece::Added { written: s, .. }
+            | Piece::Dropped { written: s, .. }
+            | Piece::Name { written: s, .. } => s,
+        }
+    }
+
     fn print(&self, model: &Model) -> String {
         match self {
             Piece::Text(s)
@@ -254,21 +276,59 @@ impl Term {
             .collect()
     }
 
-    /// Returns the object and the spelling of a term that is one name of one object alone.
-    pub(super) fn as_name(&self) -> Option<(Obj, &str)> {
-        match self.0.as_slice() {
-            [
-                Piece::Name {
-                    ids,
-                    written,
-                    pun: false,
-                },
-            ] => match ids.as_slice() {
-                [o] => Some((*o, written.as_str())),
-                _ => None,
-            },
+    /// Returns the tree of `e`, the expression this term was lifted from at `start` of its text,
+    /// each name a piece of the term holds as the place of that piece. Returns `None` for an
+    /// expression no index admits.
+    ///
+    /// Preconditions:
+    /// - No piece was added, removed or rewritten since the term was lifted.
+    pub(super) fn tree(&self, start: usize, e: &Expr) -> Option<Tree<usize>> {
+        let mut names: Vec<(Range<usize>, usize)> = Vec::new();
+        let mut at = start;
+        for (k, p) in self.0.iter().enumerate() {
+            let text = p.written();
+            if matches!(p, Piece::Name { .. }) {
+                names.push((at..at + text.len(), k));
+            }
+            at += text.len();
+        }
+        let piece = |s: Span| names.iter().find(|(r, _)| *r == s.range()).map(|&(_, k)| k);
+        tree(e, &mut |q| piece(q.name.span))
+    }
+
+    /// Returns whether `other` holds the pieces of this term, each of its kind and as written,
+    /// whatever its names resolve to.
+    pub(super) fn written_alike(&self, other: &Term) -> bool {
+        self.0.len() == other.0.len()
+            && self.0.iter().zip(&other.0).all(|(a, b)| {
+                std::mem::discriminant(a) == std::mem::discriminant(b) && a.written() == b.written()
+            })
+    }
+
+    /// Returns what the name at piece `at` resolves to, `None` when that piece is no name.
+    pub(super) fn bound_at(&self, at: usize) -> Option<Bound> {
+        match self.0.get(at)? {
+            Piece::Name { ids, .. } => Some(Bound::Objects(ids.iter().copied().collect())),
+            Piece::Dropped { keys, .. } => Some(Bound::Keys(keys.iter().cloned().collect())),
             _ => None,
         }
+    }
+
+    /// Returns each name of dropped objects the term holds: the keys of those objects and the
+    /// name as written.
+    pub(super) fn dropped_names(&self) -> impl Iterator<Item = (&[ObjectKey], &str)> + '_ {
+        self.0.iter().filter_map(|p| match p {
+            Piece::Dropped { keys, written, .. } => Some((keys.as_slice(), written.as_str())),
+            _ => None,
+        })
+    }
+
+    /// Returns what each name of dropped objects the term holds resolved to before the drop.
+    pub(super) fn dropped_keys(&self) -> impl Iterator<Item = Bound> + '_ {
+        self.0.iter().filter_map(|p| match p {
+            Piece::Dropped { keys, .. } => Some(Bound::Keys(keys.iter().cloned().collect())),
+            _ => None,
+        })
     }
 
     /// Returns whether the term holds a name of dropped objects.
@@ -512,7 +572,7 @@ impl Term {
                     {
                         return Err(dropped(of, word(*kind)));
                     }
-                    let named: std::collections::BTreeSet<&str> =
+                    let named: BTreeSet<&str> =
                         ids.iter().filter_map(|i| now.get(i)).copied().collect();
                     let mut named = named.into_iter();
                     match (named.next(), named.next()) {

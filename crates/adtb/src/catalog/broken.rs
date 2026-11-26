@@ -56,6 +56,9 @@ pub enum Broken {
     GrantId(write::Error),
     /// A grant row id is drawn with no page of id counters named.
     NoSequences,
+    /// Rows share a key of a unique, of this catalog id, whose constructors at the migration's
+    /// end do not reach theirs.
+    UnreachedShared(CatIndexId),
     /// The model gave steps for a number of operators other than the migration's.
     Unstepped {
         operators: usize,
@@ -179,6 +182,12 @@ impl fmt::Display for Broken {
             Broken::KeyCounter(e) => write!(f, "advancing a key counter: {}", write::detail(e)),
             Broken::GrantId(e) => write!(f, "drawing a grant id: {}", write::detail(e)),
             Broken::NoSequences => f.write_str("a grant row id needs a named page of id counters"),
+            Broken::UnreachedShared(id) => {
+                write!(
+                    f,
+                    "rows share a key of unique {id} outside the constructors it reaches"
+                )
+            }
             Broken::Unstepped { operators, stepped } => write!(
                 f,
                 "the model gave steps for {stepped} of a migration's {operators} operators"

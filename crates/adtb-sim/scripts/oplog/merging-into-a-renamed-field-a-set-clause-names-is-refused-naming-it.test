@@ -1,0 +1,20 @@
+# A merge that carries a field a set-scoped index names into a field of another name, while
+# another member of the set keeps the old name, is refused naming the index: its element would
+# read fields of two names.
+seed 11
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { z: Text } | B { z: Text } | C { z: Text }
+  add relation ts : T key id generate sequence
+  add set S of ts = A | B | C
+  add index (z) in ts.S
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "merge constructor T.(A | B) into AB { w: W, z2: Text }", detail: "`index (z) in S` of `ts` names `z2` of `AB` and `z` of `C` as one element" } } }
+  module ts
+  add type W = A | B
+  merge constructor T.(A | B) into AB { w: W, z2: Text }
+    by match
+      | A a -> AB { w: A, z2: a.z }
+      | B b -> AB { w: B, z2: b.z }

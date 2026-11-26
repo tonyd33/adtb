@@ -1,0 +1,55 @@
+# A migration that drops a named set a unique still names at its end is refused naming the unique,
+# whatever operators come after the drop: they leave the clause naming the dropped set, and the
+# migration names no other failure for it. A set of that name added and dropped again is dropped.
+seed 1
+
+migrate
+  module app
+  add module app
+  add type K = A | B
+  add type T { id: Key ts, n: I64 } = A { x: I64 } | B { x: I64 } | C { x: I64 }
+  add relation ts : T key id generate sequence
+  add set S of ts = A | B
+  add unique (n) in ts.S
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop set S of ts", detail: "`unique (n) in S` of `ts` names the dropped set `S`" } } }
+  module app
+  drop set S of ts
+  add field T.C.w : I64 fill 0
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop set S of ts", detail: "`unique (n) in S` of `ts` names the dropped set `S`" } } }
+  module app
+  drop set S of ts
+  merge constructor T.(A | B) into M { k: K, x: I64 }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop set S of ts", detail: "`unique (n) in S` of `ts` names the dropped set `S`" } } }
+  module app
+  drop set S of ts
+  split constructor T.A into A1 { x: I64 } | A2 { x: I64 }
+    by match
+      | A { x } if x > 0 -> A1 { x: x }
+      | A { x } -> A2 { x: x }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop set S of ts", detail: "`unique (n) in S` of `ts` names the dropped set `S`" } } }
+  module app
+  drop set S of ts
+  add set S of ts = A
+  drop set S of ts
+
+migrate
+  module app
+  deprecate ts.A
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "drop set S of ts", detail: "`unique (n) in S` of `ts` names the dropped set `S`" } } }
+  module app
+  drop set S of ts
+  remove constructor T.A
+
+reopen
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None select i.clause
+----
+"key id"
+"unique (n) in (A | B)"

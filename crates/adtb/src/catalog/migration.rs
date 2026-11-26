@@ -340,8 +340,18 @@ impl Catalog {
         };
         let shared = duplicates(&b)?;
         if !shared.is_empty() {
-            let at = |id| added.uniques.get(&id).copied().unwrap_or(carrying);
-            let why = shared.into_iter().map(|(id, w)| (at(id), w)).collect();
+            let mut why = Vec::new();
+            for (id, keys, w) in shared {
+                let mut at = None;
+                for rows in &keys {
+                    let k = match stepped.widened(self.schema(), id, rows)? {
+                        Some(k) => k,
+                        None => added.uniques.get(&id).copied().unwrap_or(carrying),
+                    };
+                    at = Some(at.map_or(k, |a: usize| a.min(k)));
+                }
+                why.push((at.unwrap_or(carrying), w));
+            }
             return Err(refused_at(file, text, why));
         }
         let mut built = self.build(m, &b)?;
@@ -806,9 +816,9 @@ fn nth_operator(file: &MigrationFile, text: &str, k: usize) -> String {
 }
 
 /// Returns why the rows `b.data` gives the relations `b.rewritten` names break a unique of
-/// `b.indexing`: each unique two of them share a key of, by its catalog id, and the keys they
-/// share.
-fn duplicates(b: &Built) -> Result<Vec<(CatIndexId, String)>, Error> {
+/// `b.indexing`: each unique two of them share a key of, by its catalog id, for each key rows
+/// share the constructor of each such row, and the keys they share.
+fn duplicates(b: &Built) -> Result<Vec<Shared>, Error> {
     let schema = b.indexing.held();
     let normal = b.indexing.normal();
     let mut why = Vec::new();
@@ -823,22 +833,27 @@ fn duplicates(b: &Built) -> Result<Vec<(CatIndexId, String)>, Error> {
             continue;
         };
         let ks = b.indexing.key_schema(spec)?;
-        let mut seen = BTreeSet::new();
+        let mut seen: BTreeMap<Vec<u8>, Vec<CatCtorId>> = BTreeMap::new();
         let mut shared = Vec::new();
         for &c in &spec.ctors {
+            let cat = ctor_id(schema, spec.relation, c);
             let types = element_types(schema, normal, spec.relation, c, &spec.elements)
                 .map_err(|e| classify(&format!("index `{}`", spec.clause), e, Broken::IndexKey))?;
-            for row in &ctors[&ctor_id(schema, spec.relation, c)] {
-                if let Some(key) = row_key(b.indexing.keyed(*id), &ks, c, row)?
-                    && !seen.insert(ks.encode(&key)?)
-                {
+            for row in &ctors[&cat] {
+                let Some(key) = row_key(b.indexing.keyed(*id), &ks, c, row)? else {
+                    continue;
+                };
+                let rows = seen.entry(ks.encode(&key)?).or_default();
+                if !rows.is_empty() {
                     shared.push(shown_key(schema, &types, &key)?);
                 }
+                rows.push(cat);
             }
         }
         if !shared.is_empty() {
             why.push((
                 *id,
+                seen.into_values().filter(|rows| rows.len() > 1).collect(),
                 format!(
                     "rows of {} share the key {} of `{}`",
                     schema.relation(spec.relation).name,
@@ -850,6 +865,10 @@ fn duplicates(b: &Built) -> Result<Vec<(CatIndexId, String)>, Error> {
     }
     Ok(why)
 }
+
+/// A unique rows break: its catalog id, for each key rows share the constructor of each such row,
+/// and why.
+type Shared = (CatIndexId, Vec<Vec<CatCtorId>>, String);
 
 /// Returns the components of index key `key`, of types `types`, in the textual syntax of values.
 fn shown_key(schema: &Schema, types: &[Ty], key: &[Value]) -> Result<String, Error> {

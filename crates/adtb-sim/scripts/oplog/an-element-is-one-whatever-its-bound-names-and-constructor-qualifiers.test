@@ -1,0 +1,75 @@
+# Two elements are one expression apart from how a name is qualified and the names the element
+# binds, a field a pattern names alone binding its name: a unique or index whose elements differ
+# from a held one's only so is refused as that one, in a migration naming the held one and in a
+# declaration naming both, and a drop written either way finds the held one. A name reads as what
+# it names, so a call of function `g` is not a field `g` of another constructor, and a drop naming
+# a field by its name before a rename is refused naming that name.
+seed 3
+
+migrate
+  module app
+  add module app
+  define fn g (x: I64) -> I64 = x * 2
+  add type T = A { v: I64 } | B
+  add type Item { id: Key items, t: T, n: I64 } = P { g: I64 } | Q
+  add relation items : Item key id generate sequence
+  add index (match t | A a -> a.v | B -> 0) in items
+  add unique (g(n)) in items.Q
+  add index (match t | A { v } -> v + 2 | B -> 0) in items
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add index (match t | A b -> b.v | B -> 0) in items", detail: "`index (match t | A b -> b.v | B -> 0)` of `items` is one with `index (match t | A a -> a.v | B -> 0)`, which `items` already holds" } } }
+  module app
+  add index (match t | A b -> b.v | B -> 0) in items
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add index (match t | app::A a -> a.v | app::B -> 0) in items", detail: "`index (match t | app::A a -> a.v | app::B -> 0)` of `items` is one with `index (match t | A a -> a.v | B -> 0)`, which `items` already holds" } } }
+  module app
+  add index (match t | app::A a -> a.v | app::B -> 0) in items
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add index (match t | T.A c -> c.v | T.B -> 0) in items", detail: "`index (match t | T.A c -> c.v | T.B -> 0)` of `items` is one with `index (match t | A a -> a.v | B -> 0)`, which `items` already holds" } } }
+  module app
+  add index (match t | T.A c -> c.v | T.B -> 0) in items
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add index (match t | app::A d -> d.v + 1 | app::B -> 0) in items", detail: "`index (match t | app::A d -> d.v + 1 | app::B -> 0)` of `items` is one with `index (match t | A c -> c.v + 1 | B -> 0)`, which `items` already holds" } } }
+  module app
+  add index (match t | A c -> c.v + 1 | B -> 0) in items
+  add index (match t | app::A d -> d.v + 1 | app::B -> 0) in items
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add index (match t | A { v: w } -> w + 2 | B -> 0) in items", detail: "`index (match t | A { v: w } -> w + 2 | B -> 0)` of `items` is one with `index (match t | A { v } -> v + 2 | B -> 0)`, which `items` already holds" } } }
+  module app
+  add index (match t | A { v: w } -> w + 2 | B -> 0) in items
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add index (match t | A { v: v } -> v + 2 | B -> 0) in items", detail: "`index (match t | A { v: v } -> v + 2 | B -> 0)` of `items` is one with `index (match t | A { v } -> v + 2 | B -> 0)`, which `items` already holds" } } }
+  module app
+  add index (match t | A { v: v } -> v + 2 | B -> 0) in items
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (app::g(n)) in items.Q", detail: "`unique (app::g(n)) in Q` of `items` is one with `unique (g(n)) in Q`, which `items` already holds" } } }
+  module app
+  add unique (app::g(n)) in items.Q
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (g(m)) in items.Q", detail: "`unique (g(m)) in Q` of `items` is one with `unique (g(m)) in Q`, which `items` already holds" } } }
+  module app
+  rename field Item.n to m
+  add unique (g(m)) in items.Q
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add relation others : O key id generate sequence index (match t | A a -> a.v | B -> 0) index (match t | app::A b -> b.v | app::B -> 0)", detail: "`others` declares `index (match t | A a -> a . v | B -> 0)` and `index (match t | app :: A b -> b . v | app :: B -> 0)`, which are one" } } }
+  module app
+  add type O = { id: Key others, t: T }
+  add relation others : O key id generate sequence index (match t | A a -> a.v | B -> 0) index (match t | app::A b -> b.v | app::B -> 0)
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop unique (g(n)) in items.Q", detail: "no `n` in scope" } } }
+  module app
+  rename field Item.n to m
+  drop unique (g(n)) in items.Q
+
+migrate
+  module app
+  rename field Item.n to m
+  drop index (match t | T.A z -> z.v | app::B -> 0) in items
+  drop unique (app::g(m)) in items.Q
+  drop index (match t | A { v: u } -> u + 2 | B -> 0) in items
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "items" and i.relation == r.id and i.dropped == None select i.clause
+----
+"key id"

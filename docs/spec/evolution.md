@@ -976,7 +976,16 @@ An `add unique` or `add index` of one it holds is refused naming the
 held one, and so is an operator whose image of two of them is one: a
 `remove constructor T.C` that narrows `index (n) in (A | C)` to
 `index (n) in A` while the relation variable holds `index (n) in A`.
-A drop therefore names at most one clause.
+A drop therefore names at most one clause, and finds it by a named set
+or function an earlier operator of the migration dropped as well,
+wherever its elements name it: `drop set S of ts` then `drop index (n)
+in ts.S` drops the index. A drop that finds nothing is refused naming
+the first of its names that resolves neither within the drop's own
+scope, within the scope of a unique or index the relation variable
+holds, nor to an object the migration dropped that one of them names;
+when there is none it is refused as having no such unique or index. A
+migration that drops a named set or a function a unique or index still
+names at its end is refused, naming the unique or index.
 
 `unique` may range over deterministic expressions of the row's fields
 as well as fields: `add unique (lower(email)) in identities.EmailPass`

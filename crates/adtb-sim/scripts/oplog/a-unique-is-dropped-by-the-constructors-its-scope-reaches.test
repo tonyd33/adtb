@@ -1,0 +1,40 @@
+# Two uniques of a relation variable are one when their scopes reach the same constructors, a
+# named set counting as its members: an `add unique` of one the relation variable holds is
+# refused naming it, and a `drop unique` finds it by either scope.
+seed 3
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: I64, x: Text } | B { k: Text }
+  add relation ts : T key id generate sequence
+  add set S of ts = A
+  add unique (n) in ts.S
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (n) in ts.A", detail: "`unique (n) in A` of `ts` is one with `unique (n) in S`, which `ts` already holds" } } }
+  module ts
+  add unique (n) in ts.A
+
+migrate
+  module ts
+  drop unique (n) in ts.A
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None select i.clause
+----
+"key id"
+
+migrate
+  module ts
+  add unique (n) in ts.A
+
+migrate
+  module ts
+  drop unique (n) in ts.S
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None select i.clause
+----
+"key id"

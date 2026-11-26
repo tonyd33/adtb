@@ -1,0 +1,72 @@
+# A fault the end of a migration finds, a unique or index naming a set or a function the migration
+# dropped or rows a unique's constructors share a key of, is refused at the last operator after
+# which it holds in every later state, whichever operators between them clear it or bring it back.
+# Rows of one key collide once any two of them do.
+seed 1
+
+migrate
+  module ts
+  add module ts
+  define fn g (x: I64) -> I64 = x * 2
+  add type T { id: Key ts } = A { n: I64 } | B { n: I64 } | C { n: I64 }
+  add relation ts : T key id generate sequence
+  add set S of ts = A
+  add index (n) in ts.S
+  add index (g(n)) in ts
+  add set U of ts = A
+  add unique (n) in ts.U
+
+run
+  insert ts.A { n: 1 }
+  insert ts.C { n: 1 }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop set S of ts::ts", detail: "`index (n) in S` of `ts` names the dropped set `S`" } } }
+  module ts
+  drop set S of ts
+  add set S of ts = A
+  drop set S of ts::ts
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop fn ts::g", detail: "`index (g(n))` of `ts` names the dropped function `g`" } } }
+  module ts
+  drop fn g
+  define fn g (x: I64) -> I64 = x * 3
+  add type W = X | Y
+  drop fn ts::g
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add set U of ts = A | B | C", detail: "rows of ts share the key 1 of `unique (n) in (A | B | C)`" } } }
+  module ts
+  drop set U of ts
+  add set U of ts = A | C
+  drop set U of ts
+  add set U of ts = B
+  drop set U of ts
+  add set U of ts = A | B | C
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add set U of ts = A | C | D", detail: "rows of ts share the key 1 of `unique (n) in (A | C | D)`" } } }
+  module ts
+  add constructor T.D { n: I64 }
+    joins ts.U
+  drop set U of ts
+  add set U of ts = A | C | D
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add set U of ts = A1 | A2 | C", detail: "rows of ts share the key 1 of `unique (n) in (A1 | A2 | C)`" } } }
+  module ts
+  split constructor T.A into A1 { n: I64 } | A2 { n: I64 }
+    by match
+      | A { n } if n > 0 -> A1 { n: n }
+      | A { n } -> A2 { n: n }
+  drop set U of ts
+  add set U of ts = A1 | A2 | C
+  add type W = X | Y
+
+reopen
+
+run
+  insert ts.B { n: 1 }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add set U of ts = A | C", detail: "rows of ts share the key 1, 1 of `unique (n) in (A | B | C)`" } } }
+  module ts
+  drop set U of ts
+  add set U of ts = A | C
+  drop set U of ts
+  add set U of ts = A | B | C

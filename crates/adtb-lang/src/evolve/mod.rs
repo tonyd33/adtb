@@ -67,6 +67,20 @@ pub use resolved::{
 };
 pub use rowmap::{Merged, RowFn, RowMap, Step};
 
+/// Returns the operator a fault the end of a migration finds is blamed on: the last operator after
+/// which the fault holds in every later state, `holds(k)` saying whether it holds in the state
+/// after operator `k` of `ops`. Returns `None` when it does not hold after the last.
+pub fn blamed(ops: usize, holds: impl Fn(usize) -> bool) -> Option<usize> {
+    let mut at = None;
+    for k in (0..ops).rev() {
+        if !holds(k) {
+            break;
+        }
+        at = Some(k);
+    }
+    at
+}
+
 /// A stage and the version whose migration set it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct State {

@@ -7,12 +7,13 @@ use crate::evolve::carry::ctor_fields;
 use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::{Carries, arm_image, element_head, matched_fields};
 use crate::evolve::model::admin::canonical;
+use crate::evolve::model::clause::scope_objects;
 use crate::evolve::model::defaults::Taken;
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::indexes::{Held, NewIndex};
+use crate::evolve::model::indexes::{Held, NewIndex, Part};
 use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at, refuse_first};
 use crate::evolve::model::reselect::Mode;
-use crate::evolve::model::run::{Built, Late, Run};
+use crate::evolve::model::run::{Built, Late, Run, checked_in_migration};
 use crate::evolve::model::*;
 use crate::evolve::{Clause, Cx, Resolved, RowMap};
 use crate::schema::Schema;
@@ -29,10 +30,10 @@ pub(super) fn kind_word(kind: IndexKind) -> &'static str {
 }
 
 /// Returns the names of scope `s`.
-fn scope_names(s: &CtorScope) -> Vec<String> {
+fn scope_names(s: &CtorScope) -> Vec<ast::Ident> {
     match s {
-        CtorScope::One(c) => vec![c.text.clone()],
-        CtorScope::Many(cs) => cs.iter().map(|c| c.text.clone()).collect(),
+        CtorScope::One(c) => vec![c.clone()],
+        CtorScope::Many(cs) => cs.clone(),
     }
 }
 
@@ -44,19 +45,12 @@ fn sel_text(names: &[String]) -> String {
     }
 }
 
-/// Returns an index clause of kind `kind` over the elements `elems` in scope `names`, as text
-/// a build resolves.
-fn index_clause(kind: IndexKind, elems: &[String], names: &[String], was: Vec<u64>) -> NewIndex {
-    NewIndex::new(
-        kind,
-        elems.iter().map(|e| Term::text(e)).collect(),
-        Some(names.iter().map(|n| Term::text(n)).collect()),
-        was,
-    )
-}
-
 /// A clause a split adds to a relation variable: its text and the clause.
 type Added = (String, NewIndex);
+
+/// A unique or index a split states: its text, its kind, its elements as written, and the
+/// names of its scope.
+type Stated = (String, IndexKind, String, Vec<ast::Ident>);
 
 /// How a split rewrites the unique and index clauses: by relation variable, the positions of
 /// those it removes and the clauses it appends, and the place among those appended of each
@@ -65,7 +59,7 @@ type Added = (String, NewIndex);
 struct Rewrites {
     clauses_of: BTreeMap<u64, (BTreeSet<usize>, Vec<Added>)>,
     replaced_at: BTreeMap<u64, Vec<usize>>,
-    rescoped: Vec<(u64, usize, Vec<Term>)>,
+    rescoped: Vec<(u64, usize, Vec<Part>)>,
     /// The clauses that keep their scope and id, by relation variable and position, with their
     /// elements over the products.
     carried: Vec<(u64, usize, Vec<Term>)>,
@@ -125,7 +119,7 @@ impl Image<'_> {
 }
 
 /// Returns the replacements `given` states, each with its text, and its arms.
-fn replacements(run: &mut Run, given: &[SplitClause]) -> (Vec<Added>, Vec<ast::ArmClause>) {
+fn replacements(run: &mut Run, given: &[SplitClause]) -> (Vec<Stated>, Vec<ast::ArmClause>) {
     let mut out = Vec::new();
     let mut arms = Vec::new();
     for cl in given {
@@ -146,8 +140,14 @@ fn replacements(run: &mut Run, given: &[SplitClause]) -> (Vec<Added>, Vec<ast::A
         let elems = &run.text()[span.range()];
         let names = scope_names(scope);
         out.push((
-            format!("{} ({elems}) in {}", kind_word(kind), sel_text(&names)),
-            index_clause(kind, &[elems.to_string()], &names, Vec::new()),
+            format!(
+                "{} ({elems}) in {}",
+                kind_word(kind),
+                sel_text(&names.iter().map(|n| n.text.clone()).collect::<Vec<_>>())
+            ),
+            kind,
+            elems.to_string(),
+            names,
         ));
     }
     (out, arms)
@@ -243,7 +243,7 @@ impl Model {
     /// first failure of any other declaration.
     fn checked_without_dependents(mut self, run: &mut Run) -> Res<check::Compiled<Schema>> {
         loop {
-            let ds = match self.schema(&run.ahead(&self)).map(check::check_schema) {
+            let ds = match self.schema(&run.ahead(&self)).map(checked_in_migration) {
                 Ok(Ok(c)) => return Ok(c),
                 Ok(Err(ds)) | Err(ds) => ds,
             };
@@ -359,7 +359,24 @@ impl Model {
         let mut rewrites = self.split_clauses(&built, t, &made, &image, &replacements)?;
         for (r, (_, added)) in &mut rewrites.clauses_of {
             let mut at = Vec::new();
-            for (text, clause) in &replacements {
+            let rel = Self::rel_in(built.schema(), *r)?;
+            for (text, kind, elems, names) in &replacements {
+                let found = scope_objects(built.schema(), rel, names);
+                let parts = names
+                    .iter()
+                    .zip(found)
+                    .map(
+                        |(n, o)| match (products.iter().position(|p| *p == n.text), o) {
+                            (Some(k), _) => Ok(Part::held((Space::Shared, made[k]), &n.text)),
+                            (None, Some(o)) => Ok(Part::held(o, &n.text)),
+                            (None, None) => refuse(format!(
+                                "`{}` is neither a constructor of `{}` nor a named set of `{}`",
+                                n.text, self.types[&t].name, self.relations[r].name
+                            )),
+                        },
+                    )
+                    .collect::<Res<Vec<Part>>>()?;
+                let clause = NewIndex::new(*kind, vec![Term::text(elems)], Some(parts), Vec::new());
                 match added.iter().position(|(x, _)| x == text) {
                     Some(k) => {
                         added[k].1 = clause.clone();
@@ -404,6 +421,7 @@ impl Model {
         self.identify();
         self.replace_ctors(t, &[c], &made);
         self.rebind(&before);
+        self.indexes_hold(&before)?;
         self.restate(&made, &stages);
         let after = self.rebuilt(run, t, &rels)?;
         let armed = self.arm_clauses(run, after.as_ref().map_err(Vec::as_slice), written)?;
@@ -459,7 +477,7 @@ impl Model {
         t: u64,
         made: &[u64],
         image: &Image,
-        replacements: &[Added],
+        replacements: &[Stated],
     ) -> Res<Rewrites> {
         let mut out = Rewrites::default();
         let (c, source, carries) = (image.ctor, &image.source, image.carries);
@@ -550,15 +568,16 @@ impl Model {
                     Some((_, held)) => held.also_image_of(was),
                     None => {
                         let ids: Vec<u64> = names.iter().map(&product_id).collect();
-                        let Some(elems) = self.product_elems(t, (cl.relation, cl.at), &fs, &ids)
+                        let Some(elems) =
+                            self.product_elems(t, (cl.relation, cl.at), &fs, (&ids, &[]))
                         else {
                             return broken("a product holds each field the routing carries to it");
                         };
                         let parts = ids
                             .iter()
                             .zip(&names)
-                            .map(|(&p, n)| Term::name((Space::Shared, p), n))
-                            .collect();
+                            .map(|(&p, n)| Part::held((Space::Shared, p), n))
+                            .collect::<Vec<_>>();
                         entry
                             .1
                             .push((text, NewIndex::new(cl.kind, elems, Some(parts), was)));
@@ -657,7 +676,7 @@ impl Model {
         if images.any(|x| x.as_ref() != Some(&first)) {
             return None;
         }
-        self.product_elems(t, (r, at), &first, made)
+        self.product_elems(t, (r, at), &first, (made, &[]))
     }
 
     /// Returns the scope of clause `at` of relation variable `r` as written.

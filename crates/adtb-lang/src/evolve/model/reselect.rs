@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use super::field::Applied;
+use super::indexes::Part;
 use super::op::{Fail, Res, broken, refuse};
 use super::run::{Built, Run};
 use super::*;
@@ -319,7 +320,7 @@ impl Model {
                         Some(Some(out)) => {
                             let parts = out
                                 .iter()
-                                .map(|&c| Term::name((Space::Shared, c), &ctors[&c].name))
+                                .map(|&c| Part::held((Space::Shared, c), &ctors[&c].name))
                                 .collect();
                             rel.rescope(k, parts);
                         }

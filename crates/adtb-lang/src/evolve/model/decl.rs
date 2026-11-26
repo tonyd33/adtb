@@ -1,4 +1,3 @@
-use super::indexes::Elem;
 use super::lift::Lifting;
 use super::op::{
     Fail, Kind, Res, StateKey, broken, refuse, refuse_at, refuse_diag, refuse_each, unchecked,
@@ -349,20 +348,9 @@ impl Model {
             gone.extend(self.sets_of(r).into_iter().map(Item::Set));
         }
         for g in gone {
-            if let Item::Set(s) = g {
-                self.unscope(s);
-            }
             self.remove(g);
         }
         Ok((resolved, Vec::new()))
-    }
-
-    /// Leave each unique and index whose scope names set `s` without an id, so that the next
-    /// build gives it a new one.
-    fn unscope(&mut self, s: u64) {
-        for r in self.relations.values_mut() {
-            r.reimage_where(|h| h.names_set(s));
-        }
     }
 
     /// Remove declaration `item` and every object it declares.
@@ -673,7 +661,7 @@ impl Model {
         Ok((resolved, Vec::new()))
     }
 
-    /// Refuse renaming field `f` when a clause names it together with a field of another
+    /// Refuse renaming field `f` when a key names it together with a field of another
     /// constructor as one element: the rename would split that element in two.
     fn one_field_per_element(&self, f: u64) -> Res<()> {
         let owner = self.fields[&f].owner;
@@ -688,15 +676,10 @@ impl Model {
                 .collect()
         };
         for rel in self.relations.values() {
-            for (k, c) in rel.clauses.iter().enumerate() {
+            for c in &rel.clauses {
                 let ts: Vec<&Term> = match c {
-                    ClauseM::Index(_) => rel
-                        .index_at(k)
-                        .into_iter()
-                        .flat_map(|h| h.elems().iter().map(Elem::term))
-                        .collect(),
                     ClauseM::Key { fields, .. } => fields.iter().collect(),
-                    ClauseM::Computed { .. } | ClauseM::Volatile => Vec::new(),
+                    ClauseM::Index(_) | ClauseM::Computed { .. } | ClauseM::Volatile => Vec::new(),
                 };
                 let elems: Vec<Vec<u64>> = ts
                     .into_iter()

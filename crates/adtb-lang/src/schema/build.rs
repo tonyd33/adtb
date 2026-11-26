@@ -60,41 +60,6 @@ impl Builder<'_> {
         self.check_recursion();
         self.check_references();
         self.check_ordered();
-        self.check_clauses_once();
-    }
-
-    /// Refuse a unique whose canonical name an earlier unique of its relation has, and an index
-    /// of the kind, fields and written scope of an earlier index of its relation.
-    fn check_clauses_once(&mut self) {
-        let mut errs = Vec::new();
-        for (r, rel) in self.schema.relations.iter().enumerate() {
-            let mut names = BTreeSet::new();
-            let mut indexes = BTreeSet::new();
-            for (i, ix) in rel.indexes.iter().enumerate() {
-                let span = ix.fields.first().map_or(Span::default(), |f| f.span);
-                if !ix.unique {
-                    let texts: Vec<&str> = (0..ix.fields.len()).map(|k| ix.text(k)).collect();
-                    if !indexes.insert((ix.interval, texts, ix.written())) {
-                        let shown = self.schema.index_shown(RelId(r as u32), i);
-                        errs.push((
-                            rel.file,
-                            span,
-                            format!("`{}` declares `{shown}` twice", rel.name),
-                        ));
-                    }
-                    continue;
-                }
-                let Some(name) = self.schema.field_unique_name(RelId(r as u32), i) else {
-                    continue;
-                };
-                if !names.insert(name.clone()) {
-                    errs.push((rel.file, span, format!("`{name}` is declared twice")));
-                }
-            }
-        }
-        for (file, span, msg) in errs {
-            self.err(file, span, msg);
-        }
     }
 
     fn declare_ahead(&mut self) {

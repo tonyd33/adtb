@@ -239,8 +239,7 @@ struct FieldM {
 struct RelM {
     name: String,
     ty: Term,
-    clauses: Vec<ClauseM>,
-    indexes: indexes::Indexes,
+    clauses: indexes::Clauses,
     defaults: defaults::Defaults,
     /// The index each reference field implies, by the field.
     implied: BTreeMap<Implied, u64>,
@@ -494,7 +493,7 @@ impl Model {
     fn dropped_names(&self) -> bool {
         let mut dropped = false;
         self.clone().terms_mut(&mut |t| dropped |= t.dropped());
-        dropped
+        dropped || self.relations.values().any(RelM::names_gone)
     }
 
     /// Hold each name of an object `before` held and this model does not by the object's key,
@@ -515,6 +514,13 @@ impl Model {
             .collect();
         let live: BTreeSet<Obj> = now.values().copied().collect();
         self.terms_mut(&mut |t| t.rebind(&was, &now, &|o| live.contains(&o)));
+        let reach = |o: Obj| match o {
+            (Space::Set, s) => before.set_reach(s),
+            (_, c) => vec![c],
+        };
+        for rel in self.relations.values_mut() {
+            rel.rebind_scopes((&was, &now), &|o| live.contains(&o), &reach);
+        }
     }
 
     /// Call `f` on every term of every declaration.
@@ -531,17 +537,7 @@ impl Model {
         }
         for r in self.relations.values_mut() {
             f(&mut r.ty);
-            for c in &mut r.clauses {
-                match c {
-                    ClauseM::Key { fields, .. } => fields.iter_mut().for_each(&mut *f),
-                    ClauseM::Computed { ty, expr, .. } => {
-                        f(ty);
-                        f(expr);
-                    }
-                    ClauseM::Index(_) | ClauseM::Volatile => {}
-                }
-            }
-            r.index_terms_mut(f);
+            r.clause_terms_mut(f);
             r.defaults.each_value_mut(f);
         }
         for s in self.sets.values_mut() {

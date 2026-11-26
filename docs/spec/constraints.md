@@ -131,11 +131,20 @@ Both are declared where [model.md](model.md#7-keys) says and are checked
 at the same boundaries as every other constraint (§4).
 
 A relation variable holds each unique and each index once. Two uniques
-are one when their canonical names (§7.1) agree. Two indexes are one
-when they are of one kind (`index` or `interval index`), their elements
-are written alike, and their `in` names the same constructors and named
-sets, in any order. A declaration of a relation variable holding one
-twice is refused, naming it.
+are one when their canonical names (§7.1) agree, and two with an
+expression among their fields when their scopes reach the same
+constructors and their elements are alike. Two indexes are one when
+they are of one kind (`index` or `interval index`), their elements are
+alike, and their `in` names the same constructors and named sets, in
+any order. Two elements are alike when they are one expression apart
+from parentheses, how a name is qualified and the names the element
+binds, each name read as what it names: `(f(n))`, `((f(n)))` and
+`(app::f(n))` are alike when `f` is `app::f`, and so are
+`match t | A a -> a.v | B -> 0` and `match t | T.A b -> b.v | T.B -> 0`.
+A field a pattern names alone binds its name: `A { v } -> v`,
+`A { v: v } -> v` and `A { v: w } -> w` are alike.
+A declaration of a relation variable holding one twice is refused,
+naming both.
 
 Each reference field has an implied index on that field, over the
 constructors of the relation variable that hold the field, unless a

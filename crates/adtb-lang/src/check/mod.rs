@@ -49,7 +49,7 @@ pub use adhoc::{AdhocCommand, Bundles, Command, Explained, RestorePoint};
 pub use body::ProgramBody;
 pub use compiled::{AsCommitted, AsSchema, Compiled};
 pub use order::{declaration_order, schema_migration};
-pub use row_body::{RowBody, check_row, row_query};
+pub use row_body::{RowBody, check_row, element_refs, row_query, scope_refs};
 pub use txn::{Txn, check_txn, check_txn_in};
 use ty::admits_late_key;
 pub use ty::{join, subtype};
@@ -513,12 +513,30 @@ impl<'a> Checker<'a> {
     }
 }
 
+/// Where whether two uniques or two indexes of a relation variable are one is judged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Judged {
+    /// By this check of the declarations.
+    Here,
+    /// By the migration whose intermediate declarations these are.
+    ByMigration,
+}
+
 /// Type checks every body of `schema` and elaborates it to the kernel, returning the two together.
 ///
 /// Fail with no diagnostic of a body that names a relation variable a refused operator left
 /// poisoned.
 pub fn check_schema<S: AsSchema>(schema: S) -> Result<Compiled<S>, Vec<FileDiag>> {
-    let (program, mut diags) = bodies(schema.as_schema(), None);
+    checked_as(schema, Judged::Here)
+}
+
+/// Check `schema` as [`check_schema`] does, `judged` saying where two uniques or two indexes of a
+/// relation variable that are one are judged.
+pub(crate) fn checked_as<S: AsSchema>(
+    schema: S,
+    judged: Judged,
+) -> Result<Compiled<S>, Vec<FileDiag>> {
+    let (program, mut diags) = bodies(schema.as_schema(), None, judged);
     let poisoned = diags.iter().any(|d| d.diag.kind == DiagKind::Poisoned);
     diags.retain(|d| d.diag.kind != DiagKind::Poisoned);
     if !diags.is_empty() || poisoned {
@@ -547,7 +565,7 @@ pub fn check_schema<S: AsSchema>(schema: S) -> Result<Compiled<S>, Vec<FileDiag>
 /// constructors is not an error here.
 pub fn schema_refs(schema: &Schema) -> Vec<(FileId, Span, Ref)> {
     let mut refs = Vec::new();
-    bodies(schema, Some(&mut refs));
+    bodies(schema, Some(&mut refs), Judged::Here);
     refs
 }
 

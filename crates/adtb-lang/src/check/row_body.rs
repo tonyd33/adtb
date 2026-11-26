@@ -111,3 +111,49 @@ fn row_body(
 
 /// The name a row body binds its row to, which no source text can spell.
 const ROW: &str = "row·";
+
+/// Returns the schema objects the names of index elements `elems` of `rel` resolve to, ranging
+/// over constructors `ctors`, every constructor when `None`, as [`schema_refs`] reports them:
+/// those of an element that checks, and of one that does not, the names it resolved before its
+/// first failure with those of each expression it holds, checked alone as an element. Returns
+/// with them the span of each expression that checks, whose every name resolves.
+pub fn element_refs(
+    schema: &Schema,
+    rel: RelId,
+    ctors: Option<&CtorSet>,
+    elems: &[ast::Expr],
+) -> (Vec<(Span, Ref)>, Vec<Span>) {
+    let module = schema.relation(rel).module;
+    let (mut out, mut checked) = (Vec::new(), Vec::new());
+    for e in elems {
+        crate::schema::same::each_expr(e, &mut |x| {
+            let mut c = Checker::with_rows(
+                schema,
+                Visible::module(module),
+                Context::Schema,
+                vec![None; schema.functions.len()],
+            );
+            let ok = c.index_field(rel, ctors.cloned(), x).is_ok();
+            out.extend(c.refs.take_checked());
+            if ok {
+                checked.push(x.span);
+            }
+            !ok
+        });
+    }
+    (out, checked)
+}
+
+/// Returns the schema objects the names of `sel`, the scope of an index of `rel`, resolve to,
+/// as [`schema_refs`] reports them; a name of no constructor or named set of `rel` resolves to
+/// none.
+pub fn scope_refs(schema: &Schema, rel: RelId, sel: &ast::CtorSel) -> Vec<(Span, Ref)> {
+    let c = Checker::with_rows(
+        schema,
+        Visible::module(schema.relation(rel).module),
+        Context::Schema,
+        vec![None; schema.functions.len()],
+    );
+    c.record_sel(schema.relation(rel).elem_def, Some(rel), sel);
+    c.refs.take_checked()
+}

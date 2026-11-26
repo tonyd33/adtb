@@ -2,7 +2,7 @@ mod merge;
 mod nest;
 mod split;
 
-use super::indexes::Elem;
+use super::indexes::{Elem, Part};
 use super::op::{Res, refuse, refuse_at};
 use super::reselect::{Edit, reselected, sel_range};
 use super::run::{Built, Run};
@@ -69,13 +69,14 @@ impl Model {
 
     /// Returns the elements of clause `at` of relation variable `r` of type `t` as the
     /// constructors `made` hold them, each written as in `fs`: a header element as it is, any
-    /// other held by the field of its name of each of `made`. `None` when one has no such field.
+    /// other held by the field of its name of each of `made` and by the fields of `kept` its
+    /// head holds. `None` when one of `made` has no such field.
     pub(super) fn product_elems(
         &self,
         t: u64,
         (r, at): (u64, usize),
         fs: &[String],
-        made: &[u64],
+        (made, kept): (&[u64], &[u64]),
     ) -> Option<Vec<Term>> {
         let held = self.relations[&r].index_at(at)?;
         let header = self.header_names(t);
@@ -88,10 +89,18 @@ impl Model {
                 if header.iter().any(|h| h == head) {
                     return Some(e.clone());
                 }
-                let ids: Vec<Obj> = made
+                let mut ids: Vec<Obj> = made
                     .iter()
                     .map(|&p| Some((Space::Field, self.field_of(t, Some(p), head)?)))
                     .collect::<Option<_>>()?;
+                let held = e.held_names().first().map_or(&[][..], |h| *h);
+                ids.extend(held.iter().filter(|o| {
+                    o.0 == Space::Field
+                        && self
+                            .fields
+                            .get(&o.1)
+                            .is_some_and(|f| kept.contains(&f.owner))
+                }));
                 Some(
                     e.clone().with_head(ids.clone(), head).unwrap_or_else(|| {
                         Term::concat([Term::names(ids, head), Term::text(rest)])
@@ -258,6 +267,9 @@ impl Model {
             if !made.contains(&s) {
                 self.drop_ctor(t, s);
             }
+        }
+        for rel in self.relations.values_mut() {
+            rel.reach_images(sources, made);
         }
     }
 
@@ -488,7 +500,7 @@ struct Scoped {
     elems: Vec<String>,
     /// The constructors its scope reaches, every one when `None`.
     reached: Option<Vec<u64>>,
-    rescoped: Option<Vec<Term>>,
+    rescoped: Option<Vec<Part>>,
 }
 
 /// What a routing gives: its function of a row and its canonical form.

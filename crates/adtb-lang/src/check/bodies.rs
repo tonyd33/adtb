@@ -1,4 +1,39 @@
 use super::*;
+use crate::schema::same::{self, Said, Tree};
+
+/// A schema object a name of an index element resolves to, as two elements compare it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Object {
+    Type(TypeId),
+    Relation(RelId),
+    Function(FnId),
+    Aggregate(u32),
+    Ctor(TypeId, u32),
+    Set(RelId, String),
+    Field(TypeId, Option<u32>, String),
+}
+
+/// Returns the objects name `q` resolves to among `seen`, the names a check resolved, `None`
+/// when it resolves to none.
+fn object_at(seen: &[(Span, Ref)], q: &ast::QName) -> Option<BTreeSet<Object>> {
+    let out: BTreeSet<Object> = seen
+        .iter()
+        .filter(|(s, _)| *s == q.name.span)
+        .filter_map(|(_, r)| match r {
+            Ref::Type(d) => Some(Object::Type(*d)),
+            Ref::Relation(x) => Some(Object::Relation(*x)),
+            Ref::Function(f) => Some(Object::Function(*f)),
+            Ref::Aggregate(a) => Some(Object::Aggregate(*a)),
+            Ref::Ctor(d, c) => Some(Object::Ctor(*d, *c)),
+            Ref::Set(x, n) => Some(Object::Set(*x, n.clone())),
+            Ref::Field {
+                def, ctor, name, ..
+            } => Some(Object::Field(*def, *ctor, name.clone())),
+            Ref::BuiltinType | Ref::Anonymous | Ref::Match(_) | Ref::Unresolved => None,
+        })
+        .collect();
+    (!out.is_empty()).then_some(out)
+}
 
 /// Returns the program of every body of `schema`, each function and aggregate checked before
 /// the first body that names it, with the diagnostics of the bodies that do not check. With
@@ -6,10 +41,12 @@ use super::*;
 pub(super) fn bodies(
     schema: &Schema,
     record: Option<&mut Vec<(FileId, Span, Ref)>>,
+    judged: Judged,
 ) -> (Program, Vec<FileDiag>) {
     let mut b = Bodies {
         schema,
         record,
+        judged,
         program: Program {
             terms: Terms::default(),
             functions: vec![None; schema.functions.len()],
@@ -46,6 +83,7 @@ pub(super) fn bodies(
 pub(super) struct Bodies<'s, 'r> {
     schema: &'s Schema,
     record: Option<&'r mut Vec<(FileId, Span, Ref)>>,
+    judged: Judged,
     program: Program,
     diags: Vec<FileDiag>,
     fn_rows: Vec<Option<RelId>>,
@@ -291,20 +329,84 @@ impl<'s> Bodies<'s, '_> {
                     .insert((rel, j), (var.expect("bound"), tm));
             }
         }
+        let mut trees = Vec::new();
         for (j, ix) in r.indexes.iter().enumerate() {
+            let mut elems = Some(Vec::new());
             for (k, e) in ix.fields.iter().enumerate() {
                 let mut path = Vec::new();
+                let mut seen = Vec::new();
                 if let Some(value) = self.run(r.module, Context::Schema, r.file, &mut |c| {
                     let (f, ty) = c.index_field(rel, ix.scope.clone(), e)?;
                     c.keyable(rel, ix, k, &ty)?;
                     path = f.path;
+                    seen = c.refs.seen();
                     Ok(f.value)
                 }) {
                     self.program
                         .index_fields
                         .insert((rel, j, k), IndexField { value, path });
                 }
+                let tree = same::tree(e, &mut |q| object_at(&seen, q));
+                elems = elems.zip(tree).map(|(mut ts, t)| {
+                    ts.push(t);
+                    ts
+                });
             }
+            trees.push(elems);
+        }
+        if self.judged == Judged::Here {
+            self.indexes_once(rel, r, &trees);
+        }
+    }
+
+    /// Refuse each unique or index of `rel` that is one with an earlier one, as
+    /// `same::same_unique` and `same::same_index` decide over `trees`, its elements' trees, an
+    /// index with an element that does not check being one with none.
+    fn indexes_once(
+        &mut self,
+        rel: RelId,
+        r: &crate::schema::RelationDef,
+        trees: &[Option<Vec<Tree<BTreeSet<Object>>>>],
+    ) {
+        let every = || (0..self.schema.ty(r.elem_def).ctors().len() as u32).collect();
+        let reach = |ix: &crate::schema::IndexDef| -> BTreeSet<u32> {
+            ix.scope
+                .clone()
+                .map_or_else(every, |cs| cs.into_iter().collect())
+        };
+        let written =
+            |ix: &crate::schema::IndexDef| ix.written().map(|w| w.iter().copied().collect());
+        let eq = |a: &BTreeSet<Object>, b: &BTreeSet<Object>| a == b;
+        for (i, (x, xt)) in r.indexes.iter().zip(trees).enumerate() {
+            let Some(xt) = xt else { continue };
+            let held = r.indexes[..i].iter().zip(trees).position(|(y, yt)| {
+                let Some(yt) = yt else { return false };
+                match (x.unique, y.unique) {
+                    (true, true) => same::same_unique((&reach(x), xt), (&reach(y), yt), &eq),
+                    (false, false) => {
+                        let (xw, yw): (Option<BTreeSet<_>>, Option<BTreeSet<_>>) =
+                            (written(x), written(y));
+                        same::same_index(
+                            (x.interval, xw.as_ref(), xt),
+                            (y.interval, yw.as_ref(), yt),
+                            &eq,
+                        )
+                    }
+                    _ => false,
+                }
+            });
+            let Some(j) = held else { continue };
+            let why = same::one_refusal(
+                Said::Declaration,
+                &r.name,
+                &self.schema.index_shown(rel, j),
+                &self.schema.index_shown(rel, i),
+            );
+            let span = x.fields.first().map_or(Span::default(), |f| f.span);
+            self.refuse(FileDiag {
+                file: r.file,
+                diag: Diag::new(span, why),
+            });
         }
     }
 

@@ -8,7 +8,7 @@ use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::{Carries, arm_image, element_head};
 use crate::evolve::model::defaults::Taken;
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::indexes::NewIndex;
+use crate::evolve::model::indexes::{NewIndex, Part};
 use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::{Edit, Mode, sel_range};
 use crate::evolve::model::run::{Built, Late, Run};
@@ -242,7 +242,7 @@ fn carried_by_name(
 #[derive(Default)]
 struct Rewrite {
     gone: BTreeSet<usize>,
-    rescoped: Vec<(usize, Vec<Term>)>,
+    rescoped: Vec<(usize, Vec<Part>)>,
     /// The clauses that keep their scope and id, by position, with their elements over the
     /// merged constructor.
     carried: Vec<(usize, Vec<Term>)>,
@@ -364,6 +364,7 @@ impl Model {
         }
         self.replace_ctors(t, &sources, &[c]);
         self.rebind(&before);
+        self.indexes_hold(&before)?;
         self.restate(&[c], &stages);
         let file = FileId(self.decl_at(Item::Type(t)).expect("the type") as u32);
         let mut clauses = members;
@@ -539,7 +540,13 @@ impl Model {
                     "`{shown}` ranges over some but not all of the merged constructors and has no image under the merge"
                 ));
             }
-            let Some(elems) = self.product_elems(t, (cl.relation, cl.at), &fields, &[c]) else {
+            let kept: Vec<u64> = reached
+                .iter()
+                .copied()
+                .filter(|x| !sources.contains(x))
+                .collect();
+            let Some(elems) = self.product_elems(t, (cl.relation, cl.at), &fields, (&[c], &kept))
+            else {
                 return broken("the merged constructor holds each field the routing carries to it");
             };
             let w = out.entry(cl.relation).or_default();
@@ -555,7 +562,7 @@ impl Model {
             w.added.push(NewIndex::new(
                 cl.kind,
                 elems,
-                Some(parts),
+                Some(parts.clone()),
                 cl.id.into_iter().collect(),
             ));
         }
@@ -583,7 +590,7 @@ impl Model {
             w.added.push(NewIndex::new(
                 kind,
                 fs.iter().map(|f| Term::text(f)).collect(),
-                Some(vec![Term::name((Space::Shared, c), image.ctor)]),
+                Some(vec![Part::held((Space::Shared, c), image.ctor)]),
                 held.iter().filter_map(|(_, _, _, id)| *id).collect(),
             ));
         }

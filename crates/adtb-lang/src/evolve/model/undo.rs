@@ -352,26 +352,16 @@ impl Model {
             .relations
             .get_mut(&r)
             .expect("a held relation variable");
-        let Some(ClauseM::Key {
-            fields: held,
-            listed,
-            generate: g,
-            ..
-        }) = rel
-            .clauses
-            .iter_mut()
-            .find(|c| matches!(c, ClauseM::Key { .. }))
-        else {
-            return Ok(());
-        };
-        *held = fields.iter().map(|f| Term::text(&f.text)).collect();
-        *listed = src[..fields[0].span.start as usize]
+        let listed = src[..fields[0].span.start as usize]
             .trim_end()
             .ends_with('(');
-        *g = generate.as_ref().map(|x| {
-            let id = g.as_ref().and_then(|(_, id)| *id);
-            (x.text.clone(), id)
-        });
+        if !rel.restore_key(
+            fields.iter().map(|f| Term::text(&f.text)).collect(),
+            listed,
+            generate.as_ref().map(|x| x.text.clone()),
+        ) {
+            return Ok(());
+        }
         if !self.unlifted.contains(&Item::Relation(r)) {
             self.unlifted.push(Item::Relation(r));
         }

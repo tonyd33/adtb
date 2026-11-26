@@ -11,7 +11,7 @@ migrate
   add relation items : Item key id generate sequence
   add unique (a) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (a) in items.(Big | Small)", detail: "`app::items.unique(a)` is declared twice\n`app::items.unique(b)` is declared twice" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (a) in items.(Big | Small)", detail: "`unique (a) in (Big | Small)` of `items` is one with `unique (a)`, which `items` already holds\n`unique (b)` of `items` is one with `unique (b)`, which `items` already holds" } } }
   module app
   add unique (a) in items.(Big | Small)
   add unique (b) in items

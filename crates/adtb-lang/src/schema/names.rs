@@ -41,10 +41,10 @@ impl Schema {
     pub(crate) fn index_shown(&self, rel: RelId, index: usize) -> String {
         let r = self.relation(rel);
         let ix = &r.indexes[index];
-        let verb = if ix.interval {
-            "interval index"
-        } else {
-            "index"
+        let verb = match (ix.unique, ix.interval) {
+            (true, _) => "unique",
+            (false, true) => "interval index",
+            (false, false) => "index",
         };
         let texts: Vec<&str> = (0..ix.fields.len()).map(|k| ix.text(k)).collect();
         let mut out = format!("{verb} ({})", texts.join(", "));

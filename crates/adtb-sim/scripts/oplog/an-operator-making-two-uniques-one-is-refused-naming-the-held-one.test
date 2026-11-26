@@ -1,0 +1,29 @@
+# An operator whose image of two uniques of a relation variable is one is refused naming the
+# unique the relation variable already holds: removing a member of a named set narrows the
+# set's unique onto a unique over the constructor left.
+seed 7
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: I64 } | B { k: Text }
+  add relation ts : T key id generate sequence
+  add set S of ts = A
+  add unique (n) in ts.S
+
+migrate
+  module ts
+  add constructor T.D { n: I64 } joins ts.S
+  add unique (n) in ts.A
+
+migrate
+  module ts
+  enable ts.D
+
+migrate
+  module ts
+  deprecate ts.D
+
+migrate refused MigrationRefused { version: 5, reason: Rejected { reason: SchemaRefused { operator: "remove constructor T.D", detail: "`unique (n) in S` of `ts` is one with `unique (n) in A`, which `ts` already holds" } } }
+  module ts
+  remove constructor T.D

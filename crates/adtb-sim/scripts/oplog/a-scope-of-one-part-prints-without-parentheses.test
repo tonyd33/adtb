@@ -1,0 +1,15 @@
+# A version prints the same text however its declarations wrote it: a unique scoped to one
+# constructor written in parentheses prints that constructor bare.
+seed 61
+
+migrate
+  module notes
+  add module notes
+  add type Note { id: Key notes, slug: Text, tag: Text } = Plain | Other
+  add relation notes : Note key id generate sequence
+  add unique (tag) in notes.(Plain)
+
+command
+  print schema
+----
+{ text: "-- version 1 hash f1f98e74753825e639b68083e59f7c3d7f7b4796776e63de1d5173bafcd9c82e\nmodule notes\ntype Note { id: Key notes, slug: Text, tag: Text } = Plain | Other\nrelation notes: Note\n  key id generate sequence\n  unique (tag) in Plain\n" }

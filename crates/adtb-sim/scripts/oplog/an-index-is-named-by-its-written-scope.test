@@ -1,0 +1,29 @@
+# An index is named by the constructors and named sets its `in` names: an index over the
+# constructors of a set is another index than the one over the set, so adding it commits beside
+# that one and dropping it does not find the set's. The catalog prints the set's index over its
+# constructors, so both rows print alike.
+seed 13
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: I64, x: Text } | B { k: Text }
+  add relation ts : T key id generate sequence
+  add set S of ts = A
+  add index (n) in ts.S
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop index (n) in ts.A", detail: "`ts` has no index (n) in A" } } }
+  module ts
+  drop index (n) in ts.A
+
+migrate
+  module ts
+  add index (n) in ts.A
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None select { id: i.id, clause: i.clause }
+----
+{ clause: "index (n) in A", id: indexes.key(1025) }
+{ clause: "index (n) in A", id: indexes.key(1026) }
+{ clause: "key id", id: indexes.key(1024) }

@@ -807,11 +807,32 @@ impl Model {
         let unique = kind == Kind::DropUnique;
         let verb = if unique { "unique" } else { "index" };
         if broke {
-            let r = rng.pick(&self.s.rels);
-            return Some(vec![broken(
-                kind,
-                format!("drop {verb} (zz) in {}", r.name),
-            )]);
+            let unheld = |r: &Rel| -> Vec<String> {
+                let clauses = if unique { &r.uniques } else { &r.indexes };
+                r.plain_header()
+                    .iter()
+                    .filter(|f| f.ty.keyed() && !clauses.iter().any(|c| c.field == f.name))
+                    .map(|f| f.name.clone())
+                    .collect()
+            };
+            let wanted = self.want == Some(Reach::DropAbsentClause);
+            let some: Vec<&Rel> = self
+                .s
+                .rels
+                .iter()
+                .filter(|r| wanted && !unheld(r).is_empty())
+                .collect();
+            let r = match some.is_empty() {
+                true => rng.pick(&self.s.rels),
+                false => *rng.pick(&some),
+            };
+            let unheld = unheld(r);
+            let (field, reach) = match unheld.is_empty() || (!wanted && rng.below(2) == 0) {
+                true => ("zz", Reach::DropUnknownName),
+                false => (rng.pick(&unheld).as_str(), Reach::DropAbsentClause),
+            };
+            let text = format!("drop {verb} ({field}) in {}", r.name);
+            return Some(vec![broken(kind, text).reaching(Some(reach))]);
         }
         let mut can = Vec::new();
         for (i, r) in self.s.rels.iter().enumerate() {

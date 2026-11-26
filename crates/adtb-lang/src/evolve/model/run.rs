@@ -38,8 +38,6 @@ pub(super) struct Run<'a> {
     /// The names the fills, routings, grants and scripts of its applied operators resolve, by
     /// span of the text.
     noted: Names,
-    /// The copies of the text whose names do not resolve.
-    missed: Vec<Diag>,
 }
 
 /// What one operator wrote beside the model it applies to.
@@ -47,7 +45,6 @@ pub(super) struct Run<'a> {
 struct Wrote {
     late: Vec<Late>,
     noted: Names,
-    missed: Vec<Diag>,
     /// The steps of the operator, a `revert`.
     reverted: Option<revert::Steps>,
 }
@@ -117,7 +114,6 @@ impl<'a> Run<'a> {
             accepting: false,
             copying: true,
             noted: Names::default(),
-            missed: Vec::new(),
         }
     }
 
@@ -146,19 +142,9 @@ impl<'a> Run<'a> {
         self.wrote.noted.extend(names);
     }
 
-    /// Record `missed`, copies of the text whose names do not resolve.
-    pub(super) fn miss(&mut self, missed: Vec<Diag>) {
-        self.wrote.missed.extend(missed);
-    }
-
     /// Returns the names the run recorded.
     pub(super) fn take_noted(&mut self) -> Names {
         std::mem::take(&mut self.noted)
-    }
-
-    /// Returns the copies of the text the run recorded whose names do not resolve.
-    pub(super) fn take_missed(&mut self) -> Vec<Diag> {
-        std::mem::take(&mut self.missed)
     }
 
     /// Returns the run, applying text the log does not yet hold when `accepting`.
@@ -192,7 +178,6 @@ impl<'a> Run<'a> {
         let at = self.at;
         self.late.extend(wrote.late.into_iter().map(|l| (at, l)));
         self.noted.extend(wrote.noted);
-        self.missed.extend(wrote.missed);
         wrote.reverted
     }
 
@@ -412,9 +397,12 @@ impl Built {
         Ok(canonical_term(self.text(file), d.span(), &self.names(file)).ok())
     }
 
-    /// Returns the errors of checking the schema in file `file`.
+    /// Returns the errors of checking the schema in file `file`, a declaration an operator
+    /// writes, judged as declaration text.
     pub(super) fn errors_in(&self, file: FileId) -> Vec<Diag> {
-        self.errors()
+        check::check_schema(&self.schema)
+            .err()
+            .unwrap_or_default()
             .into_iter()
             .filter(|d| d.file == file)
             .map(|d| d.diag)
@@ -423,7 +411,7 @@ impl Built {
 
     /// Returns the errors of checking the schema.
     pub(super) fn errors(&self) -> Vec<FileDiag> {
-        check::check_schema(&self.schema).err().unwrap_or_default()
+        checked_in_migration(&self.schema).err().unwrap_or_default()
     }
 
     /// Returns the errors of checking the schema in a file `read` takes at a name that denotes
@@ -573,7 +561,10 @@ impl Model {
         let held = self.printed().map_err(|why| {
             vec![FileDiag {
                 file: FileId::EMPTY_MODULE,
-                diag: Diag::new(Span::new(0, 0), why),
+                diag: Diag {
+                    kind: crate::span::DiagKind::Internal,
+                    ..Diag::new(Span::new(0, 0), why)
+                },
             }]
         })?;
         Ok(BuildInputs::new(
@@ -775,7 +766,7 @@ impl Model {
         }
         Ok(self
             .built(&[], ahead)
-            .is_ok_and(|(b, _)| check::check_schema(&b.schema).is_ok()))
+            .is_ok_and(|(b, _)| checked_in_migration(&b.schema).is_ok()))
     }
 
     /// Returns the diagnostic at `at` of why the declarations do not check, with an empty message
@@ -790,7 +781,7 @@ impl Model {
         };
         match self.built(&[], &[]) {
             Err(ds) => first(ds),
-            Ok((b, _)) => match check::check_schema(&b.schema) {
+            Ok((b, _)) => match checked_in_migration(&b.schema) {
                 Err(ds) => first(ds),
                 Ok(_) => Diag::new(at, ""),
             },
@@ -811,6 +802,14 @@ impl Model {
             Err(ds) => unbuilt(&ds),
         }
     }
+}
+
+/// Check `schema` as every check a migration's model runs does: the migration judges whether two
+/// uniques or two indexes of a relation variable are one.
+pub(super) fn checked_in_migration<S: check::AsSchema>(
+    schema: S,
+) -> Result<check::Compiled<S>, Vec<FileDiag>> {
+    check::checked_as(schema, check::Judged::ByMigration)
 }
 
 /// Refuse an operator that reads declarations failing with `ds`, by the first failure.

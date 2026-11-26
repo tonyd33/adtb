@@ -5,7 +5,7 @@ use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::element_head;
 use crate::evolve::model::defaults::Taken;
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::indexes::Elem;
+use crate::evolve::model::indexes::{Elem, Part};
 use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::{Edit, Mode, sel_range};
 use crate::evolve::model::run::{Built, Late, Run};
@@ -106,7 +106,7 @@ impl Model {
         &mut self,
         (r, at, rescoped): (u64, usize, bool),
         elems: Vec<Term>,
-        parts: Vec<Term>,
+        parts: Vec<Part>,
     ) {
         let rel = self.relations.get_mut(&r).expect("a relation variable");
         if rescoped {
@@ -257,6 +257,7 @@ impl Model {
         }
         self.replace_ctors(t, &sources, &[c]);
         self.rebind(&before);
+        self.indexes_hold(&before)?;
         self.restate(&[c], &stages);
         let file = FileId(self.decl_at(Item::Type(t)).expect("the type") as u32);
         let mut clauses = members;
@@ -388,6 +389,7 @@ impl Model {
         }
         self.replace_ctors(t, &[c], &made);
         self.rebind(&before);
+        self.indexes_hold(&before)?;
         self.restate(&made, &stages);
         let after = self.rebuilt(run, t, &rels)?;
         let clauses = self.arm_clauses(run, after.as_ref().map_err(Vec::as_slice), written)?;
@@ -447,7 +449,7 @@ impl Model {
             }
             let parts = match &cl.rescoped {
                 None if same => continue,
-                None => held.scope_parts().expect("a scoped clause"),
+                None => held.parts().expect("a scoped clause"),
                 Some(parts) => {
                     if same && inside.len() != sources.len() {
                         return refuse(format!(
@@ -589,7 +591,7 @@ impl Model {
             let parts = match (&target, &cl.reached) {
                 (Some(p), reached) if reached.as_ref().is_none_or(|r| r.len() == 1) => {
                     let k = products.iter().position(|x| x == p).expect("a product");
-                    vec![Term::name((Space::Shared, made[k]), p)]
+                    vec![Part::held((Space::Shared, made[k]), p)]
                 }
                 (Some(_), _) => {
                     return refuse(format!("`{shown}` has no image under the unnest"));
@@ -608,4 +610,4 @@ impl Model {
 
 /// A rewrite of a unique or index clause: its relation variable, position and whether it
 /// becomes a new clause, with its elements and scope.
-type ClauseRewrite = ((u64, usize, bool), Vec<Term>, Vec<Term>);
+type ClauseRewrite = ((u64, usize, bool), Vec<Term>, Vec<Part>);

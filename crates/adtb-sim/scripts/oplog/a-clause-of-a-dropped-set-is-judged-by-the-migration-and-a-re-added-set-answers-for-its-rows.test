@@ -1,0 +1,53 @@
+# Inside a migration only the migration judges whether two indexes are one: an index scoped to a
+# dropped set is not one with an index over the constructors the set reached, whatever operators
+# come between, so a drop by the set finds it, the set added again holds it, and a migration that
+# leaves it naming the dropped set is refused naming it. Rows a set added again with other
+# members breaks a unique over are refused at that `add set`.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: I64 } | B { n: I64 } | C { n: I64 }
+  add relation ts : T key id generate sequence
+  add set S of ts = A
+  add index (n) in ts.S
+  add index (n) in ts.A
+  add set U of ts = A
+  add unique (n) in ts.U
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop set S of ts", detail: "`index (n) in S` of `ts` names the dropped set `S`" } } }
+  module ts
+  drop set S of ts
+  add field T.B.m: I64 fill 0
+
+migrate
+  module ts
+  drop set S of ts
+  add field T.B.m: I64 fill 0
+  add set S of ts = A
+
+run
+  insert ts.B { n: 1, m: 0 }
+  insert ts.B { n: 1, m: 0 }
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "add set U of ts = B", detail: "rows of ts share the key 1 of `unique (n) in B`" } } }
+  module ts
+  drop set U of ts
+  add set U of ts = B
+
+migrate
+  module ts
+  drop set S of ts
+  add field T.C.m: I64 fill 0
+  add type W = P | Q
+  drop index (n) in ts.S
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None select i.clause
+----
+"index (n) in A"
+"key id"
+"unique (n) in A"

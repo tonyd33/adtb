@@ -223,10 +223,14 @@ pub enum Reach {
     /// A broken split whose routing does not carry whole a field of the split constructor that
     /// has a default, refused for it.
     UncarriedDefault,
+    /// A broken drop of a unique or index naming a name nothing in its scope declares.
+    DropUnknownName,
+    /// A broken drop of a unique or index whose names resolve, of a clause its relation lacks.
+    DropAbsentClause,
 }
 
 impl Reach {
-    pub const ALL: [Reach; 27] = [
+    pub const ALL: [Reach; 29] = [
         Reach::MergeAcrossStages,
         Reach::MovedDownAction,
         Reach::ArmLater,
@@ -254,6 +258,8 @@ impl Reach {
         Reach::RevertedBesideRenamed,
         Reach::RevertedRenamedFill,
         Reach::UncarriedDefault,
+        Reach::DropUnknownName,
+        Reach::DropAbsentClause,
     ];
 
     /// Returns whether the shape is an operator whose inverse refuses while it is built, on a

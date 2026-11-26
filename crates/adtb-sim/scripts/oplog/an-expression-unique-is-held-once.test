@@ -1,0 +1,24 @@
+# Two uniques over the same expressions in the same scope are one: adding the second is refused
+# naming the first, and a drop names the one the relation variable holds.
+seed 5
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { x: Text } | B { k: Text }
+  add relation ts : T key id generate sequence
+  add unique (lower(x)) in ts.A
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (lower(x)) in ts.A", detail: "`unique (lower(x)) in A` of `ts` is one with `unique (lower(x)) in A`, which `ts` already holds" } } }
+  module ts
+  add unique (lower(x)) in ts.A
+
+migrate
+  module ts
+  drop unique (lower(x)) in ts.A
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None select i.clause
+----
+"key id"

@@ -4,9 +4,20 @@
 
 use adtb_testkit::schemas::{Kind, Op, Reach};
 
-/// Returns the reasons a broken operator of `kind` may be refused for: the precondition its
-/// draw breaks, or its names resolving.
-fn broken(kind: Kind) -> &'static [&'static str] {
+/// Returns the reasons a broken operator of `kind` drawn in shape `reach` may be refused for:
+/// the precondition its draw breaks, or its names resolving.
+fn broken(kind: Kind, reach: Option<Reach>) -> &'static [&'static str] {
+    match (kind, reach) {
+        (Kind::DropUnique | Kind::DropIndex, Some(Reach::DropUnknownName)) => &["no `zz` in scope"],
+        (Kind::DropUnique, Some(Reach::DropAbsentClause)) => &["`*` has no unique (*)"],
+        (Kind::DropIndex, Some(Reach::DropAbsentClause)) => &["`*` has no index (*)"],
+        (kind, _) => broken_kind(kind),
+    }
+}
+
+/// Returns the reasons a broken operator of `kind`, whose shape does not decide them, may be
+/// refused for: none for a drop of a unique or index, whose every draw has a shape.
+fn broken_kind(kind: Kind) -> &'static [&'static str] {
     match kind {
         Kind::AddModule => &["module `app` already exists"],
         Kind::DropModule => &["`drop module app` is refused while the module holds * `*`"],
@@ -55,19 +66,21 @@ fn broken(kind: Kind) -> &'static [&'static str] {
         Kind::RenameField => &[
             "`*` already has a field `*`",
             "`*` of `*` names `*` of `*` and of `*` as one element",
+            "`*` of `*` names `*` of `*` and `*` of `*` as one element",
         ],
         Kind::DropField | Kind::MoveFieldDown | Kind::AddDefault => &["`*` has no field `*`"],
         Kind::MoveFieldUp => &["`*` already has a field `*`; the header cannot take it"],
         Kind::AlterField => &["`on delete` is allowed only on a `Key` field or an `Option` of one"],
-        Kind::AddUnique => &["no `zz` in scope", "`*` is declared twice"],
-        Kind::AddIndex => &["no `zz` in scope", "`*` declares `index *` twice"],
+        Kind::AddUnique | Kind::AddIndex => &[
+            "no `zz` in scope",
+            "`*` of `*` is one with `*`, which `*` already holds",
+        ],
         Kind::AddCheck | Kind::Grant => &["no `zz` in scope"],
+        Kind::DropUnique | Kind::DropIndex => &[],
         Kind::Store => &[
             "no `zz` in scope",
             "a stored view is a function with no parameters",
         ],
-        Kind::DropUnique => &["`*` has no unique (zz)"],
-        Kind::DropIndex => &["`*` has no index (zz)"],
         Kind::Rekey => &[
             "key field `zz` is not a header field or a field of the only constructor of `*`",
             "`rekey relation *` is refused: field `*` references `*` and is not carried",
@@ -190,7 +203,7 @@ pub(super) fn stated(op: &Op, messages: &[&str], own: &[&str]) -> Result<(), Str
     } else if op.unimaged() {
         unimaged(op.kind())
     } else {
-        broken(op.kind())
+        broken(op.kind(), op.reach())
     };
     let any = messages.iter().any(|m| stated_in(reasons, m));
     let each = own.iter().all(|m| stated_in(reasons, m));
@@ -243,7 +256,7 @@ pub(super) const NEEDS_FILL: &str = "the inverse of `drop field *` needs a fill:
 /// Returns the refusals of an inverse `add field` or `add constructor` of a revert that a name a
 /// later migration took refuses.
 pub(super) fn taken(kind: Kind) -> Vec<String> {
-    broken(kind)
+    broken_kind(kind)
         .iter()
         .map(|why| format!("the inverse `*` does not apply: {why}"))
         .collect()

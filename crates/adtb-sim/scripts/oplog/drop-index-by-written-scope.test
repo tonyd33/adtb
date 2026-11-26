@@ -14,7 +14,7 @@ migrate
   add index (slug) in notes.Both
   add index (slug) in notes.(Other | Plain)
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add index (slug) in notes.(Plain | Other)", detail: "`notes` declares `index (slug) in (Plain | Other)` twice" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add index (slug) in notes.(Plain | Other)", detail: "`index (slug) in (Plain | Other)` of `notes` is one with `index (slug) in (Other | Plain)`, which `notes` already holds" } } }
   module notes
   add index (slug) in notes.(Plain | Other)
 

@@ -66,6 +66,21 @@ pub enum RowMap {
     Rekey { relation: RelId },
 }
 
+impl RowMap {
+    /// Returns the type whose constructors' rows the map moves, when it names one.
+    pub fn def(&self) -> Option<TypeId> {
+        match self {
+            RowMap::Fill { def, .. }
+            | RowMap::Copy { def, .. }
+            | RowMap::Route { def, .. }
+            | RowMap::Merge { def, .. }
+            | RowMap::Nest { def, .. }
+            | RowMap::Unnest { def, .. } => Some(*def),
+            RowMap::Rekey { .. } => None,
+        }
+    }
+}
+
 /// The rows of constructor `from` in a merge: the discriminator's constructor `tag` they take,
 /// and each field of the merged constructor `fields` pairs with a field of `from`.
 #[derive(Clone, Debug)]

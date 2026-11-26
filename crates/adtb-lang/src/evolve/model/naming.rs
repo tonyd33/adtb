@@ -842,32 +842,6 @@ impl Model {
 }
 
 impl Run<'_> {
-    /// Record the names `built` gives each of `held`, expressions of file `file`, onto the
-    /// expression of `written`, of the migration's text, at the same place.
-    pub(super) fn read(
-        &mut self,
-        built: &Built,
-        file: FileId,
-        held: &[ast::Expr],
-        written: &[ast::Expr],
-    ) {
-        let names = built.names(file);
-        let (mut out, mut missing) = (Names::default(), Vec::new());
-        for (h, w) in held.iter().zip(written) {
-            copy_tokens(
-                (&mut out, &mut missing),
-                &names,
-                (built.text(file), h.span.range()),
-                (self.text(), w.span.range()),
-                false,
-                &[],
-                [&[], &[]],
-            );
-        }
-        self.note_names(out);
-        self.miss(missing);
-    }
-
     /// Returns the key of the declaration the operator being applied held, when it held one.
     pub(super) fn held(&self) -> Option<u64> {
         self.lates().iter().find_map(|&l| match l {

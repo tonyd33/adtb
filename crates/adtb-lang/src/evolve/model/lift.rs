@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::defaults::Defaults;
-use super::indexes::Indexes;
+use super::indexes::{Clauses, Elem, Part};
 use super::slots::{Found, implied_key, type_slots};
 use super::*;
 use crate::ast::{self, Decl as AstDecl, RelationClause};
@@ -299,19 +299,25 @@ impl<'a> Lifting<'a> {
 
     /// Returns a name of the constructor or named set `name` of relation `rel`.
     fn scope_name(&self, rel: RelId, name: &ast::Ident) -> Term {
+        match self.scope_part(rel, name) {
+            Ok(Part::Held { obj, .. }) => Term::name(obj, &name.text),
+            _ => Term::text(&name.text),
+        }
+    }
+
+    /// Returns the part naming the constructor or named set `name` of relation `rel`.
+    fn scope_part(&self, rel: RelId, name: &ast::Ident) -> Result<Part, String> {
         let ids = self.schema.ids();
         if let Some(s) = ids.set_id(rel, &name.text) {
-            return Term::name((Space::Set, s.raw()), &name.text);
+            return Ok(Part::held((Space::Set, s.raw()), &name.text));
         }
         let td = self.schema.ty(self.schema.relation(rel).elem_def);
         let found = td
             .ctor_refs()
             .find(|&c| td.ctor_def(c).name == name.text)
-            .and_then(|c| ids.ctor_id(c));
-        match found {
-            Some(c) => Term::name((Space::Shared, c.raw()), &name.text),
-            None => Term::text(&name.text),
-        }
+            .and_then(|c| ids.ctor_id(c))
+            .ok_or_else(|| missing("a constructor or named set of a scope"))?;
+        Ok(Part::held((Space::Shared, found.raw()), &name.text))
     }
 
     fn relation(&self, m: &mut Model, found: &Found, r: &ast::RelationDecl) -> Result<u64, String> {
@@ -320,22 +326,21 @@ impl<'a> Lifting<'a> {
             .ok_or_else(|| missing("a relation variable"))?;
         let id = self.id(Slot::Relation(rel))?;
         let def = self.schema.relation(rel).elem_def;
-        let mut clauses = Vec::new();
-        let mut indexes = Indexes::default();
+        let mut clauses = Clauses::new();
         let mut fills = Vec::new();
         let (mut ix, mut cx) = (0, 0);
         for c in &r.clauses {
-            clauses.push(match c {
-                RelationClause::Key(fs, generate) => ClauseM::Key {
-                    id: Some(self.id(Slot::Key(rel))?),
-                    fields: fs.iter().map(|f| self.field_name(def, None, f)).collect(),
-                    listed: self.after_paren(fs[0].span),
-                    generate: match generate {
+            match c {
+                RelationClause::Key(fs, generate) => clauses.push_key(
+                    Some(self.id(Slot::Key(rel))?),
+                    fs.iter().map(|f| self.field_name(def, None, f)).collect(),
+                    self.after_paren(fs[0].span),
+                    match generate {
                         Some(g) => Some((g.text.clone(), Some(self.id(Slot::Generated(rel))?))),
                         None => None,
                     },
-                },
-                RelationClause::Volatile => ClauseM::Volatile,
+                ),
+                RelationClause::Volatile => clauses.push_volatile(),
                 RelationClause::Unique(fields, scope, _)
                 | RelationClause::Index { fields, scope, .. } => {
                     let kind = match c {
@@ -349,19 +354,25 @@ impl<'a> Lifting<'a> {
                         .index_id(rel, ix)
                         .ok_or_else(|| missing("an index"))?
                         .raw();
-                    let clause = indexes.lifted(
+                    let parts = match scope {
+                        None => None,
+                        Some(ast::CtorScope::One(c)) => Some(vec![self.scope_part(rel, c)?]),
+                        Some(ast::CtorScope::Many(cs)) => Some(
+                            cs.iter()
+                                .map(|c| self.scope_part(rel, c))
+                                .collect::<Result<_, _>>()?,
+                        ),
+                    };
+                    clauses.lifted(
                         id,
                         kind,
-                        fields.iter().map(|e| self.term(e.span)).collect(),
-                        scope.as_ref().map(|s| match s {
-                            ast::CtorScope::One(c) => (vec![self.scope_name(rel, c)], false),
-                            ast::CtorScope::Many(cs) => {
-                                (cs.iter().map(|c| self.scope_name(rel, c)).collect(), true)
-                            }
-                        }),
+                        fields
+                            .iter()
+                            .map(|e| Elem::lift(self.text, e, self.names, self.ahead))
+                            .collect(),
+                        parts,
                     );
                     ix += 1;
-                    clause
                 }
                 RelationClause::Default { ctor, field, value } => {
                     let value = match value {
@@ -380,19 +391,17 @@ impl<'a> Lifting<'a> {
                         };
                         fills.push((fid.raw(), did.raw(), value.clone()));
                     }
-                    continue;
                 }
                 RelationClause::Computed(n, ty, e) => {
-                    let clause = ClauseM::Computed {
-                        id: Some(self.id(Slot::Computed(rel, cx))?),
-                        name: n.text.clone(),
-                        ty: self.term(ty.span),
-                        expr: self.term(e.span),
-                    };
+                    clauses.push_computed(
+                        Some(self.id(Slot::Computed(rel, cx))?),
+                        n.text.clone(),
+                        self.term(ty.span),
+                        self.term(e.span),
+                    );
                     cx += 1;
-                    clause
                 }
-            });
+            }
         }
         let mut implied = BTreeMap::new();
         for i in self.schema.implied_indexes(rel) {
@@ -406,17 +415,17 @@ impl<'a> Lifting<'a> {
                 implied.insert(key, index);
             }
         }
-        m.relations.insert(
-            id,
-            RelM {
-                name: r.name.name.text.clone(),
-                ty: self.term(r.ty.span),
-                clauses,
-                indexes,
-                defaults: Defaults::lifted(fills)?,
-                implied,
-            },
-        );
+        let mut lifted = RelM {
+            name: r.name.name.text.clone(),
+            ty: self.term(r.ty.span),
+            clauses,
+            defaults: Defaults::lifted(fills)?,
+            implied,
+        };
+        if let Some(was) = m.relations.get(&id) {
+            lifted.keep_gone_scopes(was);
+        }
+        m.relations.insert(id, lifted);
         Ok(id)
     }
 

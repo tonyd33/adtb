@@ -1,0 +1,24 @@
+# A drop finds a unique or index by a named set the migration dropped before it: dropping the set
+# and then each clause that names it commits.
+seed 3
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: I64, x: Text } | B { n: I64, k: Text } | C { n: I64 }
+  add relation ts : T key id generate sequence
+  add set S of ts = A | C
+  add index (n) in ts.S
+  add unique (n) in ts.S
+
+migrate
+  module ts
+  drop set S of ts
+  drop index (n) in ts.S
+  drop unique (n) in ts.S
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None select i.clause
+----
+"key id"

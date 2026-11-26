@@ -12,9 +12,24 @@ pub(super) struct Printed {
     terms: Vec<std::ops::Range<usize>>,
     /// The range of the text each arm held as written takes, by its key.
     arms: Vec<(u64, std::ops::Range<usize>)>,
+    /// Whether a scope naming a set the migration dropped prints that set's name, as a refusal
+    /// shows it. Otherwise it prints the constructors the set reached, as a build reads them.
+    named: bool,
+    /// Why the text misprints the model, when it does.
+    broken: Option<&'static str>,
 }
 
 impl Printed {
+    /// Record that the text misprints the model, for `why`.
+    pub(super) fn broken(&mut self, why: &'static str) {
+        self.broken.get_or_insert(why);
+    }
+
+    /// Returns whether a scope naming a set the migration dropped prints that set's name.
+    pub(super) fn named(&self) -> bool {
+        self.named
+    }
+
     /// Returns the range of the text each term takes, in the order [`Model::decl_terms_mut`]
     /// gives the terms, then the value of each default in declaration order.
     pub(super) fn terms(&self) -> &[std::ops::Range<usize>] {
@@ -136,27 +151,7 @@ impl Model {
             Item::Relation(r) => {
                 let rel = self.relations.get_mut(&r).expect("the relation variable");
                 out.push(&mut rel.ty);
-                let RelM {
-                    clauses, indexes, ..
-                } = rel;
-                let mut of_index: Vec<(usize, &mut Term)> = Vec::new();
-                indexes.lend_terms(clauses, &mut |at, t| of_index.push((at, t)));
-                let mut of_index = of_index.into_iter().peekable();
-                for (k, c) in clauses.iter_mut().enumerate() {
-                    match c {
-                        ClauseM::Key { fields, .. } => out.extend(fields.iter_mut()),
-                        ClauseM::Index(_) => {
-                            while let Some((_, t)) = of_index.next_if(|(at, _)| *at == k) {
-                                out.push(t);
-                            }
-                        }
-                        ClauseM::Computed { ty, expr, .. } => {
-                            out.push(ty);
-                            out.push(expr);
-                        }
-                        ClauseM::Volatile => {}
-                    }
-                }
+                rel.clauses.lend_terms(&mut |t| out.push(t));
             }
             Item::Set(s) => out.extend(self.sets.get_mut(&s).expect("the set").members.iter_mut()),
             Item::Fn(f) | Item::Aggregate(f) => {
@@ -258,7 +253,10 @@ impl Model {
 
     /// Returns clause `c` as written.
     pub(super) fn clause_text(&self, rel: &RelM, c: &ClauseM) -> String {
-        let mut out = Printed::default();
+        let mut out = Printed {
+            named: true,
+            ..Printed::default()
+        };
         self.print_clause(rel, c, &mut out);
         out.text
     }
@@ -294,13 +292,21 @@ impl Model {
 
     /// Returns the declarations as [`Model::source_decls`] does, a name of dropped objects as
     /// written, for a build while a migration applies.
+    ///
+    /// Errors: why a declaration's text misprints the model.
     pub(super) fn printed(&self) -> Result<Vec<SourceDecl>, String> {
-        Ok((0..self.decls.len())
-            .map(|i| SourceDecl {
-                module: self.decls[i].module.clone(),
-                text: self.print(i),
+        (0..self.decls.len())
+            .map(|i| {
+                let printed = self.print_mapped(i);
+                match printed.broken {
+                    Some(why) => Err(why.to_string()),
+                    None => Ok(SourceDecl {
+                        module: self.decls[i].module.clone(),
+                        text: printed.text,
+                    }),
+                }
             })
-            .collect())
+            .collect()
     }
 
     /// Returns the write states as a schema takes them.

@@ -144,6 +144,7 @@ fn a_hiding_upsert_keeps_its_visible_scope_distinct_from_its_unique_probe() {
     let enable = "module auth\nenable notes.Link\n";
     let members =
         "module auth\ndrop set Shared of notes\nadd set Shared of notes = Plain | Other\n";
+    let dropped = "module auth\ndrop unique (slug) in notes.Shared\n";
     let body = r#"txn put () -> I64 =
   transact
     insert notes.Plain { id: notes.key(1), slug: "same", body: "x" }
@@ -151,7 +152,14 @@ fn a_hiding_upsert_keeps_its_visible_scope_distinct_from_its_unique_probe() {
     return 0
 "#;
     let mut ran = 0;
-    for (name, tail, probe) in [("new constructor", vec![grow, enable], vec![0, 2])] {
+    for (name, tail, probe) in [
+        ("new constructor", vec![grow, enable], vec![0, 2]),
+        (
+            "set added again with another member",
+            vec![members],
+            vec![0, 1],
+        ),
+    ] {
         let mut log = vec![V1, add];
         log.extend(tail);
         let (_, current) = checked(&log);
@@ -188,13 +196,13 @@ fn a_hiding_upsert_keeps_its_visible_scope_distinct_from_its_unique_probe() {
             ran += 1;
         }
     }
-    assert_eq!(2, ran);
+    assert_eq!(4, ran);
     assert_eq!(
         Err(Untranslatable {
-            operator: None,
+            operator: Some("drop unique (slug) in notes.Shared".into()),
             reason: "its conflict target is dropped".into(),
         }),
-        translated_with_hiding(&[V1, add, members], 2, body, false).map(|_| ())
+        translated_with_hiding(&[V1, add, dropped], 2, body, false).map(|_| ())
     );
 }
 

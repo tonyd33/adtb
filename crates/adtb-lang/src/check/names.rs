@@ -43,6 +43,16 @@ impl Refs {
             .collect()
     }
 
+    /// Returns every name recorded so far in the text being checked, leaving them.
+    pub(super) fn seen(&self) -> Vec<(Span, Ref)> {
+        self.names
+            .borrow()
+            .iter()
+            .filter(|(o, ..)| *o == Origin::Checked)
+            .map(|(_, s, r)| (*s, r.clone()))
+            .collect()
+    }
+
     fn push(&self, span: Span, r: Ref) {
         self.names.borrow_mut().push((self.at.get(), span, r));
     }
@@ -168,7 +178,7 @@ impl Checker<'_> {
         self.schema.relation_sel(rel, sel)
     }
 
-    fn record_sel(&self, def: TypeId, rel: Option<RelId>, sel: &ast::CtorSel) {
+    pub(super) fn record_sel(&self, def: TypeId, rel: Option<RelId>, sel: &ast::CtorSel) {
         for n in sel_names(sel) {
             if self.declared_ctor(n.span, def, &n.text).is_none() {
                 self.set_named(rel, n);

@@ -1,0 +1,83 @@
+# A drop finds a unique or index scoped to a set an earlier operator of the migration dropped,
+# whatever operators that build the declarations come between it and the drop: an added index, a
+# default for a field of a constructor the set reached or of one it did not, beside a default held
+# before, or a split of another relation's constructor beside an index over the constructors the
+# set reached.
+seed 1
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: I64, x: Text } | B { n: I64, k: Text } | C { n: I64, x: Text }
+  add relation ts : T key id generate sequence
+  add set S of ts = A | C
+  add unique (n) in ts.S
+
+migrate
+  module ts
+  drop set S of ts
+  add index (n) in ts
+  drop unique (n) in ts.S
+  add set S of ts = A | C
+  add unique (n) in ts.S
+
+migrate
+  module ts
+  drop set S of ts
+  add default ts.C.x = "c"
+  drop unique (n) in ts.S
+  add set S of ts = A | C
+  add unique (n) in ts.S
+  add default ts.B.k = "b"
+
+migrate
+  module ts
+  drop set S of ts
+  add default ts.A.x = "a"
+  drop unique (n) in ts.S
+
+reopen
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None select i.clause
+----
+"index (n)"
+"key id"
+
+run
+  insert ts.A { n: 1 }
+  insert ts.B { n: 1 }
+  insert ts.C { n: 1 }
+
+query rowsort
+  from t in ts select match t | A a -> a.x | B b -> b.k | C c -> c.x
+----
+"a"
+"b"
+"c"
+
+migrate
+  module ts
+  add type V { id: Key vs } = P { n: I64 } | Q { n: I64 }
+  add relation vs : V key id generate sequence
+  add set S of ts = A | C
+  add index (n) in ts.S
+  add index (n) in ts.(A | C)
+
+migrate
+  module ts
+  drop set S of ts
+  split constructor V.P into P1 { n: I64 } | P2 { n: I64 }
+    by match
+      | P { n } if n > 0 -> P1 { n: n }
+      | P { n } -> P2 { n: n }
+  drop index (n) in ts.S
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None select i.clause
+----
+"index (n)"
+"index (n) in (A | C)"
+"key id"

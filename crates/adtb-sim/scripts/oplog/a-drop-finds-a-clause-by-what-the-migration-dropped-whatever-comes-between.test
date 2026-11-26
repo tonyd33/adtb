@@ -1,0 +1,107 @@
+# A drop finds a unique or index by a named set or a function an earlier operator of the migration
+# dropped, whatever operators come between: a rename, a removal, a split or a merge of a
+# constructor the set reached, or another declaration. It finds a dropped function under a binder
+# of the element, and a name of the element that matches nothing it holds is refused naming that
+# name; a name that resolves within the drop's own scope is not, and a function the migration
+# leaves a clause naming is refused naming the clause. A set of that name added again holds its
+# clause again. A callee the migration dropped may be a function or a type.
+seed 3
+
+migrate
+  module ts
+  add module ts
+  define fn f (x: I64) -> I64 = x * 2
+  add type T { id: Key ts, n: I64 } = A { x: I64 } | B { x: I64 } | C { x: I64 } | D { x: I64 }
+  add relation ts : T key id generate sequence
+  add set S of ts = A | B
+  add unique (n) in ts.S
+  add set U of ts = C | D
+  add index (n) in ts.U
+  add set W of ts = A | B
+  add index (x) in ts.W
+  add unique (f(n)) in ts
+  deprecate ts.D
+  define fn g (x: I64) -> I64 = x * 2
+  add type V = E { v: I64 } | F
+  add type Item { id: Key items, t: V } = P | Q
+  add relation items : Item key id generate sequence
+  add index (match t | E e -> g(e.v) | F -> 0) in items
+  add type Z { id: Key zs } = E1 { v: I64 } | F1 { k: I64 }
+  add relation zs : Z key id generate sequence
+  add index (k) in zs.F1
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop fn g", detail: "`index (match t | E e -> g(e.v) | F -> 0)` of `items` names the dropped function `g`\nno `h` in scope" } } }
+  module ts
+  drop fn g
+  drop index (match t | E e -> h(e.v) | F -> 0) in items
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop fn g", detail: "`index (match t | E e -> g(e.v) | F -> 0)` of `items` names the dropped function `g`" } } }
+  module ts
+  drop fn g
+  add type U = X | Y
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop index (v) in zs.E1", detail: "`zs` has no index (v) in E1" } } }
+  module ts
+  drop index (v) in zs.E1
+
+migrate
+  module ts
+  drop set S of ts
+  rename constructor T.A to Z
+  drop unique (n) in ts.S
+  drop set U of ts
+  remove constructor T.D
+  split constructor T.C into C1 { x: I64 } | C2 { x: I64 }
+    by match
+      | C { x } if x > 0 -> C1 { x: x }
+      | C { x } -> C2 { x: x }
+  drop index (n) in ts.U
+  drop fn f
+  add type Foo = X | Y
+  drop unique (f(n)) in ts
+  drop set W of ts
+  add set W of ts = Z | B
+  drop fn g
+  drop index (match t | E e -> g(e.v) | F -> 0) in items
+
+migrate
+  module ts
+  add type K = Z | B
+  add set V of ts = Z | B
+  add unique (n) in ts.V
+
+migrate
+  module ts
+  drop set V of ts
+  merge constructor T.(Z | B) into M { k: K, x: I64 }
+  drop unique (n) in ts.V
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None select i.clause
+----
+"index (x) in M"
+"key id"
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "items" and i.relation == r.id and i.dropped == None select i.clause
+----
+"key id"
+
+migrate
+  module ts
+  add type Cents = new I64
+  add index (Cents(n)) in ts
+
+migrate
+  module ts
+  drop type Cents
+  drop index (Cents(n)) in ts
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None select i.clause
+----
+"index (x) in M"
+"key id"

@@ -92,7 +92,7 @@ const WANTED: [(Kind, bool, Option<Reach>); 33] = [
     (Kind::MoveFieldDown, false, Some(Reach::MovedDownAction)),
     (Kind::AddDefault, false, Some(Reach::DefaultOverSeveral)),
     (Kind::DropField, false, Some(Reach::DroppedBesideDefault)),
-    (Kind::RenameField, false, Some(Reach::RenamedBesideDropped)),
+    (Kind::DropIndex, true, Some(Reach::DropAbsentClause)),
     (Kind::Deprecate, false, None),
     (Kind::RemoveConstructor, false, Some(Reach::RemovedAlone)),
     (Kind::Merge, false, Some(Reach::MergeUnderCheck)),

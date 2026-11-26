@@ -359,7 +359,10 @@ impl Checker<'_> {
         let def = match self.callee(callee) {
             Callee::Local(local) => return self.apply_local(local, args, span),
             Callee::Declared(def) => def,
-            Callee::Unknown(e) => return Err(e.at(callee.span())),
+            Callee::Unknown(e) => {
+                self.resolve_args(args);
+                return Err(e.at(callee.span()));
+            }
             Callee::Prelude(f) => return self.prelude_callee(f, args, pins, span),
         };
         self.record_value(callee, def);
@@ -425,6 +428,16 @@ impl Checker<'_> {
         }
     }
 
+    /// Resolve the names of `args`, the arguments of a call whose callee names nothing, though the
+    /// call is refused.
+    fn resolve_args(&mut self, args: &CallArgs) {
+        if let CallArgs::List(xs) = args {
+            for x in xs {
+                self.synth(x).ok();
+            }
+        }
+    }
+
     fn newtype_call(&mut self, callee: &ast::QName, args: &CallArgs, span: Span) -> R<Out> {
         let def = match self.lookup_type(callee) {
             Ok(TypeName::Decl(d)) => d,
@@ -434,7 +447,10 @@ impl Checker<'_> {
                     format!("`{}` is not a newtype", callee.name.text),
                 ));
             }
-            Err(e) => return Err(e.at(callee.span())),
+            Err(e) => {
+                self.resolve_args(args);
+                return Err(e.at(callee.span()));
+            }
         };
         let TypeDefKind::Newtype { base, .. } = &self.schema.ty(def).kind else {
             return Err(diag(

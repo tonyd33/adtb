@@ -379,24 +379,9 @@ impl Model {
         });
         let key_id = same.unwrap_or_else(|| self.fresh(Space::Index));
         let held = self.relations.get_mut(&r).expect("the relation variable");
-        let Some(clause) = held
-            .clauses
-            .iter_mut()
-            .find(|c| matches!(c, ClauseM::Key { .. }))
-        else {
+        let written = key.iter().map(|x| Term::text(&x.text)).collect();
+        if !held.rekey(key_id, written, key.len() > 1) {
             return refuse(format!("`{rname}` declares no key"));
-        };
-        if let ClauseM::Key {
-            id,
-            fields: written,
-            listed,
-            generate,
-        } = clause
-        {
-            *id = Some(key_id);
-            *written = key.iter().map(|x| Term::text(&x.text)).collect();
-            *listed = key.len() > 1;
-            *generate = None;
         }
         let (Some(first), Some(last)) = (key.first(), key.last()) else {
             return broken("a rekey to no key");

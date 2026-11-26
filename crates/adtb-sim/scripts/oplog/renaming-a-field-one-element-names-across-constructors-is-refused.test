@@ -11,7 +11,7 @@ migrate
   add set S of ts = A | B
   add index (z) in ts.S
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "rename field T.A.z to z9", detail: "`index (z) in S` of `ts` names `z` of `A` and of `B` as one element" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "rename field T.A.z to z9", detail: "`index (z) in S` of `ts` names `z9` of `A` and `z` of `B` as one element" } } }
   module ts
   rename field T.A.z to z9
 
@@ -19,7 +19,7 @@ migrate
   module ts
   add index (z) in ts.A
 
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "rename field T.A.z to z9", detail: "`index (z) in S` of `ts` names `z` of `A` and of `B` as one element" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "rename field T.A.z to z9", detail: "`index (z) in S` of `ts` names `z9` of `A` and `z` of `B` as one element" } } }
   module ts
   rename field T.A.z to z9
 

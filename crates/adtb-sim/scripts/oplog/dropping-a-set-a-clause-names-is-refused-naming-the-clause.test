@@ -1,0 +1,35 @@
+# A migration that drops a named set a unique or index still names at its end is refused, naming
+# the unique or index; a set of that name added again in the same migration is the one the clause
+# names.
+seed 9
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: I64, x: Text } | B { k: Text }
+  add relation ts : T key id generate sequence
+  add set S of ts = A
+  add index (n) in ts.S
+  add set U of ts = A
+  add unique (x) in ts.U
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop set S of ts", detail: "`index (n) in S` of `ts` names the dropped set `S`" } } }
+  module ts
+  drop set S of ts
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop set U of ts", detail: "`unique (x) in U` of `ts` names the dropped set `U`" } } }
+  module ts
+  drop set U of ts
+
+migrate
+  module ts
+  drop set S of ts
+  add set S of ts = A
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None select i.clause
+----
+"index (n) in A"
+"key id"
+"unique (x) in A"
