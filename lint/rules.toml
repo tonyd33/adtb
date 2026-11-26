@@ -95,7 +95,7 @@ exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
 [rule.rows.engine_names]
 kind = "ratchet"
 why = "An engine module, relation, type or constructor looked up by its spelling can find a user object of that name."
-fix = "Name it by its id: a relation by `engine_rel` through `catalog::engine_relation`, a type by `engine_type`, a constructor by `engine_ctor`; a const holding the name, `.eq(..)`, `matches!`, `if let` or an array's `contains` in its place does not count."
+fix = "Name it by its id: a relation by `engine_rel` through `catalog::engine_relation`, a type by `engine_type`, a constructor by `engine_ctor`; a const holding the name, `.eq(..)`, `matches!`, `if let` or an array's `contains` in its place does not count. The reservation of user module names, `RESERVED_MODULES`, is the one place the spellings are listed: add a new engine module there, not spelled elsewhere."
 
 [[rule]]
 query = "engine-var.tql"
@@ -110,7 +110,7 @@ exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
 [rule.rows.engine_names]
 kind = "ratchet"
 why = "An engine module, relation, type or constructor looked up by its spelling can find a user object of that name."
-fix = "Name it by its id: a relation by `engine_rel` through `catalog::engine_relation`, a type by `engine_type`, a constructor by `engine_ctor`; a const holding the name, `.eq(..)`, `matches!`, `if let` or an array's `contains` in its place does not count."
+fix = "Name it by its id: a relation by `engine_rel` through `catalog::engine_relation`, a type by `engine_type`, a constructor by `engine_ctor`; a const holding the name, `.eq(..)`, `matches!`, `if let` or an array's `contains` in its place does not count. The reservation of user module names, `RESERVED_MODULES`, is the one place the spellings are listed: add a new engine module there, not spelled elsewhere."
 
 [[rule]]
 query = "from-raw.tql"
@@ -237,6 +237,15 @@ include = ["crates/**/*.rs"]
 kind = "zero"
 why = "A test that checks only that a refusal happened, or part of its text, passes on the wrong refusal."
 fix = "Assert with `adtb_testkit::refused_as`, its value and whole reason; a substring check through another variable, `matches!` with a partial `Err` pattern, or an `is_ok` result stored and asserted later does not count."
+
+[[rule]]
+query = "loose-refusals.tql"
+include = ["crates/**/*.rs"]
+
+[rule.rows.loose_refusals]
+kind = "ratchet"
+why = "As weak_refusals: a test that checks only that a refusal happened, or part of its text, passes on the wrong refusal."
+fix = "Assert with `adtb_testkit::refused_as`, its value and whole reason; moving a site to a form weak_refusals counts fails that zero row, and a substring check through a variable whose name hides the error does not count."
 
 [[rule]]
 query = "storage-io.tql"

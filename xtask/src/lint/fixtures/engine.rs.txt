@@ -1,0 +1,17 @@
+const SYS: &str = "sys";
+static CATALOG: &str = "catalog";
+const NAMES: [&str; 2] = ["prelude", "users"];
+fn f(name: &str, m: &Module) {
+    if let "sys" = name {}
+    let a = matches!(name, "catalog");
+    let b = name.eq("prelude");
+    let c = ["sys", "x"].contains(&name);
+    let d = schema.types.get("Audit");
+    let e = name == "shop";
+    let g = name.eq("shop");
+    let h = "sys".eq(name);
+    let i = name.eq_ignore_ascii_case("catalog");
+    let j = Some(name) == Some("sys");
+    let k = HashSet::from(["prelude"]).contains(name);
+    let l = name.strip_suffix("sys");
+}

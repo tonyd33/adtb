@@ -611,3 +611,117 @@ fn union_fields_and_the_fields_a_macro_declares_count_once_per_definition() {
         counts(&[("pub_fields", file, 6), ("crate_fields", file, 4)])
     );
 }
+
+/// Returns `FILE:LINE` of each site `query` finds for `row` in fixture `name`, sorted.
+fn sites_of(query_file: &str, row: &str, name: &str) -> Vec<String> {
+    let found = rule(query_file, &[(row, Kind::Zero)]);
+    let files = fixture_paths(&[name]);
+    let output = query(repository(), query_file, &files, 1).expect("tql exits 0");
+    let mut tally = Tally::default();
+    apply(&found, &BTreeSet::new(), &output, &mut tally).expect("the fixture parses");
+    let mut sites: Vec<String> = lines(&tally.findings)
+        .into_iter()
+        .map(|line| line.trim_end_matches(&format!(": {row}")).to_owned())
+        .collect();
+    sites.sort();
+    sites
+}
+
+fn lines_of(name: &str, lines: &[u64]) -> Vec<String> {
+    let mut expected: Vec<String> = lines
+        .iter()
+        .map(|line| format!("xtask/src/lint/fixtures/{name}:{line}"))
+        .collect();
+    expected.sort();
+    expected
+}
+
+#[test]
+fn each_collection_constructor_called_or_passed_collect_to_vec_vec_and_a_kept_or_default_is_a_site()
+{
+    assert_eq!(
+        sites_of(
+            "write-collections.tql",
+            "write_collections",
+            "collections.rs.txt"
+        ),
+        lines_of(
+            "collections.rs.txt",
+            &[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 19]
+        )
+    );
+}
+
+#[test]
+fn a_raw_id_decode_by_path_qualified_path_value_macro_argument_rename_or_alias_is_a_site() {
+    assert_eq!(
+        sites_of("from-raw.tql", "from_raw", "fromraw.rs.txt"),
+        lines_of("fromraw.rs.txt", &[1, 2, 4, 5, 6, 7, 10, 11])
+    );
+}
+
+#[test]
+fn an_engine_module_spelled_in_a_const_pattern_comparison_or_list_is_a_site() {
+    assert_eq!(
+        sites_of("engine.tql", "engine_names", "engine.rs.txt"),
+        lines_of(
+            "engine.rs.txt",
+            &[1, 2, 3, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16]
+        )
+    );
+}
+
+#[test]
+fn an_open_helper_closure_macro_or_alias_is_a_site_once_and_a_function_marked_test_is_not() {
+    assert_eq!(
+        sites_of("simtest.tql", "sim_test_opens", "tests/simtest.rs.txt"),
+        lines_of("tests/simtest.rs.txt", &[1, 4, 7, 10, 15, 16, 27, 30, 31])
+    );
+}
+
+#[test]
+fn every_loose_refusal_form_is_a_site_and_the_test_file_forms_only_in_a_test_file() {
+    assert_eq!(
+        sites_of(
+            "loose-refusals.tql",
+            "loose_refusals",
+            "tests/loose_refusals.rs.txt"
+        ),
+        lines_of(
+            "tests/loose_refusals.rs.txt",
+            &[
+                1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 18, 22, 25, 26, 27, 28, 29, 31
+            ]
+        )
+    );
+    assert_eq!(
+        sites_of(
+            "loose-refusals.tql",
+            "loose_refusals",
+            "loose_refusals.rs.txt"
+        ),
+        lines_of(
+            "loose_refusals.rs.txt",
+            &[3, 4, 5, 6, 9, 10, 11, 12, 13, 22, 25, 26, 27, 28, 29, 31]
+        )
+    );
+}
+
+#[test]
+fn a_panic_by_any_path_macro_or_diverging_function_is_a_decode_panic() {
+    let decode = rule("structure.tql", &[("decode_panics", Kind::Ratchet)]);
+    let files = fixture_paths(&["decode.rs.txt"]);
+    let output = query(repository(), "structure.tql", &files, 1).expect("tql exits 0");
+    let mut tally = Tally::default();
+    apply(
+        &decode,
+        &BTreeSet::from(["pub_fields", "crate_fields", "adtb_decode_panics"]),
+        &output,
+        &mut tally,
+    )
+    .expect("the fixture parses");
+    assert_eq!(
+        tally.counts,
+        counts(&[("decode_panics", "xtask/src/lint/fixtures/decode.rs.txt", 11)])
+    );
+}

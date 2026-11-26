@@ -1,0 +1,19 @@
+fn decode(b: &[u8]) -> u8 {
+    let x = Option::unwrap(b.first().copied());
+    let y: Vec<u8> = b.iter().map(|v| Some(*v)).map(Option::unwrap).collect();
+    std::panic!("x");
+    core::unreachable!();
+    todo!();
+    unimplemented!();
+    format!("{}", b.first().unwrap());
+    b.first().copied().ok_or(Damage::Short)?;
+    x
+}
+fn more(r: Result<u8, u8>) {
+    r.unwrap_err();
+    std::panic::panic_any("x");
+    std::process::abort();
+}
+fn fail() -> ! {
+    loop {}
+}

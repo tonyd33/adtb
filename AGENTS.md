@@ -70,8 +70,9 @@ For a fresh clone, host prerequisites and optional editor setup, read
   `house.tql`, struct and union fields visible past their module, lends of write access to a
   type's fields (`&mut` getters, setters, `DerefMut` and its kin, constructors taking every
   field), decode panics, engine names, catalog reads of a user heap outside `catalog::read`,
-  calls of `CatRelId::from_raw`, sim test open helpers and weak refusal assertions (`is_err()`, `is_ok()`, `matches!(.., Err(_))`, a
-  substring of error text, a bare `unwrap_err()`, a call of `refused_with`): assert a refusal with
+  calls of `CatRelId::from_raw`, sim test open helpers and weak refusal assertions (`is_err()`,
+  `is_ok()`, `matches!(.., Err(_))`, a substring of error text, a bare `unwrap_err()`, a call of
+  `refused_with`), with their other rewrites counted as loose refusals: assert a refusal with
   `adtb_testkit::refused_as`, its value and whole reason.
 
 Use targeted checks while working and run the checks appropriate to the

@@ -1,0 +1,37 @@
+fn make(rt: SimRuntime) -> Database<SimRuntime> {
+    Database::open_in(rt, FILE, &log(), Options::default()).unwrap()
+}
+fn fresh() -> Database<SimRuntime> {
+    Database::open(FILE).unwrap()
+}
+fn reopen(rt: SimRuntime) -> Database<SimRuntime> {
+    adtb_simkit::open(rt)
+}
+macro_rules! opened {
+    ($rt:expr) => { Database::open_in($rt, FILE, &log(), Options::default()) };
+}
+#[test]
+fn a_test() {
+    let start = |rt| Database::open_in(rt, FILE, &log(), Options::default());
+    let open = |rt| adtb_simkit::open(rt);
+    let db = Database::open_in(sim(), FILE, &log(), Options::default()).unwrap();
+}
+fn built() -> Schema {
+    schema()
+}
+#[test]
+fn a_test_with_a_result() -> Result<(), Error> {
+    let db = Database::open_in(sim(), FILE, &log(), Options::default())?;
+    db.close()
+}
+fn turbofish(rt: SimRuntime) -> Database<SimRuntime> {
+    Database::<SimRuntime>::open_in(rt, FILE, &log(), Options::default()).unwrap()
+}
+type Db = Database<SimRuntime>;
+fn nested(rt: SimRuntime) -> Vec<Reply> {
+    let start = |rt| Database::open_in(rt, FILE, &log(), Options::default());
+    run(start, rt)
+}
+fn pager(rt: SimRuntime) -> Pager {
+    Pager::create(rt, &options()).unwrap()
+}

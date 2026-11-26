@@ -1,0 +1,20 @@
+fn f(xs: &[u32]) {
+    let a: Vec<u32> = Vec::with_capacity(0);
+    let b: BTreeMap<u32, u32> = Default::default();
+    let b2 = std::collections::BTreeMap::<u32, u32>::new();
+    let b3 = BTreeSet::<u32>::default();
+    let c: Vec<u32> = vec![0; 0];
+    let d = xs.iter().copied().collect::<Vec<u32>>();
+    let e: Vec<u32> = xs.to_vec();
+    let g = Vec::from_iter(xs.iter().copied());
+    let h: HashSet<u32> = HashSet::new();
+    let i = std::vec![1, 2];
+    let j: Vec<u32> = xs.iter().copied().collect();
+    let k = grant.vec(xs.len());
+    let l = xs.len();
+    let m = got.unwrap_or_else(Vec::new);
+    groups.entry(1).or_default().insert(2);
+    *counts.entry(1).or_default() += 1;
+    let n: BTreeSet<u32> = [1].into();
+    let o: Vec<u32> = FromIterator::from_iter(xs.iter().copied());
+}

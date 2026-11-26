@@ -1,0 +1,49 @@
+fn failed<T, E>(r: &Result<T, E>) -> bool { r.is_err() }
+fn t() {
+    assert!(r.err().is_some());
+    assert!(run().map_or(false, |_| true) == false);
+    assert!(matches!(run(), Err(Error::Refused { .. })));
+    assert!(matches!(run(), Err(Stopped::Shape(_))));
+    assert!(expr_err("a < b").contains("chain"));
+    assert!(errs.iter().any(|e| e.contains(needle)), "{errs:?}");
+    if let Ok(_) = run() { panic!("accepted") }
+    let Err(_) = run() else { panic!("accepted") };
+    match run() { Err(_) => {}, Ok(_) => panic!("accepted") }
+    let _ = run().expect_err("refused");
+    let refused = refused_with;
+    match run() {
+        Err(Refused(why)) => assert!(why[0].contains("cycle")),
+        Ok(_) => panic!("accepted"),
+    }
+    if let Err(Refused(why)) = run() {
+        assert!(why.starts_with("cycle"));
+    }
+    match run() {
+        Err(E::Rejected { .. }) => {}
+        Ok(_) => panic!("accepted"),
+    }
+    assert!(matches!(run(), Err(_e)));
+    assert!(run().is_err_and(|e| e.kind() == K::Bad));
+    assert!(run().err().is_some_and(|e| e.kind() == K::Bad));
+    if let Ok(_v) = run() { panic!("accepted") }
+    assert!(matches!(reason(&err), RejectReason::KeyViolation { .. }));
+    match run() {
+        Err(_) => assert!(note.contains("x")),
+        Ok(_) => panic!("accepted"),
+    }
+}
+fn strong() {
+    match run() {
+        Ok(_) => panic!("accepted"),
+        Err(e) => assert_eq!(refused_as(e), (Refusal::Cycle, "a cycle")),
+    }
+    assert!(matches!(run(), Err(Stopped::Shape)));
+    assert!(names.contains(&"x"));
+    assert!(out.contains("rows"));
+    assert!(got.is_err());
+    assert!(!matches!(run(), Err(Error::Quarantined { .. })));
+    let e = match run() {
+        Err(e) => e,
+        Ok(_) => panic!("accepted"),
+    };
+}

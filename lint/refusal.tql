@@ -1,3 +1,8 @@
+-- weak_refusals: an assertion of `is_err()` or `is_ok()`, of a substring of a name that says it
+-- holds an error's text, or of `matches!` with `Err(_)` or `Ok(_)`; a bare `unwrap_err()` or
+-- `expect_err(..)` statement; and a call of `refused_with`. The other rewrites of a weak refusal
+-- are loose_refusals sites.
+
 weak_text = r"\.(is_err|is_ok)\(\)|(err|reason|refus|message|stderr|to_string\(\))\w*(\(\))?\s*\.(contains|starts_with|ends_with)\(|matches!\([\s\S]*?(Err|Ok)\(_\)";
 
 weak_asserts = do {

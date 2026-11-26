@@ -1,0 +1,12 @@
+use crate::ids::CatRelId as RelIdOf;
+type Rel = CatRelId;
+fn f(raw: u64) {
+    let a = CatRelId::from_raw(raw);
+    let b = raw_ids.map(CatRelId::from_raw);
+    let c = Stored::<CatRelId>::new(raw);
+    let d = Stored::<_>::new(raw);
+    let e = CatRelId::from(raw);
+    let g = stored.rel_id();
+    let h = <CatRelId>::from_raw(raw);
+    let i = vec![CatRelId::from_raw(raw)];
+}

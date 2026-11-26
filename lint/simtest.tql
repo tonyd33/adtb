@@ -1,40 +1,76 @@
--- sim_test_opens: an open helper of a test, by name. A test opens through adtb_simkit::open or
--- test_world::fixture::Storage, or calls `Database::open_in` in its own body. The sites left are
--- local open helpers and helpers whose names only mention an open.
+-- sim_test_opens: an open helper of a test. By name: a function with parameters named for an
+-- open, a closure bound to such a name, and an `engine` function that starts with `Engine::open`.
+-- By body, under any name: a function with parameters or a return type, a closure bound by `let`
+-- and a macro definition whose text calls `Database::open`, `Database::open_in` or
+-- `Engine::open`, with or without a turbofish; and a `type` alias of `Database`, under which a
+-- call is not seen. A test opens through adtb_simkit::open or test_world::fixture::Storage, or
+-- calls `Database::open_in` in its own body: a function a test attribute marks is never a site,
+-- and a closure in a test's body is. A site inside another counts once, as the outer one. Not
+-- seen: a helper with neither parameters nor a return type that opens through a path not named
+-- here, an open behind a trait method, and a helper that opens a lower layer, through
+-- `Pager::create`, `Pager::open` or `Catalog::open`. The sites left are local open helpers and
+-- helpers whose names only mention an open.
 
 import Data.List (take);
 
 open_fn = r"^((re)?open(ed|s|ing)?(_\w+)?|\w+_(re)?open(ed|s)?)$";
 open_let = r"^(re)?open(ed|s|ing)?$";
+open_call = r"\b(Database|Engine)(\s*::\s*<[^>]*>)?\s*::\s*open(_in)?\s*[(!]";
+test_attr = r"^#\[\s*(\w+::)*test\s*[\](]";
 
-helpers = do {
-  f <- descendants_of_kind :function_item;
-  n <- pure f | #name;
-  guard $ text n ~ open_fn;
-  p <- pure f | #parameters;
-  guard $ length (run named_children p) > 0;
-  return f;
+-- Returns the functions among the siblings `ns` that an attribute naming a test marks.
+marked seen ns = case ns of {
+  [] -> [];
+  n : rest -> if is_kind :attribute_item n then marked (seen `or` (text n ~ test_attr)) rest
+    else if is_extra n then marked seen rest
+    else if seen `and` (is_kind :function_item n) then n : marked False rest
+    else marked False rest;
 };
 
-closures = do {
-  l <- descendants_of_kind :let_declaration;
-  p <- pure l | #pattern;
-  guard $ text p ~ open_let;
-  v <- pure l | #value;
-  guard $ is_kind :closure_expression v;
-  return l;
+among f ns = case ns of {
+  [] -> False;
+  n : rest -> (range n == range f) `or` among f rest;
 };
 
-engines = do {
-  f <- descendants_of_kind :function_item;
-  n <- pure f | #name;
-  guard $ text n == "engine";
-  b <- pure f | #body;
-  first <- pure b | Filter (\x -> take 1 (run named_children x));
-  guard $ text first ~ r"^(let \w+ = )?Engine::open";
-  return f;
+is_test f = has (parent | keep (\p -> among f (marked False (run children p)))) f;
+
+takes f = length (run (#parameters | named_children) f) > 0;
+
+gives f = length (run #return_type f) > 0;
+
+opens n = text n ~ open_call;
+
+engine_fn f = has (#name | keep (\n -> text n == "engine")) f
+  `and` has (#body | keep (\b -> case take 1 (run named_children b) of {
+    [first] -> text first ~ r"^(let \w+ = )?Engine::open";
+    _ -> False;
+  })) f;
+
+helper_site f = not (is_test f) `and` (
+  (has (#name | keep (\n -> text n ~ open_fn)) f `and` takes f)
+  `or` ((takes f `or` gives f) `and` has (#body | keep opens) f)
+  `or` engine_fn f);
+
+closure_site l = has (#value | keep (\v -> (is_kind :closure_expression v) `and` (opens v `or` has (#pattern | keep (\p -> text p ~ open_let)) l))) l;
+
+site n = ((is_kind :function_item n) `and` helper_site n)
+  `or` ((is_kind :let_declaration n) `and` closure_site n)
+  `or` ((is_kind :macro_definition n) `and` opens n);
+
+outermost n = not (has (ancestors | keep site) n);
+
+sites = do {
+  n <- descendants_of_kind :function_item `alt` descendants_of_kind :let_declaration `alt` descendants_of_kind :macro_definition;
+  guard $ site n;
+  guard $ outermost n;
+  return n;
 };
 
-opens = collect (helpers `alt` closures `alt` engines) | arr length;
+aliases = do {
+  t <- descendants_of_kind :type_item;
+  v <- pure t | #type;
+  guard $ text v ~ r"^((\w+::)*)Database\b";
+  return t;
+};
 
-main = opens;
+main = sites `alt` aliases | arr range;

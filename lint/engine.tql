@@ -1,4 +1,9 @@
--- engine_names: an engine module, relation, type or constructor looked up by its spelling. An engine
+-- engine_names: an engine module, relation, type or constructor looked up by its spelling, and an
+-- engine module's spelling as a literal in a const or static, an `if let`, `matches!`, an argument
+-- or a receiver of `.eq`, `.eq_ignore_ascii_case`, `.contains`, `.strip_suffix` and kin, a
+-- comparison with `Some(..)`, an array a const, a receiver or a call's arguments hold, and
+-- `types.get("..")`. Not seen: a spelling built at run time, held in a variable or a field before
+-- its lookup, or read from a const another file declares. An engine
 -- relation is named by its `engine_rel` id through `catalog::engine_relation`, a type by
 -- `engine_type`, a constructor by `engine_ctor`. The 5 sites of adtb-lang/src/schema/engine.rs are
 -- the mint of `EngineCtors` and stay.
@@ -79,6 +84,33 @@ audited_ctors = do {
   return c;
 };
 
-hits = (named_lookups `alt` engine_modules `alt` relation_pushes `alt` compared_names `alt` matched_names `alt` relation_values `alt` type_indexes `alt` audited_ctors);
+within kind p = is_kind kind p;
 
-main = collect hits | arr length;
+string_methods = r"\.(eq|ne|eq_ignore_ascii_case|contains|starts_with|ends_with|strip_prefix|strip_suffix|find|cmp|partial_cmp)\s*\(";
+
+called_with text_pattern p = has (parent | keep (\c -> text c ~ text_pattern)) p;
+
+loose_literals = do {
+  s <- descendants_of_kind :string_literal;
+  guard $ engine_literal s;
+  p <- pure s | parent;
+  guard $ (within :const_item p)
+    `or` (within :static_item p)
+    `or` (within :let_condition p)
+    `or` ((within :token_tree p) `and` called_with r"^((::)?(std|core)::)?matches!" p)
+    `or` ((within :arguments p) `and` called_with string_methods p)
+    `or` ((within :field_expression p) `and` (text p ~ r"^\x22\w+\x22\s*\.\s*(eq|ne|eq_ignore_ascii_case|cmp|partial_cmp)$"))
+    `or` ((within :arguments p) `and` has (parent | keep (\c -> text c ~ r"^Some\s*\(") | parent | of_kind :binary_expression) p)
+    `or` ((within :array_expression p) `and` has (parent | keep (\k -> (is_kind :const_item k) `or` (is_kind :static_item k) `or` (is_kind :field_expression k) `or` (is_kind :arguments k))) p);
+  return s;
+};
+
+type_gets = do {
+  c <- descendants_of_kind :call_expression;
+  guard $ text c ~ r"(^|\.)types\.get\(\s*\x22";
+  return c;
+};
+
+hits = (named_lookups `alt` engine_modules `alt` relation_pushes `alt` compared_names `alt` matched_names `alt` relation_values `alt` type_indexes `alt` audited_ctors `alt` loose_literals `alt` type_gets);
+
+main = hits | arr range;

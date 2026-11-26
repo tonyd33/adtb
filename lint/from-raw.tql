@@ -1,9 +1,33 @@
--- from_raw: a call of a catalog id's `from_raw`, or of `Stored::new`, the decode of a raw value
--- as one id kind.
+-- from_raw: a catalog id's `from_raw`, or `Stored::new`, the decode of a raw value as one id kind,
+-- named by a path with or without a turbofish or a qualified `<..>` type, called or passed as a
+-- value, or written in a macro's arguments; and a `use .. as` rename or a `type` alias of a
+-- catalog id or of a type named `Stored`, under which a call is not seen. A macro holding several
+-- counts once. Not seen: a call through a function of another name that wraps one, and an id
+-- built by a macro from tokens that do not spell the path.
 
-main = collect (do {
-  c <- descendants_of_kind :call_expression;
-  f <- pure c | #function;
-  guard $ text f ~ r"(Cat[A-Za-z]+Id::from_raw|Stored(::<[A-Za-z]+>)?::new)$";
-  return c;
-}) | arr length;
+paths = do {
+  p <- descendants_of_kind :scoped_identifier;
+  guard $ text p ~ r"(<?Cat[A-Za-z]+Id(::<[^>]*>)?>?::from_raw|<?Stored(::<.*>|<.*>)?>?::new)$";
+  return p;
+};
+
+macro_args = do {
+  m <- descendants_of_kind :macro_invocation;
+  guard $ text m ~ r"(Cat[A-Za-z]+Id(::<[^>]*>)?>?\s*::\s*from_raw|Stored(\s*::\s*<.*>|<.*>)?>?\s*::\s*new)\b";
+  return m;
+};
+
+renames = do {
+  u <- descendants_of_kind :use_as_clause;
+  guard $ text u ~ r"(^|::)(Cat[A-Za-z]+Id|Stored)\s+as\s";
+  return u;
+};
+
+aliases = do {
+  t <- descendants_of_kind :type_item;
+  v <- pure t | #type;
+  guard $ text v ~ r"^((\w+::)*)(Cat[A-Za-z]+Id|Stored)\b";
+  return t;
+};
+
+main = paths `alt` macro_args `alt` renames `alt` aliases | arr range;

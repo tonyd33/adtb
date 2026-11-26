@@ -1,23 +1,33 @@
--- write_collections: a collection the write path builds outside a grant: `BTreeSet::new`,
--- `BTreeMap::new`, `Vec::new`, `vec![]` or a `.collect()`.
+-- write_collections: a collection the write path builds outside a grant: a std collection's
+-- `new`, `with_capacity`, `default`, `from` or `from_iter`, with or without a turbofish, called or
+-- passed as a value; `Default::default`, `<T>::default` and `FromIterator::from_iter`, called or
+-- passed as a value; `vec![..]` of any arguments; and `.collect()`, `.to_vec()` and
+-- `.or_default()`, with or without a turbofish, except an `.or_default()` dereferenced in place,
+-- which makes a scalar. A scalar `.or_default()` bound before its dereference is counted. Not
+-- seen: a collection made by `.into()` of an array, `.to_owned()` or `.clone()` of a slice or a
+-- collection, an `extend` of a value built elsewhere, and a helper of another module.
+
+constructor = r"(^|::)(BTreeSet|BTreeMap|Vec|VecDeque|HashMap|HashSet|BinaryHeap)(::<.*>)?::(new|with_capacity|default|from|from_iter)$|^(<[^>]+>::|Default::)default$|(^|::)FromIterator::from_iter$";
 
 news = do {
   p <- descendants_of_kind :scoped_identifier;
-  guard $ text p ~ r"^(BTreeSet|BTreeMap|Vec)::new$";
+  guard $ text p ~ constructor;
   return p;
 };
 
-empty_vecs = do {
+vecs = do {
   m <- descendants_of_kind :macro_invocation;
-  guard $ text m ~ r"^vec!\s*\[\s*\]$";
+  n <- pure m | #macro;
+  guard $ text n ~ r"^((::)?(std|alloc)::)?vec$";
   return m;
 };
 
 collects = do {
   c <- descendants_of_kind :call_expression;
-  f <- pure c | #function | #field;
-  guard $ text f ~ r"^collect$";
+  f <- pure c | #function;
+  guard $ text f ~ r"\.\s*(collect|to_vec|or_default)(::<.*>)?$";
+  guard $ not (has (parent | keep (\u -> text u ~ r"^\*")) c);
   return c;
 };
 
-main = collect (news `alt` empty_vecs `alt` collects) | arr length;
+main = news `alt` vecs `alt` collects | arr range;

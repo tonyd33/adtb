@@ -1,0 +1,124 @@
+-- loose_refusals: the rewrites of a weak refusal that weak_refusals does not see. In an assertion:
+-- `.err().is_some()`, `.is_err_and(..)`, `.err().is_some_and(..)` and kin, `.map_or(true|false,
+-- ..)`, `matches!` with a partial `Err` pattern, and `matches!` of an error already unwrapped
+-- against a partial pattern of a type named for an error, a reason, a refusal or a rejection; a
+-- negated `!matches!(..)`, which asserts a failure is absent, is not counted. In a test file: a
+-- substring check of a call or name of an error (`expr_err(..)`, `stderr(..)`,
+-- `errs.iter().any(|e| e.contains(..))`), a substring check in an arm or `let` bound by an `Err`
+-- pattern, and a `-> bool` function whose body is one `is_err()` or `is_ok()`. Anywhere: an
+-- `if let Ok(_)` or `Ok(_x)` that panics and a `let Err(_) .. else` that panics; an `Err` arm
+-- beside an `Ok` arm that panics whose pattern drops part of the error (`_`, `_e`, `..`) or whose
+-- body is empty, unless it asserts the error with `refused_as` or `assert_eq!`; `let _ = .. unwrap_err()`; and `refused_with` named other than as a call, a
+-- definition or a path. Each site counts once. Not seen: a substring check of a variable whose
+-- name does not say it holds an error, an `is_ok()` result stored and asserted later, a formatted
+-- error checked by a helper in another file, a helper of another name that hides `is_err()`, and
+-- `assert_ne!(got.ok(), ..)`.
+
+weak_text = r"\.(is_err|is_ok)\(\)|(err|reason|refus|message|stderr|to_string\(\))\w*(\(\))?\s*\.(contains|starts_with|ends_with)\(|matches!\([\s\S]*?(Err|Ok)\(_\)";
+
+loose_text = r"\.(err|ok)\(\)\s*\.is_(some|none)(_and)?\(|\.is_(err|ok)_and\(|\.map_or\(\s*(true|false)\s*,|(?<!!)matches!\([\s\S]*?Err\([^)]*?(\b_\w*|\.\.)|(?<!!)matches!\(\s*[^,]+,\s*(\w+::)*\w*(Error|Reason|Refus\w*|Reject\w*)::\w+\s*(\{[^}]*\.\.\s*\}|\([^)]*\b_\w*[^)]*\))";
+
+named_text = r"\b\w*(err|refus|reason|reject|fail|diag)\w*(\([^()]*(\([^()]*\))?[^()]*\))?\s*\.(contains|starts_with|ends_with)\(|\b\w*(err|refus|reason|reject|fail|diag)\w*(\([^()]*\))?(\s*\.\s*\w+\([^()]*\))*\s*\.\s*(any|all)\(\s*\|\w+\|\s*\w+\s*\.\s*(contains|starts_with|ends_with)\(";
+
+substring = r"\.(contains|starts_with|ends_with)\(";
+
+panics = r"^\{?\s*((::)?(std|core)::)?(panic|unreachable|assert)!";
+
+exact = r"\brefused_as\s*\(|\bassert_eq!";
+
+in_tests n = case filename n of {
+  Just f -> f ~ r"(^|/)(tests\.rs|\w+_tests\.rs)$|/tests/|/test_world/";
+  Nothing -> False;
+};
+
+-- Returns whether text `t` checks a substring that neither weak_refusals nor the named form counts.
+loose_substring t = (t ~ substring) `and` not ((t ~ weak_text) `or` (t ~ named_text));
+
+assertions = do {
+  m <- descendants_of_kind :macro_invocation;
+  n <- pure m | #macro;
+  guard $ text n ~ r"(^|::)(debug_|prop_)?assert(_eq|_ne)?$";
+  guard $ not (text m ~ weak_text);
+  return m;
+};
+
+loose_asserts = do {
+  m <- assertions;
+  guard $ (text m ~ loose_text) `or` ((in_tests m) `and` (text m ~ named_text));
+  return m;
+};
+
+-- Returns whether an `Err` arm of pattern `p` and value `v` drops the error unexamined.
+discards p v = (p ~ r"\b_\w*\b|\.\.") `or` (v ~ r"^(\{\s*\}|\(\s*\))$");
+
+ok_panics a = has (#pattern | keep (\p -> text p ~ r"^Ok\(")) a `and` has (#value | keep (\v -> text v ~ panics)) a;
+
+beside_ok_panic a = has (parent | children_of_kind :match_arm | keep ok_panics) a;
+
+err_arms = do {
+  a <- descendants_of_kind :match_arm;
+  p <- pure a | #pattern;
+  guard $ text p ~ r"^Err\(";
+  v <- pure a | #value;
+  guard $ ((beside_ok_panic a) `and` (discards (text p) (text v)) `and` not (text v ~ exact)) `or` ((in_tests a) `and` loose_substring (text v));
+  return a;
+};
+
+err_lets = do {
+  l <- descendants_of_kind :let_condition `alt` descendants_of_kind :let_declaration;
+  guard $ in_tests l;
+  p <- pure l | #pattern;
+  guard $ text p ~ r"^Err\(";
+  b <- pure l | parent | (#consequence `or_else` #alternative) `or_else` (pure l | #alternative);
+  guard $ loose_substring (text b);
+  return l;
+};
+
+wrapped_tests = do {
+  f <- descendants_of_kind :function_item;
+  guard $ in_tests f;
+  r <- pure f | #return_type;
+  guard $ text r == "bool";
+  b <- pure f | #body;
+  guard $ text b ~ r"^\{\s*[^;{}]*\.(is_err|is_ok)\(\)\s*\}$";
+  return f;
+};
+
+panicking_ifs = do {
+  l <- descendants_of_kind :let_condition;
+  p <- pure l | #pattern;
+  guard $ text p ~ r"^Ok\((_\w*|\.\.)\)$";
+  i <- pure l | parent;
+  c <- pure i | #consequence;
+  guard $ text c ~ panics;
+  return l;
+};
+
+panicking_elses = do {
+  l <- descendants_of_kind :let_declaration;
+  p <- pure l | #pattern;
+  guard $ text p ~ r"^Err\((_\w*|\.\.)\)$";
+  e <- pure l | #alternative;
+  guard $ text e ~ panics;
+  guard $ not (in_tests l `and` loose_substring (text e));
+  return l;
+};
+
+discarded_errs = do {
+  l <- descendants_of_kind :let_declaration;
+  p <- pure l | #pattern;
+  guard $ text p ~ r"^_\w*$";
+  v <- pure l | #value;
+  guard $ text v ~ r"\.(unwrap_err|expect_err)\([^)]*\)$";
+  return l;
+};
+
+aliased = do {
+  i <- descendants_of_kind :identifier;
+  guard $ text i == "refused_with";
+  p <- pure i | parent;
+  guard $ not ((is_kind :call_expression p) `or` (is_kind :function_item p) `or` (is_kind :scoped_identifier p) `or` (is_kind :use_list p) `or` (is_kind :use_declaration p));
+  return i;
+};
+
+main = loose_asserts `alt` err_arms `alt` err_lets `alt` wrapped_tests `alt` panicking_ifs `alt` panicking_elses `alt` discarded_errs `alt` aliased | arr range;

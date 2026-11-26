@@ -5,7 +5,13 @@
 -- struct declared inside a `$(..)*` repetition.
 -- crate_fields: the same fields declared pub(crate), pub(super) or pub(in ..): internal state
 -- visible past its module.
--- decode_panics: panicking macros, `.expect(` and `.unwrap(`. A decode of bytes read from a page
+-- decode_panics: panicking macros by any path, `todo!` and `unimplemented!` among them; `expect`,
+-- `unwrap`, `expect_err` and `unwrap_err` as methods, as paths (`Option::unwrap(x)`,
+-- `.map(Result::unwrap)`) and inside the tokens of another macro; `panic::panic_any` and
+-- `process::abort`; and a function declared `-> !`. Not seen: a call of a diverging function
+-- defined in another file, an `abort` or `panic_any` imported under its bare name and called, an
+-- index or a slice past its end, arithmetic overflow, and a panic inside a function of another
+-- module the decode calls. A decode of bytes read from a page
 -- returns `Result` with its damage cause. The sites left guard values the engine built in memory or
 -- checked first, a caller's latch discipline (heap/named.rs), or a surface built only for tests
 -- and the testing feature (heap/handle/observe.rs).
@@ -66,10 +72,12 @@ sum xs = case xs of {
   x : rest -> x + sum rest;
 };
 
+panic_macro = r"^((::)?(std|core)::)?(debug_)?(panic|unreachable|todo|unimplemented|assert|assert_eq|assert_ne)$";
+
 panicking_macros = do {
   m <- descendants_of_kind :macro_invocation;
   n <- pure m | #macro;
-  guard $ text n ~ r"^(debug_)?(panic|unreachable|assert|assert_eq|assert_ne)$";
+  guard $ text n ~ panic_macro;
   return m;
 };
 
@@ -77,11 +85,32 @@ panicking_calls = do {
   c <- descendants_of_kind :call_expression;
   f <- pure c | #function;
   m <- pure f | #field;
-  guard $ text m ~ r"^(expect|unwrap)$";
+  guard $ text m ~ r"^(expect|unwrap|expect_err|unwrap_err)$";
   return c;
 };
 
-decode_panics = collect (panicking_macros `alt` panicking_calls) | arr length;
+panicking_paths = do {
+  p <- descendants_of_kind :scoped_identifier;
+  guard $ text p ~ r"::(expect|unwrap|expect_err|unwrap_err)$|(^|::)(panic::panic_any|process::abort)$|^panic_any$";
+  return p;
+};
+
+macro_body_panics = do {
+  m <- descendants_of_kind :macro_invocation;
+  n <- pure m | #macro;
+  guard $ not (text n ~ panic_macro);
+  guard $ text m ~ r"\.\s*(unwrap|expect|unwrap_err|expect_err)\s*\(";
+  return m;
+};
+
+diverging_fns = do {
+  f <- descendants_of_kind :function_item;
+  r <- pure f | #return_type;
+  guard $ text r == "!";
+  return f;
+};
+
+decode_panics = collect (panicking_macros `alt` panicking_calls `alt` panicking_paths `alt` macro_body_panics `alt` diverging_fns) | arr length;
 
 main = do {
   p <- pub_fields;
