@@ -419,7 +419,11 @@ fn slot_overrides(config: &str) -> Vec<(String, usize)> {
 fn unbacked(raised: &[(String, usize)], overrides: &[(String, usize)]) -> Vec<String> {
     raised
         .iter()
-        .filter(|(name, bytes)| !overrides.contains(&(name.clone(), slots_for(*bytes))))
+        .filter(|(name, bytes)| {
+            !overrides
+                .iter()
+                .any(|(held, slots)| held == name && *slots >= slots_for(*bytes))
+        })
         .map(|(name, _)| name.clone())
         .collect()
 }
@@ -447,6 +451,8 @@ fn a_raise_without_its_slots_is_reported() {
     assert_eq!(unbacked(&raised, &too_few), ["heavy"]);
     let enough = slot_overrides("[[o]]\nfilter = \"test(=heavy)\"\nthreads-required = 3\n");
     assert_eq!(unbacked(&raised, &enough), Vec::<String>::new());
+    let more = slot_overrides("[[o]]\nfilter = \"test(=heavy)\"\nthreads-required = 8\n");
+    assert_eq!(unbacked(&raised, &more), Vec::<String>::new());
     let computed = raised_tests("fn heavy() {\n    raise_cap(BYTES);\n}\n");
     assert_eq!(unbacked(&computed, &enough), ["heavy"]);
 }

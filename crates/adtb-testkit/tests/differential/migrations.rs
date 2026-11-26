@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 use adtb::testing::{Holder, Object};
 use adtb::{Database, Error, OpenError, RejectReason};
@@ -42,8 +43,9 @@ fn migrations() -> u64 {
     }
 }
 
-/// The cases that run at once, each on its own thread, under the test binary's heap cap.
-const AT_ONCE: usize = 4;
+/// The cases that run at once, each worker thread taking the next seed no worker has taken. The
+/// search's override under the profile `deep` holds as many test threads.
+const AT_ONCE: usize = 8;
 
 /// The statements that fill each case before its first migration, and that follow each
 /// migration.
@@ -1296,30 +1298,42 @@ fn shrink(seed: u64, failed: Failed) -> Failed {
     failed
 }
 
+/// Run the case of each of `seeds` on `workers` threads, each taking the next seed no thread has
+/// taken. Returns each seed with what its case reached and its first broken invariant, by seed.
+fn run_all(seeds: &[u64], workers: usize, last: u64) -> Vec<(u64, Reached, Option<Failed>)> {
+    let next = AtomicUsize::new(0);
+    let mut ran: Vec<_> = std::thread::scope(|scope| {
+        let pool: Vec<_> = (0..workers.min(seeds.len()))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut ran = Vec::new();
+                    while let Some(&seed) = seeds.get(next.fetch_add(1, Relaxed)) {
+                        let mut reached = Reached::default();
+                        let failed = run(seed, &mut reached, last, None);
+                        ran.push((seed, reached, failed));
+                    }
+                    ran
+                })
+            })
+            .collect();
+        pool.into_iter()
+            .flat_map(|w| w.join().expect("a case reports its panic as a finding"))
+            .collect()
+    });
+    ran.sort_by_key(|&(seed, ..)| seed);
+    ran
+}
+
 #[test]
 fn generated_migrations_keep_their_invariants() {
+    if adtb_testkit::profile::every_case() {
+        // About twice the measured peak of eight seeds at once, 1.56 GB.
+        adtb_heap_cap::raise_cap(3 << 30);
+    }
     let seeds = seeds_of(CASES);
     let last = migrations() - 1;
     let all: Vec<u64> = seeds.clone().collect();
-    let mut ran: Vec<(u64, Reached, Option<Failed>)> = Vec::new();
-    for chunk in all.chunks(AT_ONCE) {
-        ran.extend(std::thread::scope(|scope| {
-            let cases: Vec<_> = chunk
-                .iter()
-                .map(|&seed| {
-                    scope.spawn(move || {
-                        let mut reached = Reached::default();
-                        let failed = run(seed, &mut reached, last, None);
-                        (seed, reached, failed)
-                    })
-                })
-                .collect();
-            cases
-                .into_iter()
-                .map(|c| c.join().expect("a case reports its panic as a finding"))
-                .collect::<Vec<_>>()
-        }));
-    }
+    let ran = run_all(&all, AT_ONCE, last);
     let mut reached = Reached::default();
     let mut failures = Vec::new();
     for (seed, r, failed) in ran {

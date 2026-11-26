@@ -15,7 +15,8 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 filter = "binary(=storage) and test(=damage_search::a_pinned_case_of_each_row_asks_it_and_breaks_no_rule)"
 threads-required = 4
 
-# A test that calls `raise_cap` holds the slots its cap covers: the cap over the default, rounded up.
+# A test that calls `raise_cap` holds at least the slots its cap covers: the cap over the default,
+# rounded up.
 [[profile.default.overrides]]
 filter = "test(=truncated_open::a_cut_that_loses_a_later_bitmap_group_refuses_the_select)"
 threads-required = 3
@@ -106,7 +107,8 @@ filter = "binary(=storage) and test(/^damage_search::/)"
 slow-timeout = { period = "300s", terminate-after = 12 }
 threads-required = 4
 
-# The generated migrations search runs four cases at once under the deep profile.
+# The generated migrations search runs eight cases at once under the deep profile, its heap cap
+# raised to 3 GiB.
 [[profile.deep.overrides]]
-filter = "binary(=differential) and test(=migrations::generated_migrations_keep_their_invariants)"
-threads-required = 4
+filter = "test(=migrations::generated_migrations_keep_their_invariants)"
+threads-required = 8

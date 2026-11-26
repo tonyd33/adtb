@@ -4,7 +4,8 @@
 //! allocations are not counted.
 //!
 //! The cap is per process. A test that needs more calls [`raise_cap`] and declares
-//! `threads-required` in `.config/nextest.toml`: its cap divided by [`DEFAULT_CAP`], rounded up.
+//! `threads-required` in `.config/nextest.toml` of at least its cap divided by [`DEFAULT_CAP`],
+//! rounded up.
 //!
 //! Linking this crate installs the allocator, except under Miri. Test builds link it through the
 //! `test-heap-cap` feature of `adtb-lang` or `adtb-sys`.
@@ -31,7 +32,7 @@ static HEAP: HeapCap = HeapCap::new(UNREAD);
 
 /// Raise this process's cap to `bytes`. A no-op under `ADTB_TEST_HEAP_CAP`; never lowers the cap.
 ///
-/// Preconditions: the calling test has `threads-required` of `slots_for(bytes)` in
+/// Preconditions: the calling test has `threads-required` of at least `slots_for(bytes)` in
 /// `.config/nextest.toml`, and calls this with a literal in the test function's own body.
 ///
 /// # Panics
