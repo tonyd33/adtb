@@ -1,0 +1,51 @@
+# `drop default r.C.f` drops the default of `C`'s field `f` alone, and `drop default r.f` the
+# default of every field named `f` in `r`. Each is refused when no such field has a default, and
+# the first when `C` is no constructor of `r`'s type.
+seed 1
+use empty
+
+migrate
+  module m
+  add module m
+  add type T { id: Key ts } = A { n: I64 } | B { n: I64 } | C { n: I64 }
+  add relation ts : T key id generate sequence
+    default n = 1
+
+migrate
+  module m
+  drop default ts.A.n
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "drop default ts.A.n", detail: "`ts` has no default for `A.n`" } } }
+  module m
+  drop default ts.A.n
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "drop default ts.Q.n", detail: "`Q` is not a constructor of `T`" } } }
+  module m
+  drop default ts.Q.n
+
+reopen
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "B", f: "n", t: "1" }
+{ c: "C", f: "n", t: "1" }
+
+migrate
+  module m
+  drop default ts.n
+
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "drop default ts.n", detail: "`ts` has no default for `n`" } } }
+  module m
+  drop default ts.n
+
+reopen
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+
+error Invalid { detail: "field `n` of `B` is missing, and `ts` has no default for it" }
+  insert ts.B {}

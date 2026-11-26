@@ -154,19 +154,17 @@ fn covers(
                 None,
             );
         }
-        for (at, d) in rel.defaults.iter().enumerate() {
-            let scope = d.ctor.map(|c| vec![c]);
-            for (f, id) in ids.clause_default_ids(r, at) {
-                let (_, name) = field_name(schema, f);
-                push(
-                    Obj::Default,
-                    Some(u64::from(id)),
-                    format!("default {name}"),
-                    scope.as_deref(),
-                    within(scope.as_deref(), &[name]),
-                    None,
-                );
-            }
+        for d in &rel.defaults {
+            let scope = d.field.ctor().map(|c| vec![c]);
+            let (_, name) = field_name(schema, d.field);
+            push(
+                Obj::Default,
+                ids.default_id(r, d.field).map(u64::from),
+                format!("default {name}"),
+                scope.as_deref(),
+                within(scope.as_deref(), &[name]),
+                None,
+            );
         }
         for (at, c) in rel.computed.iter().enumerate() {
             push(

@@ -7,7 +7,8 @@ use crate::schema;
 pub(super) struct Printed {
     text: String,
     /// The range of the text each term takes, in the order [`Model::decl_terms_mut`] gives
-    /// the terms.
+    /// the terms, then the value of each default in declaration order; a value several defaults
+    /// share takes one range for each.
     terms: Vec<std::ops::Range<usize>>,
     /// The range of the text each arm held as written takes, by its key.
     arms: Vec<(u64, std::ops::Range<usize>)>,
@@ -15,7 +16,7 @@ pub(super) struct Printed {
 
 impl Printed {
     /// Returns the range of the text each term takes, in the order [`Model::decl_terms_mut`]
-    /// gives the terms.
+    /// gives the terms, then the value of each default in declaration order.
     pub(super) fn terms(&self) -> &[std::ops::Range<usize>] {
         &self.terms
     }
@@ -25,11 +26,11 @@ impl Printed {
         &self.arms
     }
 
-    fn push(&mut self, s: &str) {
+    pub(super) fn push(&mut self, s: &str) {
         self.text.push_str(s);
     }
 
-    fn term(&mut self, t: &Term, model: &Model) {
+    pub(super) fn term(&mut self, t: &Term, model: &Model) {
         let start = self.text.len();
         self.text.push_str(&t.print(model));
         self.terms.push(start..self.text.len());
@@ -38,6 +39,12 @@ impl Printed {
                 .into_iter()
                 .map(|(k, r)| (k, start + r.start..start + r.end)),
         );
+    }
+
+    /// Take the range of the last term printed again for `n` more terms.
+    pub(super) fn alias(&mut self, n: usize) {
+        let last = self.terms.last().cloned().expect("a term printed");
+        self.terms.extend(std::iter::repeat_n(last, n));
     }
 
     fn list(&mut self, ts: &[Term], model: &Model, sep: &str) {
@@ -84,7 +91,8 @@ impl Model {
         out
     }
 
-    /// Returns the terms of declaration `i`, in the order [`Model::print_mapped`] prints them.
+    /// Returns the terms of declaration `i`, in the order [`Model::print_mapped`] prints them,
+    /// the values of a relation variable's defaults aside: their printed ranges come last.
     pub(super) fn decl_terms_mut(&mut self, i: usize) -> Vec<&mut Term> {
         let mut out: Vec<&mut Term> = Vec::new();
         match self.decls[i].item {
@@ -136,13 +144,6 @@ impl Model {
                             if let Some(s) = scope {
                                 out.extend(s.parts.iter_mut());
                             }
-                        }
-                        ClauseM::Default {
-                            ctor, field, value, ..
-                        } => {
-                            out.extend(ctor.iter_mut());
-                            out.push(field);
-                            out.push(value);
                         }
                         ClauseM::Computed { ty, expr, .. } => {
                             out.push(ty);
@@ -247,6 +248,7 @@ impl Model {
             out.push("\n  ");
             self.print_clause(c, out);
         }
+        self.print_defaults(r, out);
     }
 
     /// Returns clause `c` as written.
@@ -291,18 +293,6 @@ impl Model {
                     out.list(&s.parts, self, " | ");
                     out.push(if s.listed { ")" } else { "" });
                 }
-            }
-            ClauseM::Default {
-                ctor, field, value, ..
-            } => {
-                out.push("default ");
-                if let Some(c) = ctor {
-                    out.term(c, self);
-                    out.push(".");
-                }
-                out.term(field, self);
-                out.push(" = ");
-                out.term(value, self);
             }
             ClauseM::Computed { name, ty, expr, .. } => {
                 out.push(&format!("computed {name}: "));

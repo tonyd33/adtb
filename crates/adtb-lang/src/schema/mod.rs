@@ -276,11 +276,13 @@ pub enum DefaultValue {
     Expr(Box<ast::Expr>),
 }
 
+/// The default of one field of a relation.
 #[derive(Clone, Debug)]
 pub struct DefaultDef {
-    pub ctor: Option<u32>,
-    pub field: String,
+    pub field: FieldRef,
     pub value: DefaultValue,
+    /// The span of the value in the relation's file.
+    pub written: Span,
 }
 
 #[derive(Clone, Debug)]

@@ -1,0 +1,32 @@
+# A header field moved down to several constructors keeps its default on each of them, each
+# with its own default id.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts, h: Text } = A { n: Text } | B { m: Text } | C { k: Text }
+  add relation ts : T key id generate sequence
+  add default ts.h = "d"
+
+migrate
+  module ts
+  move field T.h to T.(A | B)
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text, id: d.id }
+----
+{ c: "A", f: "h", id: defaults.key(1025), t: "\"d\"" }
+{ c: "B", f: "h", id: defaults.key(1026), t: "\"d\"" }
+
+run
+  insert ts.A { n: "n" }
+  insert ts.B { m: "m" }
+
+query rowsort
+  from t in ts.(A | B) select { id: t.id, h: match t | A a -> a.h | B b -> b.h }
+----
+{ h: "d", id: ts.key(1) }
+{ h: "d", id: ts.key(2) }

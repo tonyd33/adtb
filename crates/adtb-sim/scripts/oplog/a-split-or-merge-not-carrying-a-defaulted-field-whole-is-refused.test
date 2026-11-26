@@ -1,0 +1,44 @@
+# A split or merge whose routing does not carry a field with a default whole to a field of a
+# product is refused, naming the field and its default; once the default is dropped it applies.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type W = A | B
+  add type T { id: Key ts } = A { x: I64 } | B { x: I64 }
+  add relation ts : T key id generate sequence
+  add default ts.A.x = 7
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "split constructor T.A into A1 { x: I64 } | A2 { x: I64 }", detail: "the split is refused: `ts.A.x` has the default `7` and its routing does not carry that field whole; drop the default first" } } }
+  module ts
+  split constructor T.A into A1 { x: I64 } | A2 { x: I64 }
+    by match
+      | A { x } -> if x > 0 then A1 { x: x } else A2 { x: x }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "split constructor T.A into A1 { x: I64 }", detail: "the split is refused: `ts.A.x` has the default `7` and its routing does not carry that field whole; drop the default first" } } }
+  module ts
+  split constructor T.A into A1 { x: I64 }
+    by match
+      | A { x } -> A1 { x: x + 1 }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "merge constructor T.(A | B) into M { w: W, x: I64 }", detail: "the merge is refused: `ts.A.x` has the default `7` and its routing does not carry that field whole; drop the default first" } } }
+  module ts
+  add default ts.B.x = 7
+  merge constructor T.(A | B) into M { w: W, x: I64 }
+    by match
+      | A a -> M { w: A, x: a.x * 2 }
+      | B b -> M { w: B, x: b.x }
+
+migrate
+  module ts
+  drop default ts.A.x
+  split constructor T.A into A1 { x: I64 } | A2 { x: I64 }
+    by match
+      | A { x } -> if x > 0 then A1 { x: x } else A2 { x: x }
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----

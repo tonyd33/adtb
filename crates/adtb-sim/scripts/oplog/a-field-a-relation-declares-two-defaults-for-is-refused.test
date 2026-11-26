@@ -1,0 +1,20 @@
+# A relation declaration giving one field two defaults is refused, whether one names the field's
+# constructor and the other only the field's name or both name the constructor.
+seed 1
+use empty
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "add relation ts : T key id generate sequence", detail: "this default is declared twice" } } }
+  module m
+  add module m
+  add type T { id: Key ts } = A { n: I64 } | B { n: I64 }
+  add relation ts : T key id generate sequence
+    default n = 1
+    default A.n = 2
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "add relation ts : T key id generate sequence", detail: "this default is declared twice" } } }
+  module m
+  add module m
+  add type T { id: Key ts } = A { n: I64 } | B { n: I64 }
+  add relation ts : T key id generate sequence
+    default B.n = 2
+    default B.n = 2

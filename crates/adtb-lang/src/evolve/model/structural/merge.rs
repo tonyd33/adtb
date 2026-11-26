@@ -6,6 +6,7 @@ use crate::ast::{self, CtorSel};
 use crate::check::{self, Ref};
 use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::{Carries, arm_image, element_head};
+use crate::evolve::model::defaults::Taken;
 use crate::evolve::model::field::Applied;
 use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::{Edit, Mode, sel_range};
@@ -294,7 +295,8 @@ impl Model {
         };
         let stages = self.restated(&built, t, &sources, true)?;
         let c = self.new_ctor(run, t, &m, into.record.as_deref());
-        self.defaults_image(&built, t, (&sources, &[c]), "the merge", false)?;
+        let taken = Taken::Merge(&carries);
+        self.defaults_image(&built, t, (&sources, &[c]), "the merge", taken)?;
         let merged = match (arms, disc.fields.first()) {
             (None, Some(d)) => Some(self.merged_rows(c, &sources, &src_ix, d, &tags)?),
             _ => None,

@@ -10,8 +10,8 @@ use crate::kernel::{Build, Frees, IndexField, Kind, PathStep, Terms, Tm, Var};
 use crate::resolve::{Scope, Visible};
 use crate::schema::prelude::ctor;
 use crate::schema::{
-    Committed, DefaultValue, FN_RELATION, FN_TYPE_ARGUMENT, FnTypes, PRELUDE, Schema, TypeDefKind,
-    TypeMode, TypeName, TypeScope, ValueDef,
+    Committed, DefaultValue, FN_RELATION, FN_TYPE_ARGUMENT, FieldRef, FnTypes, PRELUDE, Schema,
+    TypeDefKind, TypeMode, TypeName, TypeScope, ValueDef,
 };
 use crate::span::{Diag, DiagKind, FileDiag, FileId, Span};
 use crate::types::*;
@@ -1019,21 +1019,14 @@ impl Checker<'_> {
         Ok(self.b().for_(x, source.tm, body, set_ty))
     }
 
-    fn default_clause(
-        &mut self,
-        rel: RelId,
-        ctor: Option<u32>,
-        field: &str,
-        e: &ast::Expr,
-    ) -> R<Tm> {
+    fn default_clause(&mut self, rel: RelId, field: FieldRef, e: &ast::Expr) -> R<Tm> {
         let r = self.schema.relation(rel);
-        let def = self.schema.ty(r.elem_def);
-        let fty = match ctor {
-            Some(c) => def.field_named(c, field),
-            None => (0..def.ctors().len() as u32).find_map(|c| def.field_named(c, field)),
-        }
-        .map(|f| f.ty.subst(r.elem_args()))
-        .ok_or_else(|| diag(e.span, format!("`{}` has no field `{field}`", def.name)))?;
+        let fty = self
+            .schema
+            .ty(r.elem_def)
+            .field_def(field)
+            .ty
+            .subst(r.elem_args());
         Ok(self.check(e, &fty)?.tm)
     }
 

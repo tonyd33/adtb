@@ -359,9 +359,7 @@ impl Model {
             Space::Computed => {
                 clauses().any(|c| matches!(c, ClauseM::Computed { id: Some(x), .. } if *x == id))
             }
-            Space::Default => clauses().any(
-                |c| matches!(c, ClauseM::Default { ids, .. } if ids.iter().any(|&(_, x)| x == id)),
-            ),
+            Space::Default => self.default_holder(id).is_some(),
         }
     }
 }

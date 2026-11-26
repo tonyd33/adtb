@@ -3,6 +3,7 @@ use super::{ctor_in, def_in, sel_idents};
 use crate::ast::{self, CtorSel};
 use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::element_head;
+use crate::evolve::model::defaults::Taken;
 use crate::evolve::model::field::Applied;
 use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::{Edit, Mode, sel_range};
@@ -145,7 +146,13 @@ impl Model {
         }
         let mut probe = self.clone();
         let respelled: Vec<Item> = (0..self.decls.len())
-            .filter(|&i| probe.decl_terms_mut(i).iter().any(|x| x.dropped()))
+            .filter(|&i| {
+                let defaults = match self.decls[i].item {
+                    Item::Relation(r) => self.relations[&r].defaults.values().any(Term::dropped),
+                    _ => false,
+                };
+                defaults || probe.decl_terms_mut(i).iter().any(|x| x.dropped())
+            })
             .map(|i| self.decls[i].item)
             .collect();
         for item in respelled {
@@ -207,7 +214,7 @@ impl Model {
         self.paths_image(t, &sources, "the nest")?;
         let stages = self.restated(&built, t, &sources, true)?;
         let c = self.new_ctor(run, t, &n, Some(fields));
-        self.defaults_image(&built, t, (&sources, &[c]), "the nest", false)?;
+        self.defaults_image(&built, t, (&sources, &[c]), "the nest", Taken::Nest)?;
         let plan = self.carry_plan(
             run,
             &built,
@@ -359,7 +366,7 @@ impl Model {
             .map(|(&ic, &p)| (cat_ctor(ic), cat_ctor(p)))
             .collect();
         self.paths_image(t, &[c], "the unnest")?;
-        self.defaults_image(&built, t, (&[c], &made), "the unnest", true)?;
+        self.defaults_image(&built, t, (&[c], &made), "the unnest", Taken::Unnest)?;
         let plan = self.carry_plan(run, &built, Structural::Unnest, t, (&[c], &products));
         let mut edits = Vec::new();
         let rewrites = self.unnest_clauses(&built, t, (c, &made), &products, &f)?;

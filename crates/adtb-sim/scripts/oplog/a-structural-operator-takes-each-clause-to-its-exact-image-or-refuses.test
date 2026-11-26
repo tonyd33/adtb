@@ -23,11 +23,18 @@ migrate refused MigrationRefused { version: 2, reason: Rejected { reason: Schema
   module app
   nest constructor T.(A | B) into N { inner: Inner }
 
-migrate
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "split constructor T.A into A1 { x: I64 } | A2 { x: I64 }", detail: "the split is refused: `ts.A.x` has the default `7` and its routing does not carry that field whole; drop the default first" } } }
   module app
   split constructor T.A into A1 { x: I64 } | A2 { x: I64 }
     by match
       | A { x } -> if x > 0 then A1 { x: x } else A2 { x: x }
+
+migrate
+  module app
+  split constructor T.A into A1 { x: I64 } | A2 { x: I64 }
+    by match
+      | A { x } if x > 0 -> A1 { x: x }
+      | A { x } -> A2 { x: x }
 
 run
   insert ts.A1 { n: 1 }

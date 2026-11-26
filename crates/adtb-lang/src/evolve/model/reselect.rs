@@ -128,7 +128,8 @@ impl Model {
         Term::concat(parts)
     }
 
-    /// Apply `edits`, each replacing a range of a declaration's text by a term.
+    /// Apply `edits`, each replacing a range of a declaration's text by a term in every term
+    /// printed at that range.
     ///
     /// Fail when an edit spans text outside one term.
     pub(super) fn edit_decls(&mut self, mut edits: Vec<Edit>) -> Res<()> {
@@ -143,10 +144,34 @@ impl Model {
             else {
                 return broken("an edit of a declaration outside its terms");
             };
-            let at = printed.terms()[k].start;
-            self.decl_terms_mut(e.decl)[k]
-                .replace(&names, e.range.start - at..e.range.end - at, e.with)
-                .map_err(Fail::Broken)?;
+            let held = printed.terms()[k].clone();
+            let at = held.start;
+            let range = e.range.start - at..e.range.end - at;
+            let alike: Vec<usize> = (0..printed.terms().len())
+                .filter(|&j| printed.terms()[j] == held)
+                .collect();
+            let mut terms = self.decl_terms_mut(e.decl);
+            let own = terms.len();
+            for &j in alike.iter().filter(|&&j| j < own) {
+                terms[j]
+                    .replace(&names, range.clone(), e.with.clone())
+                    .map_err(Fail::Broken)?;
+            }
+            let past: Vec<usize> = alike.into_iter().filter(|&j| j >= own).collect();
+            if past.is_empty() {
+                continue;
+            }
+            let Item::Relation(r) = self.decls[e.decl].item else {
+                return broken("an edit past the terms of a declaration that is not a relation");
+            };
+            let order = self.default_order(r);
+            for j in past {
+                let Some(&f) = order.get(j - own) else {
+                    return broken("an edit of a default the relation variable does not hold");
+                };
+                self.edit_default(&names, (r, f), range.clone(), e.with.clone())
+                    .map_err(Fail::Broken)?;
+            }
         }
         Ok(())
     }
@@ -393,7 +418,9 @@ impl Model {
 
     /// Remove constructor `c` of type `t` and its fields.
     pub(super) fn drop_ctor(&mut self, t: u64, c: u64) {
-        for f in self.ctors[&c].fields.clone().into_iter().flatten() {
+        let fields = self.ctors[&c].fields.clone().unwrap_or_default();
+        self.forget_defaults(&fields);
+        for f in fields {
             self.fields.remove(&f);
         }
         self.ctors.remove(&c);
@@ -490,9 +517,6 @@ impl Model {
                 .enumerate()
                 .filter(|(_, cl)| match cl {
                     ClauseM::Index { scope: Some(s), .. } => self.scope_ctors(s) == [c],
-                    ClauseM::Default { ctor: Some(x), .. } => {
-                        x.objects().next() == Some((Space::Shared, c))
-                    }
                     _ => false,
                 })
                 .map(|(k, _)| k)

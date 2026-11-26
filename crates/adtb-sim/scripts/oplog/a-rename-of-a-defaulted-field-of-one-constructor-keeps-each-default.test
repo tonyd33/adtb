@@ -1,0 +1,34 @@
+# A rename of a field of one constructor commits when a default given by the field's name fills
+# it and fields of other constructors: each field keeps its default under its own name.
+seed 1
+use empty
+
+migrate
+  module m
+  add module m
+  add type T { id: Key ts } = A { n: I64 } | B { n: I64 }
+  add relation ts : T key id generate sequence
+    default n = 1
+
+migrate
+  module m
+  rename field T.A.n to p
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "A", f: "p", t: "1" }
+{ c: "B", f: "n", t: "1" }
+
+reopen
+
+run
+  insert ts.A {}
+  insert ts.B {}
+
+query rowsort
+  from t in ts select { id: t.id, v: match t | A a -> a.p | B b -> b.n }
+----
+{ id: ts.key(1), v: 1 }
+{ id: ts.key(2), v: 1 }

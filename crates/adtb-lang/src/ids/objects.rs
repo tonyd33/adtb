@@ -470,7 +470,7 @@ impl Objects<'_> {
     /// The objects a relation's or a stored view's clauses create, in written order.
     fn clause_objects(&mut self, file: FileId, clauses: &[RelationClause], of: Clauses) {
         let owner = || Holder::Object(of.slot());
-        let (mut ix, mut dx, mut cx) = (0, 0, 0);
+        let (mut ix, mut cx) = (0, 0);
         for c in clauses {
             match (c, of) {
                 (RelationClause::Key(names, generate), _) => {
@@ -510,15 +510,16 @@ impl Objects<'_> {
                     ix += 1;
                 }
                 (RelationClause::Default { ctor, field, .. }, Clauses::Relation(r)) => {
-                    for f in default_fields(self.schema, r, ctor.as_ref(), &field.text) {
+                    let td = self.schema.ty(self.schema.relation(r).elem_def);
+                    for f in td.default_fields(ctor.as_ref().map(|c| c.text.as_str()), &field.text)
+                    {
                         self.push(
-                            Slot::Default(r, dx, f),
+                            Slot::Default(r, f),
                             KeyKind::Default,
                             owner(),
                             vec![self.element(Some(Slot::Field(f)), &field.text)],
                         );
                     }
-                    dx += 1;
                 }
                 (RelationClause::Computed(n, _, _), Clauses::Relation(r)) => {
                     self.named(Slot::Computed(r, cx), KeyKind::Computed, owner(), &n.text);
@@ -759,26 +760,6 @@ fn view_row(files: &[(FileId, ast::SchemaFile)], module: &str, view: &str) -> Op
             _ => None,
         })
         .and_then(anonymous_row)
-}
-
-/// Returns the fields of relation `r` a default of `field`, of constructor `ctor` when one is
-/// named, fills: the header's field, else the field of each constructor with it in declaration
-/// order.
-fn default_fields(
-    schema: &Schema,
-    r: RelId,
-    ctor: Option<&ast::Ident>,
-    field: &str,
-) -> Vec<FieldRef> {
-    let def = schema.relation(r).elem_def;
-    let td = schema.ty(def);
-    if let Some(f) = td.field(None, field) {
-        return vec![f];
-    }
-    td.ctor_refs()
-        .filter(|&c| ctor.is_none_or(|n| n.text == td.ctor_def(c).name))
-        .filter_map(|c| td.field(Some(c), field))
-        .collect()
 }
 
 /// The rows a run of clauses ranges over.

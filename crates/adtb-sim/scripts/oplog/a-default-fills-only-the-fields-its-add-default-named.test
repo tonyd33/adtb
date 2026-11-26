@@ -1,0 +1,68 @@
+# A default fills the fields its `add default` named when it was added. A constructor added
+# later, or a field of that name added to another constructor later, has no default until a
+# default names it; a split carries the default to the product field its routing carries the
+# field to.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: Text } | B { n: Text } | D { m: Text }
+  add relation ts : T key id generate sequence
+  add default ts.n = "d"
+
+migrate
+  module ts
+  add constructor T.C { n: Text }
+  add field T.D.n: Text fill "f"
+  split constructor T.A into A1 { n: Text }
+    by match
+      | A { n } -> A1 { n: n }
+
+migrate
+  module ts
+  enable ts.C
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "A1", f: "n", t: "\"d\"" }
+{ c: "B", f: "n", t: "\"d\"" }
+
+run
+  insert ts.A1 {}
+  insert ts.B {}
+
+query rowsort
+  from t in ts.(A1 | B) select { id: t.id, n: match t | A1 a -> a.n | B b -> b.n }
+----
+{ id: ts.key(1), n: "d" }
+{ id: ts.key(2), n: "d" }
+
+error Invalid { detail: "field `n` of `C` is missing, and `ts` has no default for it" }
+  insert ts.C {}
+
+error Invalid { detail: "field `n` of `D` is missing, and `ts` has no default for it" }
+  insert ts.D { m: "m" }
+
+reopen
+
+error Invalid { detail: "field `n` of `C` is missing, and `ts` has no default for it" }
+  insert ts.C {}
+
+migrate
+  module ts
+  add default ts.D.n = "e"
+
+run
+  insert ts.D { m: "m" }
+
+query rowsort
+  from t in ts.D select { id: t.id, n: t.n }
+----
+{ id: ts.key(65), n: "e" }
+
+error Invalid { detail: "field `n` of `C` is missing, and `ts` has no default for it" }
+  insert ts.C {}

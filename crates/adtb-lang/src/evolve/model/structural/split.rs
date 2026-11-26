@@ -7,6 +7,7 @@ use crate::evolve::carry::ctor_fields;
 use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::{Carries, arm_image, element_head, matched_fields};
 use crate::evolve::model::admin::canonical;
+use crate::evolve::model::defaults::Taken;
 use crate::evolve::model::field::Applied;
 use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at, refuse_first};
 use crate::evolve::model::reselect::Mode;
@@ -335,7 +336,13 @@ impl Model {
             .iter()
             .map(|d| self.new_ctor(run, t, &d.name.text, d.record.as_deref()))
             .collect();
-        self.defaults_image(&built, t, (&[c], &made), "the split", true)?;
+        self.defaults_image(
+            &built,
+            t,
+            (&[c], &made),
+            "the split",
+            Taken::Split(&carries),
+        )?;
         self.reselect_products(run, t, &[c], &made)?;
         let products: Vec<String> = into.iter().map(|d| d.name.text.clone()).collect();
         let plan = self.carry_plan(run, &built, Structural::Split, t, (&[c], &products));

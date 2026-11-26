@@ -26,6 +26,105 @@ pub(super) struct Naming {
     /// Each constructor a split of the migration replaced, by name, with the names of its
     /// products.
     split: Vec<(String, Vec<String>)>,
+    /// The `default` clauses of each relation declaration an operator copies, by the start of
+    /// the copy.
+    defaults: BTreeMap<usize, Vec<WrittenDefault>>,
+}
+
+/// A `default` clause of a relation declaration: the range of the clause, the range of its value
+/// and the ids of the fields it fills.
+#[derive(Clone, Debug)]
+struct WrittenDefault {
+    clause: Range<usize>,
+    value: Range<usize>,
+    fields: Vec<u64>,
+}
+
+/// Returns the `default` clauses of relation declaration `r`, each range as `r`'s spans give it,
+/// with the fields `fields` gives each, in clause order.
+fn written_defaults(r: &ast::RelationDecl, fields: &[Vec<u64>]) -> Vec<WrittenDefault> {
+    r.clauses
+        .iter()
+        .zip(r.clauses.spans())
+        .filter_map(|(c, span)| match c {
+            RelationClause::Default { value, .. } => Some((span.range(), value)),
+            _ => None,
+        })
+        .zip(fields)
+        .map(|((clause, value), fields)| WrittenDefault {
+            clause,
+            value: match value {
+                ast::DefaultValue::Generate(g) => g.span.range(),
+                ast::DefaultValue::Expr(e) => e.span.range(),
+            },
+            fields: fields.clone(),
+        })
+        .collect()
+}
+
+/// Copy as [`copy_tokens`] does, the `default` clauses of a relation declaration aside when
+/// `ours` lists those of the copy: the declaration `decl` prints its defaults in an order and
+/// grouping of its own, each clause filling the fields `printed` lists, so each clause of `ours`
+/// takes the names of the value of each clause of `decl` filling one of its fields.
+fn copy_decl(
+    (out, missing): (&mut Names, &mut Vec<Diag>),
+    names: &Names,
+    (text, range, decl, printed): (&str, Range<usize>, Option<&ast::Decl>, &[Vec<u64>]),
+    (migration, from, ours): (&str, Range<usize>, Option<&[WrittenDefault]>),
+    unnamed: bool,
+    split: &[(String, Vec<String>)],
+) {
+    let (Some(ours), Some(ast::Decl::Relation(rd))) = (ours, decl) else {
+        let theirs = (text, range);
+        copy_tokens(
+            (out, missing),
+            names,
+            theirs,
+            (migration, from),
+            unnamed,
+            split,
+            [&[], &[]],
+        );
+        return;
+    };
+    let theirs = written_defaults(rd, printed);
+    let cut: [Vec<Range<usize>>; 2] = [
+        theirs.iter().map(|w| w.clause.clone()).collect(),
+        ours.iter().map(|w| w.clause.clone()).collect(),
+    ];
+    let whole = ((text, range), (migration, from));
+    copy_tokens(
+        (out, missing),
+        names,
+        whole.0,
+        whole.1,
+        unnamed,
+        split,
+        [&cut[0], &cut[1]],
+    );
+    for w in ours {
+        let found: Vec<&WrittenDefault> = theirs
+            .iter()
+            .filter(|t| t.fields.iter().any(|f| w.fields.contains(f)))
+            .collect();
+        if found.is_empty() {
+            missing.push(Diag::new(
+                Span::new(w.clause.start, w.clause.end),
+                "the declarations do not hold this operand as written, so its names do not resolve",
+            ));
+        }
+        for t in found {
+            copy_tokens(
+                (out, missing),
+                names,
+                (text, t.value.clone()),
+                (migration, w.value.clone()),
+                unnamed,
+                split,
+                [&[], &[]],
+            );
+        }
+    }
 }
 
 /// Where a copy of the migration's text is in the declarations.
@@ -80,6 +179,7 @@ impl Naming {
 /// Copy into `out` the names `names` holds at each token of `range` of `text`, onto the token of
 /// `range` of `migration` at the same place; only at places `out` does not name yet when
 /// `unnamed`. Push onto `missing` a refusal at `from` when the ranges do not hold the same tokens.
+/// The tokens inside a range of `cut`, of `text` first and of `migration` second, take no part.
 ///
 /// A name of `migration` of a constructor `split` replaced may stand where `text` holds its
 /// products, one or several between `|`, parenthesized or not; it names them all.
@@ -90,8 +190,9 @@ fn copy_tokens(
     (migration, from): (&str, Range<usize>),
     unnamed: bool,
     split: &[(String, Vec<String>)],
+    cut: [&[Range<usize>]; 2],
 ) {
-    let toks = |s: &str, r: &Range<usize>| -> Vec<(String, Range<usize>)> {
+    let toks = |s: &str, r: &Range<usize>, cut: &[Range<usize>]| -> Vec<(String, Range<usize>)> {
         lex(&s[r.clone()])
             .0
             .into_iter()
@@ -103,9 +204,10 @@ fn copy_tokens(
                     r.start + x.start..r.start + x.end,
                 )
             })
+            .filter(|(_, x)| !cut.iter().any(|c| c.start <= x.start && x.end <= c.end))
             .collect()
     };
-    let (theirs, ours) = (toks(text, &range), toks(migration, &from));
+    let (theirs, ours) = (toks(text, &range, cut[0]), toks(migration, &from, cut[1]));
     let mut pairs = Vec::new();
     let mut retyped = Vec::new();
     let mut i = 0;
@@ -214,6 +316,15 @@ impl Model {
         let mut unpaired = Vec::new();
         let made = self.copies_of(run, op, resolved, &mut unpaired);
         self.naming.missing.extend(unpaired);
+        if let (OperatorKind::AddRelation(r), Resolved::AddRelation { relation, .. }) =
+            (&op.kind, &resolved.op)
+        {
+            let fields = self.written_default_fields(*relation, r);
+            let start = r.span.start as usize;
+            self.naming
+                .defaults
+                .insert(start, written_defaults(r, &fields));
+        }
         let Ok((built, _)) = self.built(&[], &run.ahead(self)) else {
             self.naming
                 .pending
@@ -225,11 +336,16 @@ impl Model {
             match self.span_of(&built, at) {
                 Some((file, span)) => {
                     let names = built.names(file);
-                    copy_tokens(
+                    let printed = self.printed_default_fields(at);
+                    copy_decl(
                         (&mut naming.names, &mut naming.missing),
                         &names,
-                        (built.text(file), span.range()),
-                        (run.text(), from.clone()),
+                        (built.text(file), span.range(), built.decl(file), &printed),
+                        (
+                            run.text(),
+                            from.clone(),
+                            naming.defaults.get(&from.start).map(|w| &w[..]),
+                        ),
                         false,
                         &naming.split,
                     );
@@ -282,29 +398,52 @@ impl Model {
                 continue;
             };
             let names = built.names(file);
+            let printed = self.printed_default_fields(at);
             if !last && waits(built, file, &names) {
                 let (mut held, mut unpaired) = (Names::default(), Vec::new());
-                copy_tokens(
+                copy_decl(
                     (&mut held, &mut unpaired),
                     &names,
-                    (built.text(file), span.range()),
-                    (migration, from.clone()),
+                    (built.text(file), span.range(), built.decl(file), &printed),
+                    (
+                        migration,
+                        from.clone(),
+                        naming.defaults.get(&from.start).map(|w| &w[..]),
+                    ),
                     false,
                     &naming.split,
                 );
                 kept.push((from, at, unpaired.is_empty().then_some(held).or(named)));
                 continue;
             }
-            copy_tokens(
+            let ours = naming.defaults.get(&from.start).cloned();
+            copy_decl(
                 (&mut naming.names, &mut naming.missing),
                 &names,
-                (built.text(file), span.range()),
-                (migration, from),
+                (built.text(file), span.range(), built.decl(file), &printed),
+                (migration, from, ours.as_deref()),
                 false,
                 &naming.split,
             );
         }
         naming.pending = kept;
+    }
+
+    /// Returns the fields each `default` clause of the relation declaration at `at` fills, as
+    /// printed, none when `at` is no relation declaration.
+    fn printed_default_fields(&self, at: At) -> Vec<Vec<u64>> {
+        let item = match at {
+            At::Decl(item) => item,
+            At::Held(key) => match self.lifted.get(&key) {
+                Some(&item) => item,
+                None => return Vec::new(),
+            },
+            _ => return Vec::new(),
+        };
+        match item {
+            Item::Relation(r) if self.relations.contains_key(&r) => self.default_clause_fields(r),
+            _ => Vec::new(),
+        }
     }
 
     /// Name arm `key`, which `built` holds at `range` of file `file`, when an operator of the
@@ -323,6 +462,7 @@ impl Model {
             (&text, from),
             false,
             &naming.split,
+            [&[], &[]],
         );
     }
 
@@ -398,9 +538,8 @@ impl Model {
                 Some((file, fs.first()?.span.to(fs.last()?.span)))
             }
             At::Default { relation, default } => {
-                let (file, k) = self.clause_place(relation, |c| {
-                    matches!(c, ClauseM::Default { ids, .. } if ids.iter().any(|&(_, d)| d == default))
-                })?;
+                let file = FileId(self.decl_at(Item::Relation(relation))? as u32);
+                let k = self.default_place(relation, default)?;
                 match Self::clause_written(built, file, k).ok()? {
                     RelationClause::Default {
                         value: ast::DefaultValue::Expr(e),
@@ -725,6 +864,7 @@ impl Run<'_> {
                 (self.text(), w.span.range()),
                 false,
                 &[],
+                [&[], &[]],
             );
         }
         self.note_names(out);

@@ -380,8 +380,9 @@ fn counterpart(a: &Schema, b: &Schema, root: Root) -> Option<Root> {
             Some(Root::Computed(at.0, at.1))
         }
         Root::Default(r, i) => {
-            let (_, id) = y.clause_default_ids(r, i).next()?;
-            let ((r, i, _), _) = x.default_ids().find(|&(_, d)| d == id)?;
+            let id = y.default_id(r, b.relation(r).defaults.get(i)?.field)?;
+            let ((r, f), _) = x.default_ids().find(|&(_, d)| d == id)?;
+            let i = a.relation(r).defaults.iter().position(|d| d.field == f)?;
             Some(Root::Default(r, i))
         }
         Root::Item(_) | Root::Command(_) | Root::Query => None,

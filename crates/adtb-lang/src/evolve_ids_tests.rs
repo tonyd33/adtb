@@ -16,7 +16,7 @@ pub(super) enum Desc {
     Index(String, usize),
     Implied(String, Box<Desc>),
     Generated(String),
-    Default(String, usize, Box<Desc>),
+    Default(String, Box<Desc>),
     Computed(String, usize),
     Function(String),
     Aggregate(String),
@@ -108,9 +108,9 @@ fn described(s: &Schema) -> Vec<(Desc, u64)> {
         ids.generated_ids()
             .map(|(r, id)| (Desc::Generated(rel_name(s, r)), id.raw())),
     );
-    out.extend(ids.default_ids().map(|((r, at, f), id)| {
+    out.extend(ids.default_ids().map(|((r, f), id)| {
         (
-            Desc::Default(rel_name(s, r), at, Box::new(field_desc(s, f))),
+            Desc::Default(rel_name(s, r), Box::new(field_desc(s, f))),
             id.raw(),
         )
     }));
@@ -420,7 +420,7 @@ fn names(d: &Desc, to: &dyn for<'a> Fn(Name<'a>) -> &'a str) -> Desc {
         Desc::Index(r, at) => Desc::Index(rel(r), *at),
         Desc::Implied(r, f) => Desc::Implied(rel(r), Box::new(inner(f))),
         Desc::Generated(r) => Desc::Generated(rel(r)),
-        Desc::Default(r, at, f) => Desc::Default(rel(r), *at, Box::new(inner(f))),
+        Desc::Default(r, f) => Desc::Default(rel(r), Box::new(inner(f))),
         Desc::Computed(r, at) => Desc::Computed(rel(r), *at),
         other => other.clone(),
     }
@@ -438,7 +438,7 @@ fn moved(d: &Desc, name: &str, from: Option<&str>, to: Option<&str>) -> Desc {
     match d {
         Desc::Field(..) => field(d),
         Desc::Implied(r, f) => Desc::Implied(r.clone(), Box::new(field(f))),
-        Desc::Default(r, at, f) => Desc::Default(r.clone(), *at, Box::new(field(f))),
+        Desc::Default(r, f) => Desc::Default(r.clone(), Box::new(field(f))),
         other => other.clone(),
     }
 }
@@ -1476,7 +1476,7 @@ fn of_replaced(d: &Desc, replaced: &[String]) -> bool {
     let ctor = |t: &str, c: &str| t == "auth::T" && replaced.iter().any(|r| r == c);
     match d {
         Desc::Ctor(t, c) | Desc::Field(t, Some(c), _) => ctor(t, c),
-        Desc::Implied(_, f) | Desc::Default(_, _, f) => of_replaced(f, replaced),
+        Desc::Implied(_, f) | Desc::Default(_, f) => of_replaced(f, replaced),
         _ => false,
     }
 }

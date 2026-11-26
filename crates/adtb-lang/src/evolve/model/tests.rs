@@ -194,7 +194,7 @@ rename relation rs to rs2",
             ("m", "fn keep (f: Key rs2 -> Bool) -> I64 = 1"),
             (
                 "m",
-                "relation qs: Q key id default n = keep(fn (k: Key rs2) -> true) computed held: I64 = keep(fn (k: Key rs2) -> k == k)",
+                "relation qs: Q key id computed held: I64 = keep(fn (k: Key rs2) -> k == k) default n = keep(fn (k: Key rs2) -> true)",
             ),
             ("m", "check c on qs (keep(fn (k: Key rs2) -> k == k) == n)"),
             ("m", "relation rs2: R key id"),
@@ -295,6 +295,7 @@ fn an_arm_naming_a_function_a_later_operator_defines_is_refused() {
 fn an_arm_follows_a_rename_of_its_constructor_by_id() {
     let split = "split constructor T.A into A1 { x: Text } | A2 { x: Text }
   by match
+    | A { x } if x == \"b\" -> A2 { x: x }
     | A { x } -> A1 { x: x }
   arm f: A1 a -> a.x ++ \"A1\"
   arm f: A2 a -> a.x

@@ -1,0 +1,25 @@
+# A nest of a constructor a default fills is refused naming the field the default fills.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: Text } | B { n: Text } | C { n: Text }
+  add relation ts : T key id generate sequence
+  add default ts.n = "d"
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "nest constructor T.(A | B) into H { m: M }", detail: "the nest is refused: the default of `ts.A.n` has no image under it" } } }
+  module ts
+  add type M = A { n: Text } | B { n: Text }
+  nest constructor T.(A | B) into H { m: M }
+
+reopen
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "A", f: "n", t: "\"d\"" }
+{ c: "B", f: "n", t: "\"d\"" }
+{ c: "C", f: "n", t: "\"d\"" }

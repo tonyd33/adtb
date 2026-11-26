@@ -494,11 +494,10 @@ impl Model {
                         .map_err(broken)?
                 }
                 Late::Default { relation, default } => {
-                    let held = self.relations.get(&relation).is_some_and(|x| {
-                        x.clauses.iter().any(|c| {
-                            matches!(c, ClauseM::Default { ids, .. } if ids.iter().any(|&(_, d)| d == default))
-                        })
-                    });
+                    let held = self
+                        .relations
+                        .get(&relation)
+                        .is_some_and(|x| x.defaults.holds(default));
                     match (held, self.gave_clauses.get(&(Space::Default, default))) {
                         (true, _) => self.default_canonical(&built, relation, default),
                         (false, Some(gave)) => gave.canonical().cloned(),

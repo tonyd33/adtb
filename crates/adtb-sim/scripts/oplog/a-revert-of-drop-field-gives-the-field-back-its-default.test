@@ -1,0 +1,41 @@
+# A revert of `drop field` gives each field it puts back the default the field had when it was
+# dropped, whether a field of its name kept the same default or none did.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: Text, k: Text } | B { n: Text }
+  add relation ts : T key id generate sequence
+  add default ts.n = "d"
+  add default ts.A.k = "e"
+
+migrate
+  module ts
+  drop field T.A.n
+  drop field T.A.k
+
+migrate
+  module ts
+  revert 0002
+    fill T.A.n = "x"
+    fill T.A.k = "y"
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "A", f: "k", t: "\"e\"" }
+{ c: "A", f: "n", t: "\"d\"" }
+{ c: "B", f: "n", t: "\"d\"" }
+
+run
+  insert ts.A {}
+  insert ts.B {}
+
+query rowsort
+  from t in ts select { id: t.id, n: match t | A a -> a.n ++ a.k | B b -> b.n }
+----
+{ id: ts.key(1), n: "de" }
+{ id: ts.key(2), n: "d" }

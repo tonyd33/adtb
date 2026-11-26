@@ -1,0 +1,68 @@
+# A remove drops the default of each field of the removed constructor and keeps the defaults of
+# the fields of other constructors. Its revert gives each field of the constructor put back the
+# default it had, and no other field: `A.g`, added after the default, takes none. A split later
+# in the remove's migration carries the defaults kept to its product.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: I64 } | B { g: I64, n: I64 }
+  add relation ts : T key id generate sequence
+  add default ts.g = 5
+  add default ts.n = 7
+
+migrate
+  module ts
+  deprecate ts.B
+
+migrate
+  module ts
+  remove constructor T.B
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "A", f: "n", t: "7" }
+
+migrate
+  module ts
+  add field T.A.g: I64 fill 0
+
+migrate
+  module ts
+  revert 0003
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "A", f: "n", t: "7" }
+{ c: "B", f: "g", t: "5" }
+{ c: "B", f: "n", t: "7" }
+
+migrate
+  module ts
+  add type U { id: Key us } = E { n: I64 } | F { n: I64 } | G
+  add relation us : U key id generate sequence
+  add default us.n = 7
+
+migrate
+  module ts
+  deprecate us.F
+
+migrate
+  module ts
+  remove constructor U.F
+  split constructor U.E into P { n: I64 }
+    by match
+      | E c -> P { n: c.n }
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors, r in catalog::relations
+    where d.field == f.id and f.ctor == c.id and d.relation == r.id and r.name == "us" and d.dropped == None
+    select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "P", f: "n", t: "7" }

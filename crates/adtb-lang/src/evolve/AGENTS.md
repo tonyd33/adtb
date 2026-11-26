@@ -9,6 +9,8 @@ its refusals and its revert is [evolution.md](../../../../docs/spec/evolution.md
 - Text an operator keeps, a body, a default or a check, is a `Term`: each name in it is held as
   the ids it resolves to and printed under the name the model gives those ids now. Never keep a
   written name as a `String`.
+- Hold an object with identity by its id inside one module's type, and change it only through
+  that type's operations.
 - An operator resolves a type, relation or named set through `Resolving`, which ties the name's
   span to its id. Where the lookup misses it calls `Model::unheld` before refusing, so a name a
   held declaration takes refuses with the declarations' first failure.

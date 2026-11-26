@@ -14,6 +14,7 @@ mod arms;
 mod clause;
 mod ctor;
 mod decl;
+mod defaults;
 mod field;
 mod inverse;
 mod lift;
@@ -47,8 +48,8 @@ pub(super) type Obj = (Space, u64);
 /// declaration prints each name it writes as that object's name now.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Model {
-    /// The uniques, indexes and defaults added while the declarations did not build, by their
-    /// space and id.
+    /// The uniques and indexes added while the declarations did not build, and the first default
+    /// of each `add default` applied then, by their space and id.
     unbuilt_clauses: BTreeSet<Obj>,
     /// The computed fields added or redefined while the declarations did not build, by their
     /// relation variable and id.
@@ -238,6 +239,7 @@ struct RelM {
     name: String,
     ty: Term,
     clauses: Vec<ClauseM>,
+    defaults: defaults::Defaults,
     /// The index each reference field implies, by the field.
     implied: BTreeMap<Implied, u64>,
 }
@@ -269,13 +271,6 @@ enum ClauseM {
         scope: Option<Scope>,
         /// The ids of the clauses this one is the image of, while it has no id of its own.
         was: Vec<u64>,
-    },
-    Default {
-        ctor: Option<Term>,
-        field: Term,
-        value: Term,
-        /// One default for each field the clause fills, by the field's id.
-        ids: Vec<(u64, u64)>,
     },
     Computed {
         id: Option<u64>,
@@ -589,13 +584,6 @@ impl Model {
                             s.parts.iter_mut().for_each(&mut *f);
                         }
                     }
-                    ClauseM::Default {
-                        ctor, field, value, ..
-                    } => {
-                        ctor.iter_mut().for_each(&mut *f);
-                        f(field);
-                        f(value);
-                    }
                     ClauseM::Computed { ty, expr, .. } => {
                         f(ty);
                         f(expr);
@@ -603,6 +591,7 @@ impl Model {
                     ClauseM::Volatile => {}
                 }
             }
+            r.defaults.each_value_mut(f);
         }
         for s in self.sets.values_mut() {
             s.members.iter_mut().for_each(&mut *f);

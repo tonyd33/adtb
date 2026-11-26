@@ -562,7 +562,14 @@ The printout states every module, type, relation variable with its
 clauses, named set, schema function, aggregate, constraint, stored
 view, default, computed field, grant and constructor write state at
 that version, in the declaration syntax of [syntax.md](syntax.md),
-headed by the version and its hash. The printout is canonical:
+headed by the version and its hash. A relation variable's defaults
+print after its other clauses, one `default` clause for each, in
+declaration order: the header fields' first, then each constructor's
+fields in the constructors' order. `default f = e` prints the default
+of header field `f`, of field `f` of a type's only constructor, and
+of the fields named `f` of two or more constructors when each has a
+default of the same value `e`, in the place of the first of them;
+any other default prints as `default C.f = e`. The printout is canonical:
 whitespace normalised and comments dropped, as for a single
 migration, except the declaration of a function, aggregate,
 constraint, check or stored view, printed as written with each name a

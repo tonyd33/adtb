@@ -321,19 +321,16 @@ impl Model {
         for r in self.relations.values_mut() {
             r.implied.remove(&Implied::Field(f));
             for c in &mut r.clauses {
-                match c {
-                    ClauseM::Default { ids, .. } => ids.retain(|(x, _)| *x != f),
-                    ClauseM::Index { id, elems, was, .. }
-                        if elems
-                            .iter()
-                            .any(|e| e.objects().any(|o| o == (Space::Field, f))) =>
-                    {
-                        Model::reimage(id, was);
-                    }
-                    _ => {}
+                if let ClauseM::Index { id, elems, was, .. } = c
+                    && elems
+                        .iter()
+                        .any(|e| e.objects().any(|o| o == (Space::Field, f)))
+                {
+                    Model::reimage(id, was);
                 }
             }
         }
+        self.forget_defaults(&[f]);
         self.fields.remove(&f);
     }
 

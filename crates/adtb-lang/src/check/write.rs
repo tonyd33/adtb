@@ -633,11 +633,12 @@ impl Checker<'_> {
         {
             return Ok(Some(self.b().transport_field(old, f)));
         }
+        let td = self.schema.ty(r.elem_def);
+        let filled = td.field(td.ctor_at(c), f);
         let default = r
             .defaults
             .iter()
-            .find(|d| d.field == f && d.ctor == Some(c))
-            .or_else(|| r.defaults.iter().find(|d| d.field == f && d.ctor.is_none()))
+            .find(|d| Some(d.field) == filled)
             .map(|d| d.value.clone());
         let generated = r.generate.filter(|_| is_key && r.key.len() == 1);
         match (default, generated) {

@@ -209,16 +209,13 @@ impl Builder<'_> {
                     });
                 }
                 ast::RelationClause::Default { ctor, field, value } => {
-                    let Some(d) = cx.default_clause(def, ctor.as_ref(), field, value) else {
-                        continue;
-                    };
-                    if defaults
-                        .iter()
-                        .any(|x: &DefaultDef| x.ctor == d.ctor && x.field == d.field)
-                    {
-                        cx.err(field.span, "this default is declared twice");
+                    for d in cx.default_clause(def, ctor.as_ref(), field, value) {
+                        if defaults.iter().any(|x: &DefaultDef| x.field == d.field) {
+                            cx.err(field.span, "this default is declared twice");
+                            break;
+                        }
+                        defaults.push(d);
                     }
-                    defaults.push(d);
                 }
                 ast::RelationClause::Computed(name, ty, e) => {
                     let scope = TypeScope {
@@ -362,60 +359,71 @@ impl Clauses<'_> {
         (names, generate)
     }
 
-    /// Returns the default a `default` clause declares, `None` when it names an unknown constructor
-    /// or no field.
+    /// Returns the default of each field a `default` clause fills, none when it names an unknown
+    /// constructor or no field.
     fn default_clause(
         &mut self,
         def: &TypeDef,
         ctor: Option<&ast::Ident>,
         field: &ast::Ident,
         value: &ast::DefaultValue,
-    ) -> Option<DefaultDef> {
-        let ctor_idx = match ctor {
-            None => None,
-            Some(c) => match def.ctor_index(&c.text) {
-                Some(i) => Some(i),
-                None => {
-                    self.err(
-                        c.span,
-                        format!("`{}` is not a constructor of `{}`", c.text, def.name),
-                    );
-                    return None;
-                }
-            },
-        };
-        let field_ty = match ctor_idx {
-            Some(i) => def.field_named(i, &field.text).map(|f| f.ty.clone()),
-            None => (0..def.ctors().len() as u32)
-                .find_map(|i| def.field_named(i, &field.text))
-                .map(|f| f.ty.clone()),
-        };
-        let Some(field_ty) = field_ty else {
+    ) -> Vec<DefaultDef> {
+        if let Some(c) = ctor
+            && def.ctor_index(&c.text).is_none()
+        {
+            self.err(
+                c.span,
+                format!("`{}` is not a constructor of `{}`", c.text, def.name),
+            );
+            return Vec::new();
+        }
+        let fields = def.default_fields(ctor.map(|c| c.text.as_str()), &field.text);
+        if fields.is_empty() {
             self.err(
                 field.span,
                 format!("`{}` has no field `{}`", def.name, field.text),
             );
-            return None;
-        };
-        let value = match value {
+        }
+        let (value, written) = match value {
             ast::DefaultValue::Generate(g) => {
                 if g.text != "clock" {
                     self.err(
                         g.span,
                         "a default generates only `clock`; keys generate in the `key` clause",
                     );
-                } else if field_ty != Ty::Base(Base::Instant) {
+                } else if fields
+                    .iter()
+                    .any(|&f| def.field_def(f).ty != Ty::Base(Base::Instant))
+                {
                     self.err(g.span, "`generate clock` fills an `Instant` field");
                 }
-                DefaultValue::Generate(Generator::Clock)
+                (DefaultValue::Generate(Generator::Clock), g.span)
             }
-            ast::DefaultValue::Expr(e) => DefaultValue::Expr(Box::new(e.clone())),
+            ast::DefaultValue::Expr(e) => (DefaultValue::Expr(Box::new(e.clone())), e.span),
         };
-        Some(DefaultDef {
-            ctor: ctor_idx,
-            field: field.text.clone(),
-            value,
-        })
+        fields
+            .into_iter()
+            .map(|field| DefaultDef {
+                field,
+                value: value.clone(),
+                written,
+            })
+            .collect()
+    }
+}
+
+impl TypeDef {
+    /// Returns the fields a default on `field`, of constructor `ctor` when one is named, fills:
+    /// the header field of that name, else that field of each constructor it covers, in
+    /// declaration order.
+    pub fn default_fields(&self, ctor: Option<&str>, field: &str) -> Vec<FieldRef> {
+        if let Some(f) = self.field(None, field) {
+            return vec![f];
+        }
+        self.ctor_refs()
+            .filter(|&c| ctor.is_none_or(|n| n == self.ctor_def(c).name))
+            .filter_map(|c| self.field(Some(c), field))
+            .collect()
     }
 }
 

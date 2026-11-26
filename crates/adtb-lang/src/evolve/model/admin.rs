@@ -301,13 +301,6 @@ impl Model {
                             terms.extend(elems);
                             terms.extend(scope.iter().flat_map(|s| &s.parts));
                         }
-                        ClauseM::Default {
-                            ctor, field, value, ..
-                        } => {
-                            terms.extend(ctor);
-                            terms.push(field);
-                            terms.push(value);
-                        }
                         ClauseM::Computed { ty, expr, .. } => {
                             terms.push(ty);
                             terms.push(expr);
@@ -315,6 +308,7 @@ impl Model {
                         ClauseM::Volatile => {}
                     }
                 }
+                terms.extend(rel.defaults.values());
             }
             Item::Set(s) => terms.extend(&self.sets[&s].members),
             Item::Fn(f) | Item::Aggregate(f) => terms.push(&self.functions[&f].rest),

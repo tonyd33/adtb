@@ -1,0 +1,90 @@
+# A revert of `drop default` gives the default back to the fields it filled by their ids: a field
+# renamed since keeps it under its new name, and a field of the old name added since takes none.
+# The revert is refused while one of those fields has another default.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: Text } | B { n: Text }
+  add relation ts : T key id generate sequence
+  add default ts.n = "d"
+
+migrate
+  module ts
+  drop default ts.n
+
+migrate
+  module ts
+  rename field T.A.n to p
+
+migrate
+  module ts
+  revert 0002
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "A", f: "p", t: "\"d\"" }
+{ c: "B", f: "n", t: "\"d\"" }
+
+run
+  insert ts.A {}
+  insert ts.B {}
+
+reopen
+
+run
+  insert ts.A {}
+
+query rowsort
+  from t in ts select { id: t.id, v: match t | A a -> a.p | B b -> b.n }
+----
+{ id: ts.key(1), v: "d" }
+{ id: ts.key(2), v: "d" }
+{ id: ts.key(65), v: "d" }
+
+migrate
+  module ts
+  add type U { id: Key us } = E { n: Text } | F { m: Text }
+  add relation us : U key id generate sequence
+  add default us.n = "d"
+
+migrate
+  module ts
+  drop default us.n
+
+migrate
+  module ts
+  rename field U.E.n to p
+  add field U.F.n: Text fill "f"
+
+migrate
+  module ts
+  revert 0006
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None and (c.name == "E" or c.name == "F") select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "E", f: "p", t: "\"d\"" }
+
+run
+  insert us.E {}
+
+error Invalid { detail: "field `n` of `F` is missing, and `us` has no default for it" }
+  insert us.F { m: "m" }
+
+migrate
+  module ts
+  drop default us.p
+
+migrate
+  module ts
+  add default us.E.p = "e"
+
+migrate refused MigrationRefused { version: 11, reason: Rejected { reason: SchemaRefused { operator: "revert 0009", detail: "the inverse `add default ts::us.E.p = \"d\"` does not apply: `us.E.p` already has a default" } } }
+  module ts
+  revert 0009

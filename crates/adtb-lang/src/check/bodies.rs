@@ -256,12 +256,26 @@ impl<'s> Bodies<'s, '_> {
     }
 
     fn relation(&mut self, rel: RelId, r: &crate::schema::RelationDef) {
+        let mut checked: Vec<(Span, Ty, Option<Tm>)> = Vec::new();
         for (j, d) in r.defaults.iter().enumerate() {
-            if let DefaultValue::Expr(e) = &d.value
-                && let Some(tm) = self.run(r.module, Context::Schema, r.file, &mut |c| {
-                    c.default_clause(rel, d.ctor, &d.field, e)
-                })
+            let DefaultValue::Expr(e) = &d.value else {
+                continue;
+            };
+            let fty = self.schema.ty(r.elem_def).field_def(d.field).ty.clone();
+            let tm = match checked
+                .iter()
+                .find(|(s, t, _)| *s == d.written && *t == fty)
             {
+                Some(&(.., tm)) => tm,
+                None => {
+                    let tm = self.run(r.module, Context::Schema, r.file, &mut |c| {
+                        c.default_clause(rel, d.field, e)
+                    });
+                    checked.push((d.written, fty, tm));
+                    tm
+                }
+            };
+            if let Some(tm) = tm {
                 self.program.defaults.insert((rel, j), tm);
             }
         }

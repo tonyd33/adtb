@@ -699,6 +699,11 @@ field the routing carries whole into a new constructor is indexed
 there under its new name. A unique or index naming a field that no new
 constructor keeps (here `provider`) is refused unless the split states
 its replacements, as `unique` and `index` clauses after the routing.
+A default on a field of the split constructor becomes a default with
+the same value on each product field the routing carries that field
+to whole. A split whose routing carries a field with a default whole
+to no product field is refused, naming the field and its default; the
+default is dropped first.
 Every named set containing `OAuth` contains every product in its
 place. A reference type `Key r.OAuth` is retyped to `Key r.(Google | Apple)`,
 and so is a selection of `OAuth` in a query or row type of a schema
@@ -807,8 +812,12 @@ rows it covered, or the merge is refused naming it:
 - Any other unique or index over some but not all of the merged
   constructors is refused.
 - A default on a field of a merged constructor becomes a default on
-  the new constructor's field when every merged constructor has that
-  default with the same value, and is refused otherwise.
+  the new constructor's field the routing carries it to whole when
+  every merged constructor has a default with the same value on the
+  field the routing carries there, and is refused otherwise. A merge
+  whose routing does not carry a field with a default whole is
+  refused, naming the field and its default; the default is dropped
+  first.
 - A check whose scope names every merged constructor ranges over the
   new constructor in their place, each field it names renamed to the
   field the routing carries it to whole.
@@ -938,6 +947,19 @@ drop field Identity.EmailPass.hash
   of one, under the same rules as a declared action. Its inverse is
   `alter field` back to the field's previous action, `restrict` when it
   stated none.
+- `add default r.C.f = e` gives field `f` of constructor `C` of
+  relation `r` the default `e`; `add default r.f = e` gives it to the
+  header field `f`, or to field `f` of every constructor that has it.
+  A field has at most one default: `add default` is refused when a
+  field it names already has one, as `add default ts.A.n = 2` after
+  `add default ts.n = 1` is, and a relation declaration with two
+  `default` clauses for one field is refused as declaring that default
+  twice.
+- `drop default r.C.f` drops the default of field `f` of constructor
+  `C` of relation `r`; `drop default r.f` drops the default of every
+  field named `f` in `r`, the header's and each constructor's alike.
+  Each is refused when no such field has a default, and the first when
+  `C` is not a constructor of `r`'s type.
 
 ### 4.10 Keys, uniques and indexes
 
@@ -1122,6 +1144,9 @@ revert, one per such inverse, written `fill T.C.f = e` with the
 field's current name. A revert's fill has the form and scope of an
 `add field` fill (§4.9): `e` gives the value for every existing row
 and may read the row being filled and nothing else.
+
+A field a revert puts back gets the default it had when it was
+dropped.
 
 ```adt fragment
 -- 0016, from a version 15 at which 0015 dropped Identity.EmailPass.hash

@@ -1142,15 +1142,9 @@ impl<'p, 'a> Walk<'p, 'a> {
     ) -> R<Tm> {
         let (def, k, name) = (lacked.def, lacked.k, lacked.name);
         let r = self.map.to.relation(rel);
-        let default = r
-            .defaults
-            .iter()
-            .position(|d| d.field == name && d.ctor == Some(k))
-            .or_else(|| {
-                r.defaults
-                    .iter()
-                    .position(|d| d.field == name && d.ctor.is_none())
-            });
+        let td = self.map.to.ty(r.elem_def);
+        let filled = td.field(td.ctor_at(k), name);
+        let default = r.defaults.iter().position(|d| Some(d.field) == filled);
         if let Some(i) = default {
             return match &r.defaults[i].value {
                 DefaultValue::Generate(g) => Ok(self.b(out).fresh(*g, rel)),

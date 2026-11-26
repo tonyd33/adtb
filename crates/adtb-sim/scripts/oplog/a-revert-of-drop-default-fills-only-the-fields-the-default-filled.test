@@ -1,0 +1,40 @@
+# A revert of `drop default` gives the default back the fields it filled when it was dropped, by
+# id: a field of its name added to another constructor after the default stays without one.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: Text } | B { m: Text }
+  add relation ts : T key id generate sequence
+  add default ts.n = "d"
+
+migrate
+  module ts
+  add field T.B.n: Text fill "f"
+
+migrate
+  module ts
+  drop default ts.n
+
+migrate
+  module ts
+  revert 0003
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "A", f: "n", t: "\"d\"" }
+
+run
+  insert ts.A {}
+
+error Invalid { detail: "field `n` of `B` is missing, and `ts` has no default for it" }
+  insert ts.B { m: "m" }
+
+query rowsort
+  from t in ts select { id: t.id, n: match t | A a -> a.n | B b -> b.n }
+----
+{ id: ts.key(1), n: "d" }

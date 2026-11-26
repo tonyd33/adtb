@@ -582,21 +582,21 @@ impl Cx<'_> {
             Op::Rekey {
                 relation, carry, ..
             } => self.rekey_inverse(at, *relation, carry),
-            Op::AddDefault {
-                relation,
-                ctor,
-                field,
-                ..
-            } => {
-                let mut text = Term::from("drop default ");
-                text.append(at.default_path(*relation, ctor.as_ref(), field)?);
+            Op::AddDefault { relation, .. } => {
+                let mut text = Term::default();
+                for f in at.defaults_changed(at.after_m, at.before_m, *relation) {
+                    if !text.is_empty() {
+                        text.push("\n");
+                    }
+                    text.push("drop default ");
+                    text.append(at.default_target(at.after_m, *relation, f)?);
+                }
                 apply(text, of)
             }
-            Op::DropDefault {
-                relation,
-                ctor,
-                field,
-            } => self.default_inverse(at, *relation, ctor.as_ref(), field),
+            Op::DropDefault { relation, .. } => {
+                let fields = at.defaults_changed(at.before_m, at.after_m, *relation);
+                apply(at.defaults_back(Some(*relation), &fields)?, of)
+            }
             Op::AddComputed {
                 relation, field, ..
             } => {
@@ -721,6 +721,7 @@ impl Cx<'_> {
         }
         text.push(" fill ");
         text.push(fill);
+        text.append(at.defaults_back(None, &[f])?);
         Ok(vec![Inverse::Apply { text, of: at.of() }, at.reorder(f)])
     }
 
@@ -764,47 +765,6 @@ impl Cx<'_> {
                 of: at.of(),
             },
         ])
-    }
-
-    fn default_inverse(
-        &self,
-        at: Inverting,
-        rel: u64,
-        ctor: Option<&ast::Ident>,
-        field: &ast::Ident,
-    ) -> R<Vec<Inverse>> {
-        let Inverting { before, .. } = at;
-        let path = at.default_path(rel, ctor, field)?;
-        let missing = || vec![Diag::new(self.span, "the log does not hold the default")];
-        let i = at
-            .before_m
-            .decl_at(Item::Relation(rel))
-            .ok_or_else(missing)?;
-        let Some(Decl::Relation(rd)) = before.parsed(i) else {
-            return Err(missing().into());
-        };
-        let Some(value) = rd.clauses.iter().find_map(|c| match c {
-            RelationClause::Default {
-                ctor: dc,
-                field: f,
-                value,
-            } if f.text == field.text
-                && dc.as_ref().map(|x| &x.text) == ctor.as_ref().map(|x| &x.text) =>
-            {
-                Some(value)
-            }
-            _ => None,
-        }) else {
-            return Err(missing().into());
-        };
-        let mut text = Term::from("add default ");
-        text.append(path);
-        text.push(" = ");
-        match value {
-            ast::DefaultValue::Generate(g) => text.push(format!("generate {}", g.text)),
-            ast::DefaultValue::Expr(e) => text.append(at.decl_range(i, before.local(i, e.span))?),
-        }
-        apply(text, at.of())
     }
 
     fn computed_inverse(&self, at: Inverting, rel: u64, field: &ast::Ident) -> R<Vec<Inverse>> {
@@ -860,6 +820,55 @@ impl Inverting<'_> {
         }
         out.push(".");
         out.push_name(&field.name, Space::Field, Some(f));
+        Ok(out)
+    }
+
+    /// Returns the fields of relation variable `r` whose default model `m` holds and model `other`
+    /// does not hold under the same id, in the order `m` prints them.
+    fn defaults_changed(&self, m: &Model, other: &Model, r: u64) -> Vec<u64> {
+        let Some(rel) = m.relations.get(&r) else {
+            return Vec::new();
+        };
+        let held = other.relations.get(&r).map(|x| &x.defaults);
+        m.default_order(r)
+            .into_iter()
+            .filter(|&f| held.and_then(|h| h.id_of(f)) != rel.defaults.id_of(f))
+            .collect()
+    }
+
+    /// Returns the target a `default` operator names field `f` of relation variable `r` of model
+    /// `m` by: the relation variable qualified by its module, then the constructor of a field of
+    /// a sum's constructor, then the field, each part held by its id.
+    fn default_target(&self, m: &Model, r: u64, f: u64) -> R<Term> {
+        let missing = || vec![Diag::new(self.op.span, "the log does not hold the default")];
+        let field = m.fields.get(&f).ok_or_else(missing)?;
+        let t = m.field_type(f).ok_or_else(missing)?;
+        let mut out = self.relation_term(r)?;
+        if let Some(c) = m.ctors.get(&field.owner)
+            && !matches!(m.types[&t].body, TypeBody::Record { .. })
+        {
+            out.push(".");
+            out.push_name(&c.name, Space::Shared, Some(field.owner));
+        }
+        out.push(".");
+        out.push_name(&field.name, Space::Field, Some(f));
+        Ok(out)
+    }
+
+    /// Returns the `add default` operators that give each field of `fields` the default it has in
+    /// the model before the operator, in relation variable `only` or in each, one on each line,
+    /// each line but the first after a line break.
+    pub(super) fn defaults_back(&self, only: Option<u64>, fields: &[u64]) -> R<Term> {
+        let mut out = Term::default();
+        for (r, f, value) in self.before_m.defaults_of(fields) {
+            if only.is_some_and(|o| o != r) {
+                continue;
+            }
+            out.push("\nadd default ");
+            out.append(self.default_target(self.before_m, r, f)?);
+            out.push(" = ");
+            out.append(value);
+        }
         Ok(out)
     }
 

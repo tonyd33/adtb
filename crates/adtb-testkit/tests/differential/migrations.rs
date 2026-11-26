@@ -432,11 +432,12 @@ fn relations_shape(schema: &Schema, app: ModuleId) -> Vec<String> {
             let DefaultValue::Expr(e) = &d.value else {
                 continue;
             };
-            let at = match d.ctor {
+            let at = match d.field.ctor() {
                 Some(c) if !record => format!("{}.{}", r.name, ctors[c as usize].name),
                 _ => r.name.clone(),
             };
-            out.push(format!("default {at}.{} = {}", d.field, expr_text(e)));
+            let name = &t.field_def(d.field).name;
+            out.push(format!("default {at}.{name} = {}", expr_text(e)));
         }
         for c in &r.computed {
             out.push(format!(

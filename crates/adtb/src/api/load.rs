@@ -320,10 +320,9 @@ fn staged(schema: &Schema, target: &str) -> Result<Staged, Error> {
     let mut columns = Vec::new();
     let mut fields = Vec::new();
     for (name, ty) in layout::row(schema, rel, ctor) {
-        let filled = generated.contains(name.as_str())
-            || r.defaults
-                .iter()
-                .any(|d| d.field == name && d.ctor.is_none_or(|c| c == ctor));
+        let field = def.field(def.ctor_at(ctor), &name);
+        let filled =
+            generated.contains(name.as_str()) || r.defaults.iter().any(|d| Some(d.field) == field);
         let column = batch_type(schema, &ty).ok_or_else(unknown)?;
         fields.push(Field {
             name: name.clone(),

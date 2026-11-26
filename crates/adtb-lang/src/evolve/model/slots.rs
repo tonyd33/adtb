@@ -175,7 +175,7 @@ impl Model {
     ) -> Vec<(Slot, u64)> {
         let m = &self.relations[&r];
         let mut out = Vec::new();
-        let (mut ix, mut dx, mut cx) = (0, 0, 0);
+        let (mut ix, mut cx) = (0, 0);
         for c in &m.clauses {
             match c {
                 ClauseM::Key { id, generate, .. } => {
@@ -188,22 +188,17 @@ impl Model {
                     out.extend(id.map(|id| (Slot::Index(rel, ix), id)));
                     ix += 1;
                 }
-                ClauseM::Default { ids, .. } => {
-                    for f in default_refs(schema, rel, dx) {
-                        let held = field_id(&f)
-                            .and_then(|fid| ids.iter().find(|(x, _)| *x == fid))
-                            .map(|(_, d)| *d);
-                        if let Some(d) = held {
-                            out.push((Slot::Default(rel, dx, f), d));
-                        }
-                    }
-                    dx += 1;
-                }
                 ClauseM::Computed { id, .. } => {
                     out.extend(id.map(|id| (Slot::Computed(rel, cx), id)));
                     cx += 1;
                 }
                 ClauseM::Volatile => {}
+            }
+        }
+        let td = schema.ty(schema.relation(rel).elem_def);
+        for (f, _) in td.field_refs() {
+            if let Some(d) = field_id(&f).and_then(|x| m.defaults.id_of(x)) {
+                out.push((Slot::Default(rel, f), d));
             }
         }
         for i in schema.implied_indexes(rel) {
@@ -213,23 +208,6 @@ impl Model {
         }
         out
     }
-}
-
-/// Returns the fields default clause `at` of `rel` names: the header field of its name, else that
-/// field of each constructor it covers.
-pub(super) fn default_refs(schema: &Schema, rel: RelId, at: usize) -> Vec<FieldRef> {
-    let r = schema.relation(rel);
-    let Some(d) = r.defaults.get(at) else {
-        return Vec::new();
-    };
-    let td = schema.ty(r.elem_def);
-    if let Some(f) = td.field(None, &d.field) {
-        return vec![f];
-    }
-    td.ctor_refs()
-        .filter(|c| d.ctor.is_none_or(|k| k == c.index()))
-        .filter_map(|c| td.field(Some(c), &d.field))
-        .collect()
 }
 
 /// Returns the key the model holds implied index `i` by, `field_id` giving a field's id.

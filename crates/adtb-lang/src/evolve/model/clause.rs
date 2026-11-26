@@ -37,7 +37,7 @@ fn scope_shown(sel: Option<&ast::CtorSel>) -> String {
 
 /// Returns the span from the first token after the first `=` at or after `from` of `text` to
 /// `end`.
-fn after_eq(text: &str, from: usize, end: usize) -> Span {
+pub(super) fn after_eq(text: &str, from: usize, end: usize) -> Span {
     let toks = lex(&text[from..end]).0;
     let at = toks
         .iter()
@@ -101,7 +101,11 @@ impl Model {
     /// Build after an operator changed the clauses of relation variable `r`. Returns the build
     /// and the file of the relation's declaration, its clauses lifted from the build; `None` when
     /// the declarations do not build, the relation then lifted again at the next build.
-    fn rebuilt_relation(&mut self, run: &mut Run, r: u64) -> Res<Option<(Built, FileId)>> {
+    pub(super) fn rebuilt_relation(
+        &mut self,
+        run: &mut Run,
+        r: u64,
+    ) -> Res<Option<(Built, FileId)>> {
         let Ok(built) = self.build_adopting(&[], &run.ahead(self)) else {
             if !self.unlifted.contains(&Item::Relation(r)) {
                 self.unlifted.push(Item::Relation(r));
@@ -309,179 +313,6 @@ impl Model {
         Ok((resolved, Vec::new(), Ok(Vec::new())))
     }
 
-    /// Returns a fresh default id for each field a default on `field` of relation variable `r`
-    /// fills, by the field's id: the header field of that name, else that field of `ctor`, or of
-    /// each constructor declaring it when `ctor` is `None`.
-    ///
-    /// Refuse a default that fills no field.
-    fn default_ids(
-        &mut self,
-        r: u64,
-        ctor: Option<&str>,
-        field: &ast::Ident,
-    ) -> Res<Vec<(u64, u64)>> {
-        let Some(t) = self.relation_type(r) else {
-            return broken("a relation variable of no type");
-        };
-        let fields: Vec<u64> = match self.field_of(t, None, &field.text) {
-            Some(f) => vec![f],
-            None => self
-                .ctors_of(t)
-                .into_iter()
-                .filter(|c| ctor.is_none_or(|n| self.ctors[c].name == n))
-                .filter_map(|c| self.field_of(t, Some(c), &field.text))
-                .collect(),
-        };
-        if fields.is_empty() {
-            return refuse_at(
-                field.span,
-                format!("`{}` has no field `{}`", self.types[&t].name, field.text),
-            );
-        }
-        Ok(fields
-            .into_iter()
-            .map(|f| (f, self.fresh(Space::Default)))
-            .collect())
-    }
-
-    /// Returns a `Member` clause for each constructor whose field default clause `ids` fills.
-    pub(super) fn default_members(&self, ids: &[(u64, u64)]) -> Vec<Clause> {
-        ids.iter()
-            .filter_map(|(f, _)| {
-                let owner = self.fields.get(f)?.owner;
-                self.ctors
-                    .contains_key(&owner)
-                    .then_some(Clause::Member { ctor: owner })
-            })
-            .collect()
-    }
-
-    pub(super) fn add_default(
-        &mut self,
-        run: &mut Run,
-        r: u64,
-        ctor: Option<&ast::Ident>,
-        field: &ast::Ident,
-        value: Term,
-    ) -> Res<Applied> {
-        let ids = self.default_ids(r, ctor.map(|c| c.text.as_str()), field)?;
-        let clause = ClauseM::Default {
-            ctor: ctor.map(|c| Term::text(&c.text)),
-            field: Term::text(&field.text),
-            value,
-            ids: ids.clone(),
-        };
-        let Some((built, file)) = self.appended(run, r, clause)? else {
-            let k = self.relations[&r].clauses.len() - 1;
-            self.clause_typed(run, r, k, None)?;
-            let &(field, default) = ids.first().expect("a default fills a field");
-            self.unbuilt_clauses.insert((Space::Default, default));
-            let value = run.late(Late::Default {
-                relation: r,
-                default,
-            });
-            return Ok((
-                Resolved::AddDefault {
-                    default,
-                    relation: r,
-                    field,
-                    value,
-                },
-                self.default_members(&ids),
-                Ok(Vec::new()),
-            ));
-        };
-        let k = self.relations[&r].clauses.len() - 1;
-        let RelationClause::Default {
-            field: written,
-            value,
-            ..
-        } = Self::clause_written(&built, file, k)?
-        else {
-            return broken("an added default the model printed as another clause");
-        };
-        let end = match &value {
-            ast::DefaultValue::Generate(g) => g.span.end,
-            ast::DefaultValue::Expr(e) => e.span.end,
-        };
-        let span = after_eq(built.text(file), written.span.end as usize, end as usize);
-        self.clause_typed(run, r, k, Some(&built))?;
-        let ClauseM::Default { ids, .. } = &self.relations[&r].clauses[k] else {
-            return broken("an added default lifted as another clause");
-        };
-        let value =
-            canonical_term(built.text(file), span, &built.names(file)).unwrap_or_else(|_| {
-                run.late(match ids.first() {
-                    Some(&(_, default)) => Late::Default {
-                        relation: r,
-                        default,
-                    },
-                    None => Late::Unresolved,
-                })
-            });
-        let Some(&(field, default)) = ids.first() else {
-            run.late(Late::Unresolved);
-            return Ok((
-                Resolved::AddDefault {
-                    default: 0,
-                    relation: r,
-                    field: 0,
-                    value,
-                },
-                Vec::new(),
-                Ok(Vec::new()),
-            ));
-        };
-        let clauses = self.default_members(ids);
-        Ok((
-            Resolved::AddDefault {
-                default,
-                relation: r,
-                field,
-                value,
-            },
-            clauses,
-            Ok(Vec::new()),
-        ))
-    }
-
-    pub(super) fn drop_default(
-        &mut self,
-        run: &mut Run,
-        r: u64,
-        ctor: Option<&ast::Ident>,
-        field: &ast::Ident,
-    ) -> Res<Applied> {
-        let found = self.relations[&r].clauses.iter().position(|c| {
-            matches!(c, ClauseM::Default { ctor: c, field: f, .. }
-                if f.print(self) == field.text
-                    && c.as_ref().map(|c| c.print(self)).as_deref() == ctor.map(|c| c.text.as_str()))
-        });
-        let Some(k) = found else {
-            return refuse_at(
-                field.span,
-                format!(
-                    "`{}` has no default for `{}`",
-                    self.relations[&r].name, field.text
-                ),
-            );
-        };
-        let ClauseM::Default { ids, .. } = &self.relations[&r].clauses[k] else {
-            return broken("a found default is another clause");
-        };
-        let Some(&(_, default)) = ids.first() else {
-            return broken("a default that fills no field");
-        };
-        let clauses = self.default_members(ids);
-        self.relations
-            .get_mut(&r)
-            .expect("the relation variable")
-            .clauses
-            .remove(k);
-        self.settle_ids(run);
-        Ok((Resolved::DropDefault { default }, clauses, Ok(Vec::new())))
-    }
-
     /// Returns the position of computed field `field` among relation variable `r`'s clauses.
     fn computed_at(&self, r: u64, field: &ast::Ident) -> Res<usize> {
         let found = self.relations[&r]
@@ -525,30 +356,6 @@ impl Model {
                 })
             });
         Ok((*id, canonical))
-    }
-
-    /// Returns the canonical form of the value of default `default` of relation variable `r` as
-    /// `built` writes it, `None` when it does not resolve there.
-    pub(super) fn default_canonical(&self, built: &Built, r: u64, default: u64) -> Option<String> {
-        let i = self.decl_at(Item::Relation(r))?;
-        let file = FileId(i as u32);
-        let k = self.relations[&r].clauses.iter().position(
-            |c| matches!(c, ClauseM::Default { ids, .. } if ids.iter().any(|&(_, d)| d == default)),
-        )?;
-        let Ok(RelationClause::Default {
-            field: written,
-            value,
-            ..
-        }) = Self::clause_written(built, file, k)
-        else {
-            return None;
-        };
-        let end = match &value {
-            ast::DefaultValue::Generate(g) => g.span.end,
-            ast::DefaultValue::Expr(e) => e.span.end,
-        };
-        let span = after_eq(built.text(file), written.span.end as usize, end as usize);
-        canonical_term(built.text(file), span, &built.names(file)).ok()
     }
 
     /// Returns the canonical form of computed field `computed` of relation variable `r` as
@@ -699,7 +506,13 @@ impl Model {
     /// Refuse the operator with the first failure of the declarations within the text it wrote
     /// in clause `k` of relation variable `r`, a default or a computed field: of checking `built`,
     /// the declarations as they build, else of building them.
-    fn clause_typed(&self, run: &mut Run, r: u64, k: usize, built: Option<&Built>) -> Res<()> {
+    pub(super) fn clause_typed(
+        &self,
+        run: &mut Run,
+        r: u64,
+        k: usize,
+        built: Option<&Built>,
+    ) -> Res<()> {
         let Some(i) = self.decl_at(Item::Relation(r)) else {
             return broken("a relation variable with a clause and no declaration");
         };

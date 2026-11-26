@@ -1,0 +1,45 @@
+# A merge takes a default to the merged constructor's field only when every source has it on the
+# field the routing carries there, with one value; a source without it, or holding no field the
+# default fills, refuses the merge naming the default.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: Text } | B { m: Text } | C { k: Text }
+  add relation ts : T key id generate sequence
+  add default ts.n = "d"
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "merge constructor T.(A | B) into AB { w: W, n: Text }", detail: "the merge is refused: the default of `ts.A.n` has no image under it" } } }
+  module ts
+  add type W = A | B
+  merge constructor T.(A | B) into AB { w: W, n: Text }
+    by match
+      | A a -> AB { w: A, n: a.n }
+      | B b -> AB { w: B, n: b.m }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "merge constructor T.(A | B) into AB { w: W, n: Text, m: Option Text }", detail: "the merge is refused: the default of `ts.A.n` has no image under it" } } }
+  module ts
+  add field T.B.n: Text fill "f"
+  add type W = A | B
+  merge constructor T.(A | B) into AB { w: W, n: Text, m: Option Text }
+    by match
+      | A a -> AB { w: A, n: a.n, m: None }
+      | B b -> AB { w: B, n: b.n, m: Some { value: b.m } }
+
+migrate
+  module ts
+  add field T.B.n: Text fill "f"
+  add default ts.B.n = "d"
+  add type W = A | B
+  merge constructor T.(A | B) into AB { w: W, n: Text, m: Option Text }
+    by match
+      | A a -> AB { w: A, n: a.n, m: None }
+      | B b -> AB { w: B, n: b.n, m: Some { value: b.m } }
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "AB", f: "n", t: "\"d\"" }

@@ -130,33 +130,6 @@ impl Inverting<'_> {
         Ok((drops, adds))
     }
 
-    /// Returns the `add default` operators that put back each default over constructor `ctor`
-    /// of each relation variable of type `def` of `schema`, the schema before the operator.
-    fn defaults_back(&self, schema: &Schema, def: TypeId, ctor: &str) -> R<Term> {
-        let before = self.before();
-        let mut out = Term::default();
-        for (rel, ..) in Cx::relations_of(schema, def) {
-            let Some((i, d, ranges)) = relation_clauses(before, schema, rel) else {
-                continue;
-            };
-            for (cl, range) in d.clauses.iter().zip(&ranges) {
-                let RelationClause::Default { ctor: Some(c), .. } = cl else {
-                    continue;
-                };
-                if c.text != ctor {
-                    continue;
-                }
-                let clause = before.decls[i].text[range.clone()].trim_end();
-                let start = range.start + "default ".len();
-                out.push("\nadd default ");
-                out.append(relation_spelled(schema, rel));
-                out.push(".");
-                out.append(self.decl_range(i, start..range.start + clause.len())?);
-            }
-        }
-        Ok(out)
-    }
-
     /// Returns the `arm` clauses that put back, for each declaration an `arm` of `clauses`
     /// names, its arms over a constructor of type `ty` named in `ctors` as `before` declares
     /// them.
@@ -859,7 +832,7 @@ impl Cx<'_> {
         let mut out = vec![Inverse::Readd {
             ty,
             ctor,
-            name: name.clone(),
+            name,
             text,
             after,
             joins,
@@ -867,7 +840,11 @@ impl Cx<'_> {
             of: at.of(),
         }];
         let (drops, mut adds) = at.clauses_back(&m, &t)?;
-        adds.append(at.defaults_back(&schema, def, &name)?);
+        let fields = at.before_m().ctors[&ctor]
+            .fields
+            .clone()
+            .unwrap_or_default();
+        adds.append(at.defaults_back(None, &fields)?);
         if !drops.is_empty() || !adds.is_empty() {
             out.push(Inverse::Restructure {
                 drops,

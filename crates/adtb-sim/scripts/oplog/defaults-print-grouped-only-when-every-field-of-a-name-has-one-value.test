@@ -1,0 +1,35 @@
+# `print schema` prints a relation's defaults after its other clauses: the header field's first,
+# then each constructor's in declaration order. `default f` stands for the fields named `f` of two
+# or more constructors when each has a default of one value, and for the field `f` of a type's only
+# constructor; any other default prints as `default C.f`.
+seed 1
+use empty
+
+migrate
+  module m
+  add module m
+  add type T { id: Key ts, h: I64 } = A { n: I64, m: I64 } | B { n: I64 } | C { k: I64 }
+  add type R { id: Key rs } = R { n: I64 }
+  add relation ts : T key id generate sequence
+  add relation rs : R key id generate sequence
+  add default ts.B.n = 1
+  add default ts.A.m = 2
+  add default ts.A.n = 1
+  add default ts.h = 0
+  add default rs.n = 3
+  add unique (m) in ts.A
+
+command
+  print schema
+----
+{ text: "-- version 1 hash f88f4c970ad6db3e92aa4290e86b3959550fe0cc5751ebf94b9b007f0ecc520c\nmodule m\ntype T { id: Key ts, h: I64 } = A { n: I64, m: I64 } | B { n: I64 } | C { k: I64 }\ntype R { id: Key rs } = R { n: I64 }\nrelation ts: T\n  key id generate sequence\n  unique (m) in A\n  default h = 0\n  default n = 1\n  default A.m = 2\nrelation rs: R\n  key id generate sequence\n  default n = 3\n" }
+
+migrate
+  module m
+  add default ts.C.k = 1
+  drop default ts.B.n
+
+command
+  print schema
+----
+{ text: "-- version 2 hash 76bf4ade0d9744aa9a7399112e7e68f78e113ccd4255cbc9c6d80dba25aa215b\nmodule m\ntype T { id: Key ts, h: I64 } = A { n: I64, m: I64 } | B { n: I64 } | C { k: I64 }\ntype R { id: Key rs } = R { n: I64 }\nrelation ts: T\n  key id generate sequence\n  unique (m) in A\n  default h = 0\n  default A.n = 1\n  default A.m = 2\n  default C.k = 1\nrelation rs: R\n  key id generate sequence\n  default n = 3\n" }

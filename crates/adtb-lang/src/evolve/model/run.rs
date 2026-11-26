@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use super::lift::Lifting;
 use super::op::{Res, broken, refuse_first};
-use super::slots::{Found, default_refs, implied_key};
+use super::slots::{Found, implied_key};
 use super::*;
 use crate::ast::{self, MigrationFile};
 use crate::canon::{self, Names, canonical_term};
@@ -544,9 +544,8 @@ impl Model {
     /// object a declaration of the model holds the model's id, and every other object of a user
     /// module the next id of its space `next` gives, in creation order. An object takes a next id
     /// at the first build that has it: an object of a declaration an `add` operator builds or
-    /// holds, and an object no operator makes, which is an index a reference field implies, a
-    /// field of a stored view, or a default a default clause makes for a field a constructor
-    /// gained.
+    /// holds, and an object no operator makes, which is an index a reference field implies or a
+    /// field of a stored view.
     fn assigned(
         &self,
         schema: &Schema,
@@ -661,25 +660,27 @@ impl Model {
         let mut gave = Vec::new();
         for (&r, rel) in &self.relations {
             for (k, c) in rel.clauses.iter().enumerate() {
-                let key = match c {
-                    ClauseM::Index { id: Some(id), .. } => (Space::Index, *id),
-                    ClauseM::Default { ids, .. } => match ids.first() {
-                        Some(&(_, default)) => (Space::Default, default),
-                        None => continue,
-                    },
-                    _ => continue,
-                };
-                if !self.unbuilt_clauses.contains(&key) || self.gave_clauses.contains_key(&key) {
+                let ClauseM::Index { id: Some(id), .. } = c else {
                     continue;
-                }
-                let given = match c {
-                    ClauseM::Default { ids, .. } => Gave::new(
-                        self.default_canonical(built, r, key.1),
-                        self.default_members(ids),
-                    ),
-                    _ => Gave::new(self.index_canonical(built, r, k), self.index_scope(r, k)),
                 };
-                gave.push((key, given));
+                let key = (Space::Index, *id);
+                if self.unbuilt_clauses.contains(&key) && !self.gave_clauses.contains_key(&key) {
+                    let given =
+                        Gave::new(self.index_canonical(built, r, k), self.index_scope(r, k));
+                    gave.push((key, given));
+                }
+            }
+        }
+        for &(space, d) in &self.unbuilt_clauses {
+            let key = (space, d);
+            if space != Space::Default || self.gave_clauses.contains_key(&key) {
+                continue;
+            }
+            if let Some(r) = self.default_holder(d) {
+                gave.push((
+                    key,
+                    Gave::new(self.default_canonical(built, r, d), Vec::new()),
+                ));
             }
         }
         self.gave_clauses.extend(gave);
@@ -731,9 +732,8 @@ impl Model {
         }
     }
 
-    /// Give each default each default clause makes, and each index a reference field implies,
-    /// the id `schema` gives it. These are the clause objects no operator makes, which take
-    /// their ids at the first build that has them.
+    /// Give each index a reference field implies the id `schema` gives it. These are the clause
+    /// objects no operator makes, which take their ids at the first build that has them.
     fn adopt(&mut self, schema: &Schema) {
         let ids = schema.ids();
         for i in 0..self.decls.len() {
@@ -748,19 +748,6 @@ impl Model {
                 .relations
                 .get_mut(&r)
                 .expect("a declared relation variable");
-            let mut dx = 0;
-            for c in &mut m.clauses {
-                if let ClauseM::Default { ids: held, .. } = c {
-                    *held = default_refs(schema, rel, dx)
-                        .into_iter()
-                        .filter_map(|f| {
-                            let d = ids.clause_default_ids(rel, dx).find(|(x, _)| *x == f)?.1;
-                            Some((field_id(f)?, d.raw()))
-                        })
-                        .collect();
-                    dx += 1;
-                }
-            }
             m.implied = schema
                 .implied_indexes(rel)
                 .into_iter()

@@ -166,9 +166,8 @@ pub struct CatalogIds {
     implied: BTreeMap<(RelId, FieldRef), CatIndexId>,
     /// The default a key's `generate` gives.
     generated: BTreeMap<RelId, CatDefaultId>,
-    /// Defaults, one for each field a default clause fills, by relation, position among
-    /// `RelationDef::defaults`, and the field.
-    defaults: BTreeMap<(RelId, usize, FieldRef), CatDefaultId>,
+    /// Defaults, by relation and the field each fills.
+    defaults: BTreeMap<(RelId, FieldRef), CatDefaultId>,
     /// Computed fields, by relation and position among `RelationDef::computed`.
     computed: BTreeMap<(RelId, usize), CatComputedId>,
     functions: BTreeMap<FnId, CatFunctionId>,
@@ -220,7 +219,7 @@ pub enum Slot {
     Index(RelId, usize),
     Implied(RelId, FieldRef),
     Generated(RelId),
-    Default(RelId, usize, FieldRef),
+    Default(RelId, FieldRef),
     Computed(RelId, usize),
     Function(FnId),
     Aggregate(usize),
@@ -307,17 +306,9 @@ impl CatalogIds {
         self.generated.get(&rel).copied()
     }
 
-    /// Returns the defaults the default clause at position `at` of `RelationDef::defaults` gives,
-    /// by the field each fills.
-    pub fn clause_default_ids(
-        &self,
-        rel: RelId,
-        at: usize,
-    ) -> impl Iterator<Item = (FieldRef, CatDefaultId)> + '_ {
-        self.defaults
-            .iter()
-            .filter(move |((r, a, _), _)| (*r, *a) == (rel, at))
-            .map(|(&(_, _, f), &id)| (f, id))
+    /// Returns the id of the default of field `f` of `rel`.
+    pub fn default_id(&self, rel: RelId, f: FieldRef) -> Option<CatDefaultId> {
+        self.defaults.get(&(rel, f)).copied()
     }
 
     pub fn computed_id(&self, rel: RelId, at: usize) -> Option<CatComputedId> {
@@ -512,11 +503,8 @@ impl CatalogIds {
         self.generated.iter().map(|(&r, &id)| (r, id))
     }
 
-    /// Returns each default by relation, position among `RelationDef::defaults` and the field it
-    /// fills.
-    pub fn default_ids(
-        &self,
-    ) -> impl Iterator<Item = ((RelId, usize, FieldRef), CatDefaultId)> + '_ {
+    /// Returns each default by relation and the field it fills.
+    pub fn default_ids(&self) -> impl Iterator<Item = ((RelId, FieldRef), CatDefaultId)> + '_ {
         self.defaults.iter().map(|(&d, &id)| (d, id))
     }
 
@@ -573,7 +561,7 @@ impl CatalogIds {
             Slot::Index(r, i) => drop(self.indexes.insert((r, i), CatIndexId(id))),
             Slot::Implied(r, f) => drop(self.implied.insert((r, f), CatIndexId(id))),
             Slot::Generated(r) => drop(self.generated.insert(r, CatDefaultId(id))),
-            Slot::Default(r, i, f) => drop(self.defaults.insert((r, i, f), CatDefaultId(id))),
+            Slot::Default(r, f) => drop(self.defaults.insert((r, f), CatDefaultId(id))),
             Slot::Computed(r, i) => drop(self.computed.insert((r, i), CatComputedId(id))),
             Slot::Aggregate(i) => drop(self.aggregates.insert(i, CatFunctionId(id))),
             Slot::Constraint(i) => drop(self.constraints.insert(i, CatConstraintId(id))),
@@ -600,7 +588,7 @@ impl CatalogIds {
             Slot::Index(r, i) => self.indexes.get(&(r, i)).map(|x| x.0),
             Slot::Implied(r, f) => self.implied.get(&(r, f)).map(|x| x.0),
             Slot::Generated(r) => self.generated.get(&r).map(|x| x.0),
-            Slot::Default(r, i, f) => self.defaults.get(&(r, i, f)).map(|x| x.0),
+            Slot::Default(r, f) => self.defaults.get(&(r, f)).map(|x| x.0),
             Slot::Computed(r, i) => self.computed.get(&(r, i)).map(|x| x.0),
             Slot::Aggregate(i) => self.aggregates.get(&i).map(|x| x.0),
             Slot::Constraint(i) => self.constraints.get(&i).map(|x| x.0),
@@ -627,7 +615,7 @@ impl CatalogIds {
             Slot::Index(r, i) => self.indexes.remove(&(r, i)).map(u64::from),
             Slot::Implied(r, f) => self.implied.remove(&(r, f)).map(u64::from),
             Slot::Generated(r) => self.generated.remove(&r).map(u64::from),
-            Slot::Default(r, i, f) => self.defaults.remove(&(r, i, f)).map(u64::from),
+            Slot::Default(r, f) => self.defaults.remove(&(r, f)).map(u64::from),
             Slot::Computed(r, i) => self.computed.remove(&(r, i)).map(u64::from),
             Slot::Aggregate(i) => self.aggregates.remove(&i).map(u64::from),
             Slot::Constraint(i) => self.constraints.remove(&i).map(u64::from),

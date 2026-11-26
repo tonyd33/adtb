@@ -713,9 +713,7 @@ impl Model {
                                 .collect()
                         })
                         .collect(),
-                    ClauseM::Default { .. } | ClauseM::Computed { .. } | ClauseM::Volatile => {
-                        Vec::new()
-                    }
+                    ClauseM::Computed { .. } | ClauseM::Volatile => Vec::new(),
                 };
                 for e in elems {
                     let shared = others(&mut e.into_iter());

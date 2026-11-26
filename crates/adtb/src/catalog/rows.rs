@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::ast::{self, Decl, ExprKind, QName, RelationClause, RelationDecl};
+use adtb_lang::ast::{Decl, ExprKind, QName, RelationClause, RelationDecl};
 use adtb_lang::canon::canonical_term;
 use adtb_lang::evolve::{Code, Source};
 use adtb_lang::ids::{CatIndexId, engine_ctor as k, engine_rel};
 use adtb_lang::kernel::PathStep;
 use adtb_lang::lex::lex;
-use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind, field_path};
+use adtb_lang::schema::{DefaultValue, IndexDef, Schema, Stage, TypeDefKind, field_path};
 use adtb_lang::span::Span;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
@@ -695,20 +695,18 @@ impl Builder<'_> {
             let filled = held_id(filled.and_then(|f| self.schema.ids().field_id(f)));
             rows.push((id, r, filled.raw(), written));
         }
-        for ((r, i, f), id) in self.schema.ids().default_ids() {
-            let (decl, text) = self.relation_decl(r);
-            let value = decl
-                .clauses
+        for ((r, f), id) in self.schema.ids().default_ids() {
+            let text = self.source.file_text(self.schema.relation(r).file);
+            let d = self
+                .schema
+                .relation(r)
+                .defaults
                 .iter()
-                .filter_map(|c| match c {
-                    RelationClause::Default { value, .. } => Some(value),
-                    _ => None,
-                })
-                .nth(i)
-                .unwrap_or_else(|| panic!("relation {r:?} declares default {i}"));
-            let written = match value {
-                ast::DefaultValue::Generate(g) => generate_text(&text, g.span),
-                ast::DefaultValue::Expr(e) => text[e.span.range()].to_string(),
+                .find(|d| d.field == f)
+                .unwrap_or_else(|| panic!("relation {r:?} declares the default of {f:?}"));
+            let written = match d.value {
+                DefaultValue::Generate(_) => generate_text(&text, d.written),
+                DefaultValue::Expr(_) => text[d.written.range()].to_string(),
             };
             let filled = held_id(self.schema.ids().field_id(f)).raw();
             rows.push((id, r, filled, written));

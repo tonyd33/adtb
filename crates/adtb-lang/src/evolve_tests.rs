@@ -2179,7 +2179,7 @@ add default identities.EmailPass.verified = false",
     refuses(
         &s,
         "module auth\ndrop default identities.EmailPass.verified",
-        "`identities` has no default for `verified`",
+        "`identities` has no default for `EmailPass.verified`",
     );
     let s = applies(
         &running(),
@@ -3812,7 +3812,8 @@ fn renaming_a_field_keeps_the_id_of_a_default_of_another_constructors_field_of_i
     let (before, after) = (ids_of(&s), ids_of(&after));
     let default = |s: &Schema| {
         s.ids()
-            .clause_default_ids(rel(s, "ts"), 0)
+            .default_ids()
+            .filter(|((r, _), _)| *r == rel(s, "ts"))
             .map(|(_, id)| id.raw())
             .collect::<Vec<_>>()
     };
@@ -3923,7 +3924,7 @@ fn path_of(s: &Schema, path: &str) -> Option<u64> {
             let t = &s.ty(s.relation(r).elem_def).name;
             let f = field(t, f)?;
             ids.default_ids()
-                .find(|&((x, _, g), _)| x == r && g == f)
+                .find(|&((x, g), _)| x == r && g == f)
                 .map(|(_, id)| id.raw())
         }
         "computed" => {

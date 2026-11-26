@@ -447,6 +447,7 @@ impl Model {
                 self.ctors.get_mut(&c).expect("the constructor").fields = None;
             }
             if f != holder {
+                self.forget_defaults(&[f]);
                 self.fields.remove(&f);
                 merged.insert((Space::Field, f), (Space::Field, holder));
             }

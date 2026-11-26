@@ -107,6 +107,8 @@ impl Model {
             self.place_field(t, Some(c), id);
             given.insert(c, id);
         }
+        let copies: Vec<u64> = given.values().copied().filter(|&x| x != f).collect();
+        self.copy_default(f, &copies);
         let built = self.built_for(run)?;
         let after = built.schema();
         for g in &mut self.grants {

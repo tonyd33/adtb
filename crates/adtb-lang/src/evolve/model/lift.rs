@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use super::slots::{Found, default_refs, implied_key, type_slots};
+use super::defaults::Defaults;
+use super::slots::{Found, implied_key, type_slots};
 use super::*;
 use crate::ast::{self, Decl as AstDecl, RelationClause};
 use crate::canon::Names;
@@ -319,7 +320,8 @@ impl<'a> Lifting<'a> {
         let id = self.id(Slot::Relation(rel))?;
         let def = self.schema.relation(rel).elem_def;
         let mut clauses = Vec::new();
-        let (mut ix, mut dx, mut cx) = (0, 0, 0);
+        let mut fills = Vec::new();
+        let (mut ix, mut cx) = (0, 0);
         for c in &r.clauses {
             clauses.push(match c {
                 RelationClause::Key(fs, generate) => ClauseM::Key {
@@ -365,42 +367,23 @@ impl<'a> Lifting<'a> {
                     clause
                 }
                 RelationClause::Default { ctor, field, value } => {
-                    let td = self.schema.ty(def);
-                    let cref = ctor
-                        .as_ref()
-                        .and_then(|c| td.ctor_refs().find(|&k| td.ctor_def(k).name == c.text));
-                    let ids = default_refs(self.schema, rel, dx)
-                        .into_iter()
-                        .filter_map(|f| {
-                            let fid = self.schema.ids().field_id(f)?.raw();
-                            let did = self
-                                .schema
-                                .ids()
-                                .clause_default_ids(rel, dx)
-                                .find(|(x, _)| *x == f)?
-                                .1
-                                .raw();
-                            Some((fid, did))
-                        })
-                        .collect();
-                    let clause = ClauseM::Default {
-                        ctor: ctor.as_ref().map(|c| {
-                            match cref.and_then(|k| self.schema.ids().ctor_id(k)) {
-                                Some(k) => Term::name((Space::Shared, k.raw()), &c.text),
-                                None => Term::text(&c.text),
-                            }
-                        }),
-                        field: self.field_name(def, cref, field),
-                        value: match value {
-                            ast::DefaultValue::Generate(g) => {
-                                Term::text(&format!("generate {}", g.text))
-                            }
-                            ast::DefaultValue::Expr(e) => self.term(e.span),
-                        },
-                        ids,
+                    let value = match value {
+                        ast::DefaultValue::Generate(g) => {
+                            Term::text(&format!("generate {}", g.text))
+                        }
+                        ast::DefaultValue::Expr(e) => self.term(e.span),
                     };
-                    dx += 1;
-                    clause
+                    let td = self.schema.ty(def);
+                    for f in td.default_fields(ctor.as_ref().map(|c| c.text.as_str()), &field.text)
+                    {
+                        let ids = self.schema.ids();
+                        let (Some(fid), Some(did)) = (ids.field_id(f), ids.default_id(rel, f))
+                        else {
+                            return Err(missing("a default"));
+                        };
+                        fills.push((fid.raw(), did.raw(), value.clone()));
+                    }
+                    continue;
                 }
                 RelationClause::Computed(n, ty, e) => {
                     let clause = ClauseM::Computed {
@@ -432,6 +415,7 @@ impl<'a> Lifting<'a> {
                 name: r.name.name.text.clone(),
                 ty: self.term(r.ty.span),
                 clauses,
+                defaults: Defaults::lifted(fills)?,
                 implied,
             },
         );

@@ -1171,8 +1171,15 @@ fn objects(s: &Source, what: &str) -> BTreeMap<Object, u64> {
         let user = match &d {
             Desc::Index(r, at) => clause(r, |c| &c.indexes, *at)
                 .map(|t| Object::Clause(Space::Index, r.clone(), t, None)),
-            Desc::Default(r, at, f) => clause(r, |c| &c.defaults, *at)
-                .map(|t| Object::Clause(Space::Default, r.clone(), t, Some((**f).clone()))),
+            Desc::Default(r, f) => texts
+                .entry(r.to_string())
+                .or_insert_with(|| clauses(s, r))
+                .as_ref()
+                .map(|c| {
+                    let value = default_value(&c.defaults, f)
+                        .unwrap_or_else(|| panic!("{what}: `{r}` has no default of {f:?}"));
+                    Object::Clause(Space::Default, r.clone(), value, Some((**f).clone()))
+                }),
             Desc::Computed(r, at) => clause(r, |c| &c.computed, *at)
                 .map(|t| Object::Clause(Space::Computed, r.clone(), t, None)),
             _ => None,
@@ -1193,6 +1200,22 @@ fn objects(s: &Source, what: &str) -> BTreeMap<Object, u64> {
         }
     }
     out
+}
+
+/// Returns the value of the clause of `defaults`, `default` clauses with their tokens joined by
+/// spaces, that fills field `f`.
+fn default_value(defaults: &[String], f: &Desc) -> Option<String> {
+    let Desc::Field(_, ctor, name) = f else {
+        return None;
+    };
+    defaults.iter().find_map(|d| {
+        let (target, value) = d.strip_prefix("default ")?.split_once(" = ")?;
+        let fills = match target.split_once(" . ") {
+            Some((c, x)) => Some(c) == ctor.as_deref() && x == name,
+            None => target == name,
+        };
+        fills.then(|| value.to_string())
+    })
 }
 
 /// Returns object `o` with the number a twin clause takes cut.
@@ -2232,7 +2255,7 @@ const COMBINED: usize = 300;
 /// refused listing the refusals of each, in order, each within its operator's span: every
 /// operator that does not apply, every grant a merge cannot carry and every failure of an added
 /// declaration's own text. At most one added declaration whose refusal poisons its name is
-/// among them, at any position.
+/// among them, at any position, and no operator naming a constructor a merge before it replaces.
 #[test]
 fn a_migration_of_operators_each_refused_alone_lists_every_refusal_in_order() {
     let shape = Shape::of(SHAPES[0]);
@@ -2274,7 +2297,9 @@ fn a_migration_of_operators_each_refused_alone_lists_every_refusal_in_order() {
         while picked.len() < k {
             let j = draw(pool.len());
             let poisoning = pool[j].2 && picked.iter().any(|&p| pool[p].2);
-            if !picked.contains(&j) && !poisoning {
+            let merged = ["ts.A", "ts.B"].iter().any(|c| pool[j].0.contains(c))
+                && picked.iter().any(|&p| pool[p].0.starts_with("merge "));
+            if !picked.contains(&j) && !poisoning && !merged {
                 picked.push(j);
             }
         }

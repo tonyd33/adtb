@@ -1,0 +1,49 @@
+# A split takes the default of a field of the split constructor to the product field its routing
+# carries that field to, whatever name the product field has.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: Text, x: Text } | B { k: Text } | C { n: Text, x: Text }
+  add relation ts : T key id generate sequence
+  add default ts.A.n = "d"
+  add default ts.C.n = "e"
+
+migrate
+  module ts
+  split constructor T.A into A1 { n: Text, x: Text }
+    by match
+      | A { n, x } -> A1 { n: x, x: n }
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "A1", f: "x", t: "\"d\"" }
+{ c: "C", f: "n", t: "\"e\"" }
+
+run
+  insert ts.A1 { n: "given" }
+
+query rowsort
+  from t in ts.A1 select { n: t.n, x: t.x }
+----
+{ n: "given", x: "d" }
+
+migrate
+  module ts
+  drop default ts.C.n
+  add default ts.n = "u"
+  split constructor T.C into C1 { n: Text, x: Text }
+    by match
+      | C { n, x } -> C1 { n: x, x: n }
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "A1", f: "n", t: "\"u\"" }
+{ c: "A1", f: "x", t: "\"d\"" }
+{ c: "C1", f: "x", t: "\"u\"" }

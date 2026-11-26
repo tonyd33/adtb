@@ -1,0 +1,146 @@
+# A revert of `drop field` or of `remove constructor` gives each field it puts back the default
+# the field had when it was dropped, whether a later migration dropped the default of the other
+# fields of its name or of some of them.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: Text } | B { n: Text }
+  add relation ts : T key id generate sequence
+  add default ts.n = "d"
+
+migrate
+  module ts
+  drop field T.A.n
+
+migrate
+  module ts
+  drop default ts.n
+
+migrate
+  module ts
+  revert 0002
+    fill T.A.n = "x"
+
+migrate
+  module ts
+  add type U { id: Key us } = E { n: Text } | F { n: Text }
+  add relation us : U key id generate sequence
+  add default us.n = "d"
+
+migrate
+  module ts
+  deprecate us.E
+
+migrate
+  module ts
+  remove constructor U.E
+
+migrate
+  module ts
+  drop default us.n
+
+migrate
+  module ts
+  revert 0007
+
+migrate
+  module ts
+  enable us.E
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "A", f: "n", t: "\"d\"" }
+{ c: "E", f: "n", t: "\"d\"" }
+
+migrate
+  module ts
+  add type V { id: Key vs } = G { n: Text } | H { n: Text } | J { n: Text }
+  add relation vs : V key id generate sequence
+  add default vs.n = "d"
+
+migrate
+  module ts
+  drop field V.G.n
+
+migrate
+  module ts
+  drop field V.H.n
+
+migrate
+  module ts
+  revert 0012
+    fill V.G.n = "x"
+
+migrate
+  module ts
+  add type W { id: Key ws } = K { n: Text } | L { n: Text } | M { n: Text }
+  add relation ws : W key id generate sequence
+  add default ws.n = "d"
+
+migrate
+  module ts
+  deprecate ws.K
+
+migrate
+  module ts
+  remove constructor W.K
+
+migrate
+  module ts
+  drop field W.L.n
+
+migrate
+  module ts
+  revert 0017
+
+migrate
+  module ts
+  enable ws.K
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors
+    where d.field == f.id and f.ctor == c.id and d.dropped == None select { c: c.name, f: f.name, t: d.text }
+----
+{ c: "A", f: "n", t: "\"d\"" }
+{ c: "E", f: "n", t: "\"d\"" }
+{ c: "G", f: "n", t: "\"d\"" }
+{ c: "J", f: "n", t: "\"d\"" }
+{ c: "K", f: "n", t: "\"d\"" }
+{ c: "M", f: "n", t: "\"d\"" }
+
+reopen
+
+run
+  insert ts.A {}
+  insert us.E {}
+  insert vs.G {}
+  insert vs.J {}
+  insert ws.K {}
+  insert ws.M {}
+
+query rowsort
+  from t in ts select { id: t.id, v: match t | A a -> a.n | B b -> b.n }
+----
+{ id: ts.key(1), v: "d" }
+
+query rowsort
+  from t in us select { id: t.id, v: match t | E e -> e.n | F f -> f.n }
+----
+{ id: us.key(1), v: "d" }
+
+query rowsort
+  from t in vs select { id: t.id, v: match t | G g -> g.n | H h -> "" | J j -> j.n }
+----
+{ id: vs.key(1), v: "d" }
+{ id: vs.key(2), v: "d" }
+
+query rowsort
+  from t in ws select { id: t.id, v: match t | K k -> k.n | L l -> "" | M m -> m.n }
+----
+{ id: ws.key(1), v: "d" }
+{ id: ws.key(2), v: "d" }
