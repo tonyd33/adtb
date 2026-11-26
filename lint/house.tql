@@ -1,14 +1,30 @@
-comments = descendants_of_kind :line_comment;
+-- em-dash, bold, section-sign, rule-id and doc-verb: the house comment rules, over line comments,
+-- block comments, `/** */` included, and the text of `#[doc = ".."]`. em-dash also reads string
+-- literals and counts an en dash, a horizontal bar, the escape `\u{2014}` and, outside a string,
+-- a spaced `--`; bold also counts `__bold__`; rule-id also counts a `#NNN` ticket number.
+-- expect-reason: an `#[expect]`, or one inside `cfg_attr`, whose reason is absent, empty or one
+-- word. Not seen: a third person verb the doc-verb list does not name, a doc string a macro
+-- builds, and a dash or citation spelled out in words.
+
+doc_attrs = do {
+  a <- descendants_of_kind :attribute;
+  n <- pure a | children_of_kind :identifier;
+  guard $ text n == "doc";
+  s <- pure a | #value | children_of_kind :string_content;
+  return s;
+};
+
+comments = descendants_of_kind :line_comment `alt` descendants_of_kind :block_comment `alt` doc_attrs;
 
 em_dash = do {
-  n <- comments `alt` descendants_of_kind :block_comment `alt` descendants_of_kind :string_content;
-  guard $ text n ~ r"—";
+  n <- descendants_of_kind :line_comment `alt` descendants_of_kind :block_comment `alt` descendants_of_kind :string_content `alt` descendants_of_kind :escape_sequence;
+  guard $ (text n ~ r"[—–―]|\\u\{2014\}") `or` ((not (is_kind :string_content n)) `and` (text n ~ r"\s--\s"));
   return ("em-dash", range n);
 };
 
 bold = do {
   c <- comments;
-  guard $ text c ~ r"\*\*";
+  guard $ text c ~ r"(?<!/)\*\*(?!/)|(^|\s)__\w";
   return ("bold", range c);
 };
 
@@ -20,13 +36,13 @@ section_sign = do {
 
 rule_id = do {
   c <- comments;
-  guard $ text c ~ r"(^|[^A-Za-z0-9_])(?!UTF-|CRC-)[A-Z][A-Z]+-[A-Z0-9][A-Z0-9-]*";
+  guard $ text c ~ r"(^|[^A-Za-z0-9_])(?!UTF-|CRC-)[A-Z][A-Z]+-[A-Z0-9][A-Z0-9-]*|(^|\s)#\d{2,}\b";
   return ("rule-id", range c);
 };
 
 doc_verb = do {
   c <- comments;
-  d <- pure c | #doc;
+  d <- (pure c | #doc) `alt` (pure c | keep (is_kind :string_content));
   guard $ text d ~ r"^\s*(Adds|Appends|Applies|Asserts|Binds|Builds|Calls|Checks|Chooses|Classifies|Clones|Closes|Collects|Commits|Compares|Compiles|Consumes|Continues|Converts|Copies|Counts|Creates|Decides|Decodes|Deletes|Derives|Draws|Elaborates|Emits|Encodes|Ends|Evaluates|Fails|Finds|Flattens|Folds|Follows|Generates|Gives|Inserts|Judges|Keeps|Latches|Loads|Maps|Matches|Merges|Moves|Nests|Normalises|Normalizes|Notes|Opens|Panics|Parses|Plans|Prepares|Prints|Processes|Puts|Reads|Records|Refuses|Rejects|Removes|Renames|Renders|Replaces|Resolves|Retypes|Rewrites|Runs|Scans|Sets|Skips|Splits|Stores|Subtracts|Sweeps|Synthesises|Synthesizes|Takes|Undoes|Unnests|Updates|Vacuums|Validates|Visits|Waits|Walks|Wraps|Writes)\b(?!:)";
   return ("doc-verb", range c);
 };
@@ -34,8 +50,8 @@ doc_verb = do {
 expect_reason = do {
   a <- descendants_of_kind :attribute;
   n <- pure a | children_of_kind :identifier;
-  guard $ text n == "expect";
-  guard $ not (text a ~ r"reason\s*=");
+  guard $ (text n == "expect") `or` ((text n == "cfg_attr") `and` (text a ~ r"\bexpect\s*\("));
+  guard $ not (text a ~ r"reason\s*=\s*\x22\S+\s+\S[^\x22]*\x22");
   return ("expect-reason", range a);
 };
 

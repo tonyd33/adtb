@@ -725,3 +725,44 @@ fn a_panic_by_any_path_macro_or_diverging_function_is_a_decode_panic() {
         counts(&[("decode_panics", "xtask/src/lint/fixtures/decode.rs.txt", 11)])
     );
 }
+
+#[test]
+fn every_house_row_reads_block_comments_doc_attributes_and_the_other_spellings() {
+    let house = rule(
+        "house.tql",
+        &[
+            ("em-dash", Kind::Zero),
+            ("bold", Kind::Zero),
+            ("section-sign", Kind::Zero),
+            ("rule-id", Kind::Zero),
+            ("doc-verb", Kind::Zero),
+            ("expect-reason", Kind::Zero),
+        ],
+    );
+    let files = fixture_paths(&["house.rs.txt"]);
+    let output = query(repository(), "house.tql", &files, 1).expect("tql exits 0");
+    let mut tally = Tally::default();
+    apply(&house, &BTreeSet::new(), &output, &mut tally).expect("the fixture parses");
+    let file = "xtask/src/lint/fixtures/house.rs.txt";
+    let mut expected: Vec<String> = [
+        (1, "em-dash"),
+        (2, "em-dash"),
+        (3, "em-dash"),
+        (4, "bold"),
+        (5, "bold"),
+        (6, "section-sign"),
+        (7, "rule-id"),
+        (8, "doc-verb"),
+        (9, "doc-verb"),
+        (10, "bold"),
+        (11, "expect-reason"),
+        (12, "expect-reason"),
+        (13, "expect-reason"),
+        (14, "em-dash"),
+    ]
+    .iter()
+    .map(|(line, row)| format!("{file}:{line}: {row}"))
+    .collect();
+    expected.sort();
+    assert_eq!(sorted_lines(&tally.findings), expected);
+}

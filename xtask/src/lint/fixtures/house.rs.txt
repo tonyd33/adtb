@@ -1,0 +1,20 @@
+/* A page — the unit of I/O. */
+// A page – the unit of I/O.
+// A page -- the unit of I/O.
+/* This is **bold**. */
+// This is __bold__.
+/** See § 4.2. */
+// See ticket #812.
+/** Builds the page. */
+#[doc = "Builds the page."]
+#[doc = "Return the page, **bold**."]
+#[expect(dead_code, reason = "")]
+#[expect(dead_code, reason = "unused")]
+#[cfg_attr(test, expect(dead_code))]
+fn a() { let s = "x \u{2014} y"; }
+/** Return the page. */
+/* A plain block comment. */
+#[doc = "Return the page."]
+#[expect(dead_code, reason = "the fixture is never called")]
+// Run `cargo xtask lint --counts` then a--b.
+fn b() {}
