@@ -467,8 +467,8 @@ fn an_entry_may_not_rise_above_the_base() {
     assert_eq!(
         lines(&rises(&listed, &base, "main")),
         [
-            "new.rs: r allows 1, the allowlist at main allows 0: a rise is the lead's act on main",
-            "rose.rs: r allows 3, the allowlist at main allows 2: a rise is the lead's act on main",
+            "new.rs: r allows 1, the allowlist at main allows 0: a rise is a maintainer's act on main",
+            "rose.rs: r allows 3, the allowlist at main allows 2: a rise is a maintainer's act on main",
         ]
     );
 }
@@ -567,5 +567,47 @@ b.rs:9: rise
   why: A rise lets the harm back in.
   fix: Remove the site; hiding it does not count.
 "
+    );
+}
+
+#[test]
+fn every_write_lend_form_is_a_site_and_a_read_lend_a_private_method_or_a_checked_setter_is_not() {
+    let lends = rule("lends.tql", &[("write_lends", Kind::Zero)]);
+    let files = fixture_paths(&["lends.rs.txt"]);
+    let output = query(repository(), "lends.tql", &files, 1).expect("tql exits 0");
+    let mut tally = Tally::default();
+    apply(&lends, &BTreeSet::new(), &output, &mut tally).expect("the fixture parses");
+    let file = "xtask/src/lint/fixtures/lends.rs.txt";
+    let mut expected: Vec<String> = [3, 4, 5, 6, 7, 8, 21, 24, 25, 26, 27]
+        .iter()
+        .map(|line| format!("{file}:{line}: write_lends"))
+        .collect();
+    expected.sort();
+    assert_eq!(sorted_lines(&tally.findings), expected);
+}
+
+#[test]
+fn union_fields_and_the_fields_a_macro_declares_count_once_per_definition() {
+    let fields = rule(
+        "structure.tql",
+        &[
+            ("pub_fields", Kind::Ratchet),
+            ("crate_fields", Kind::Ratchet),
+        ],
+    );
+    let files = fixture_paths(&["fields.rs.txt"]);
+    let output = query(repository(), "structure.tql", &files, 1).expect("tql exits 0");
+    let mut tally = Tally::default();
+    apply(
+        &fields,
+        &BTreeSet::from(["decode_panics", "adtb_decode_panics"]),
+        &output,
+        &mut tally,
+    )
+    .expect("the fixture parses");
+    let file = "xtask/src/lint/fixtures/fields.rs.txt";
+    assert_eq!(
+        tally.counts,
+        counts(&[("pub_fields", file, 6), ("crate_fields", file, 4)])
     );
 }

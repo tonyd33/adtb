@@ -67,9 +67,10 @@ For a fresh clone, host prerequisites and optional editor setup, read
   both under the row's failures and refuses a row without them.
   `--counts` prints the allowlist for the tree; `--against REV` fails on an entry above the
   allowlist at REV, so a rise is a maintainer's act on main. The rows: the comment rules of
-  `house.tql`, struct fields visible past their module, decode panics, engine names, catalog
-  reads of a user heap outside `catalog::read`, calls of `CatRelId::from_raw`, sim test open
-  helpers and weak refusal assertions (`is_err()`, `is_ok()`, `matches!(.., Err(_))`, a
+  `house.tql`, struct and union fields visible past their module, lends of write access to a
+  type's fields (`&mut` getters, setters, `DerefMut` and its kin, constructors taking every
+  field), decode panics, engine names, catalog reads of a user heap outside `catalog::read`,
+  calls of `CatRelId::from_raw`, sim test open helpers and weak refusal assertions (`is_err()`, `is_ok()`, `matches!(.., Err(_))`, a
   substring of error text, a bare `unwrap_err()`, a call of `refused_with`): assert a refusal with
   `adtb_testkit::refused_as`, its value and whole reason.
 

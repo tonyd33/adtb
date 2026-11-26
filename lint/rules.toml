@@ -53,6 +53,15 @@ why = "A field visible past its module lets the rest of the crate break the inva
 fix = "Make the field private and give the crate operations that keep the type's invariant; a `&mut` getter, a setter, a `DerefMut` impl or a constructor taking every field still lends the field and does not count."
 
 [[rule]]
+query = "lends.tql"
+include = ["crates/*/src/**/*.rs"]
+
+[rule.rows.write_lends]
+kind = "ratchet"
+why = "A `&mut` getter, a setter, a `DerefMut`, `AsMut`, `BorrowMut` or `IndexMut` impl, or a visible constructor taking every field lends write access to a type's fields past its module, so any caller can break the invariant the type keeps."
+fix = "Give callers operations that keep the type's invariant, named for what they do; a lend a macro generates, a setter on a trait impl, or a constructor that converts each argument on its way to its field in its place does not count. A guard whose contract is to lend the value it guards keeps its `DerefMut`: do not remove it to lower the count."
+
+[[rule]]
 query = "structure.tql"
 include = [
   "crates/adtb-heap/src/heap/**/*.rs",

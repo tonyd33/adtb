@@ -1,0 +1,89 @@
+-- write_lends: a lend of write access to a type's fields past its module. A visible method that
+-- takes `&mut self` and returns a `&mut` other than `&mut Self`; a visible setter, a method whose
+-- body only assigns fields of `self`, one of them a parameter or a parameter wrapped in calls of
+-- one argument that are not calls on `self`, then returns `self` or nothing; an impl of
+-- `DerefMut`, `AsMut`, `BorrowMut` or `IndexMut`; and a visible constructor whose body only builds
+-- `Self`, or the type its impl names, from each of its parameters as one field. Not seen: a lend
+-- or setter a macro generates, a setter of a trait impl, a setter through a lock on `&self`, a
+-- setter assigning an element of a list field, a setter that computes or checks before it
+-- assigns, a constructor returning `Ok(S {..})`, a free function building the struct, a
+-- constructor of a generic type that names it with its parameters, and a constructor that
+-- converts an argument, a cast included.
+
+import Data.List (Sized(..));
+
+visible f = has (children_of_kind :visibility_modifier) f;
+
+mut_getters = do {
+  f <- descendants_of_kind :function_item;
+  guard $ visible f;
+  guard $ has (#parameters | children_of_kind :self_parameter | keep (\s -> text s ~ r"^&\s*('\w+\s+)?mut\s+self$")) f;
+  r <- pure f | #return_type;
+  guard $ text r ~ r"&\s*('\w+\s+)?mut\b";
+  guard $ not (text r ~ r"^&\s*('\w+\s+)?mut\s+Self$");
+  return f;
+};
+
+
+trait_lends = do {
+  i <- descendants_of_kind :impl_item;
+  t <- pure i | #trait;
+  guard $ text t ~ r"(^|::)(DerefMut|AsMut|BorrowMut|IndexMut)(<.*)?$";
+  return i;
+};
+
+texts ns = case ns of {
+  [] -> [];
+  n : rest -> text n : texts rest;
+};
+
+member x xs = case xs of {
+  [] -> False;
+  y : rest -> (x == y) `or` member x rest;
+};
+
+value_text a = if is_kind :field_initializer a then case run #value a of {
+  [v] -> text v;
+  _ -> text a;
+} else text a;
+
+from_params args names = case args of {
+  [] -> True;
+  a : rest -> member (value_text a) names `and` from_params rest names;
+};
+
+given names r = member (text r) names `or` (not (has (#function | keep (\fn -> text fn ~ r"^self\.")) r) `and` wraps names (run (#arguments | named_children) r));
+
+wraps names xs = case xs of {
+  [x] -> given names x;
+  _ -> False;
+};
+
+setters = do {
+  f <- descendants_of_kind :function_item;
+  guard $ visible f;
+  b <- pure f | #body;
+  guard $ text b ~ r"^\{\s*(self(\.\w+)+\s*=[^=;][^;]*;\s*)*self(\.\w+)+\s*=[^=;][^;]*;?\s*(self\s*)?\}$";
+  ps <- pure f | #parameters | collect (children_of_kind :parameter | #pattern);
+  guard $ has (descendants_of_kind :assignment_expression | #right | keep (given (texts ps))) b;
+  return f;
+};
+
+whole_constructors = do {
+  f <- descendants_of_kind :function_item;
+  guard $ visible f;
+  ps <- pure f | #parameters | collect (children_of_kind :parameter | #pattern);
+  guard $ length ps > 0;
+  b <- pure f | #body;
+  e <- pure b | named_children;
+  guard $ length (run named_children b) == 1;
+  owner <- pure f | parent | parent | of_kind :impl_item | #type;
+  n <- pure e | (#name `or_else` #function);
+  guard $ (text n == "Self") `or` (text n == text owner);
+  args <- pure e | (#body `or_else` #arguments) | collect named_children;
+  guard $ length args == length ps;
+  guard $ from_params args (texts ps);
+  return f;
+};
+
+main = mut_getters `alt` setters `alt` trait_lends `alt` whole_constructors | arr range;

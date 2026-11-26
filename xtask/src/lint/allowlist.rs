@@ -9,8 +9,8 @@ const HEADER: &str = "\
 # The sites each ratchet row of lint/rules.toml allows, per file. `cargo xtask lint` fails when a
 # file has more sites than its entry allows (none without an entry), and when it has fewer: lower
 # the entry to the new count and delete it at 0. Counts only fall: `cargo xtask lint --against REV`
-# fails when an entry is above the one the allowlist at REV holds, so a rise is the lead's act on
-# main. `cargo xtask lint --counts` prints this file for the tree.
+# fails when an entry is above the one the allowlist at REV holds, so a rise is a maintainer's act
+# on main. `cargo xtask lint --counts` prints this file for the tree.
 ";
 
 /// Returns `counts` as an allowlist file, entries of 0 left out.

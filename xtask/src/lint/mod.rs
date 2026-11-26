@@ -510,7 +510,7 @@ fn rises(listed: &Counts, base: &Counts, revision: &str) -> Vec<Problem> {
                 problems.push(Problem::of(
                     row,
                     format!(
-                        "{file}: {row} allows {count}, the allowlist at {revision} allows {before}: a rise is the lead's act on main"
+                        "{file}: {row} allows {count}, the allowlist at {revision} allows {before}: a rise is a maintainer's act on main"
                     ),
                 ));
             }

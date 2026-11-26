@@ -1,0 +1,14 @@
+pub struct A { pub a: u32, pub(crate) b: u32, c: u32 }
+pub struct B(pub u32, pub(super) u8);
+pub union U { pub x: u32, pub(in crate::m) y: f32, z: u16 }
+macro_rules! made {
+    ($n:ident, $t:ty) => {
+        pub struct $n { pub p: $t, pub(crate) q: u32, r: u32 }
+        pub struct Wrapped(pub $t);
+    };
+}
+macro_rules! repeated {
+    ($($f:ident),*) => { pub struct R { $(pub $f: u32,)* } };
+}
+made!(M, u64);
+made!(N, u8);

@@ -1,0 +1,28 @@
+pub struct S { a: u32, b: Option<u32> }
+impl S {
+    pub fn a_mut(&mut self) -> &mut u32 { &mut self.a }
+    pub(crate) fn b_mut(&mut self) -> Option<&mut u32> { self.b.as_mut() }
+    pub fn set_a(&mut self, a: u32) { self.a = a; }
+    pub fn with_b(mut self, b: u32) -> Self { self.b = Some(b); self }
+    pub fn new(a: u32, b: Option<u32>) -> Self { Self { a, b } }
+    pub fn of(a: u32, b: Option<u32>) -> S { S { a: a, b: b } }
+    pub fn chain(&mut self) -> &mut Self { self }
+    fn private_mut(&mut self) -> &mut u32 { &mut self.a }
+    pub fn lent<'f>(&self, f: &'f mut u32) -> &'f mut u32 { f }
+    pub fn clear(&mut self) { self.b = None; }
+    pub fn checked(&mut self, a: u32) { assert!(a > 0); self.a = a; }
+    pub fn computed(a: u32) -> Self { Self { a, b: None } }
+    pub fn converted(a: u16, b: Option<u32>) -> Self { Self { a: a.into(), b } }
+    pub fn raised(&mut self, a: u32) { self.a = self.a.max(a); }
+    pub fn cast(a: u16, b: Option<u32>) -> Self { Self { a: a as u32, b } }
+}
+pub struct T(u32);
+impl T {
+    pub const fn new(n: u32) -> Self { Self(n) }
+    pub const fn widened(n: u16) -> Self { Self(n as u32) }
+}
+impl std::ops::DerefMut for T { fn deref_mut(&mut self) -> &mut u32 { &mut self.0 } }
+impl AsMut<u32> for T { fn as_mut(&mut self) -> &mut u32 { &mut self.0 } }
+impl core::borrow::BorrowMut<u32> for T { fn borrow_mut(&mut self) -> &mut u32 { &mut self.0 } }
+impl std::ops::IndexMut<usize> for T { fn index_mut(&mut self, _: usize) -> &mut u32 { &mut self.0 } }
+impl std::ops::Deref for T { type Target = u32; fn deref(&self) -> &u32 { &self.0 } }

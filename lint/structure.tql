@@ -1,7 +1,10 @@
--- pub_fields: struct fields declared `pub`, of a struct of any visibility. Each such type states its
--- contract. Fields a macro generates are not counted.
--- crate_fields: struct fields declared pub(crate), pub(super) or pub(in ..): internal state visible
--- past its module.
+-- pub_fields: fields declared `pub`, of a struct or union of any visibility, and those a
+-- `macro_rules!` body declares in a struct, once per definition. Each such type states its
+-- contract. Not seen: a field whose visibility a macro takes as a `$vis` fragment, a field of a
+-- struct a macro declares with generics or a `where` clause before its body, and a field of a
+-- struct declared inside a `$(..)*` repetition.
+-- crate_fields: the same fields declared pub(crate), pub(super) or pub(in ..): internal state
+-- visible past its module.
 -- decode_panics: panicking macros, `.expect(` and `.unwrap(`. A decode of bytes read from a page
 -- returns `Result` with its damage cause. The sites left guard values the engine built in memory or
 -- checked first, a caller's latch discipline (heap/named.rs), or a surface built only for tests
@@ -10,16 +13,58 @@
 -- catalog codec's builders and encoders (catalog/codec/encode.rs) guard values the engine built and
 -- are in neither file set.
 
+import Data.List (Sized(..));
+
 field_visibility = do {
-  s <- descendants_of_kind :struct_item;
+  s <- descendants_of_kind :struct_item `alt` descendants_of_kind :union_item;
   body <- pure s | #body;
   vis <- pure body | alt (children_of_kind :field_declaration | children_of_kind :visibility_modifier) (children_of_kind :visibility_modifier);
   return $ text vis;
 };
 
-pub_fields = collect (field_visibility | keep (\v -> v == "pub")) | arr length;
+restricted v = text v ~ r"^\(\s*(crate|super|in\s)";
 
-crate_fields = collect (field_visibility | keep (\v -> v ~ r"^pub\((crate|super|in )")) | arr length;
+-- Returns the (pub, restricted) counts of the `pub` tokens of a struct body's tokens.
+visible ts = case ts of {
+  [] -> (0, 0);
+  t : rest -> let { more = visible rest; } in
+    if text t == "pub" then case rest of {
+      v : _ -> if restricted v then (fst more, snd more + 1) else (fst more + 1, snd more);
+      [] -> (fst more + 1, snd more);
+    } else more;
+};
+
+-- Returns the (pub, restricted) counts of the fields of each struct a macro's tokens declare.
+bodies ts = case ts of {
+  s : n : b : rest -> let { more = bodies (n : b : rest); } in
+    if (text s == "struct") `and` (is_kind :token_tree b)
+    then let { here = visible (run descendants b); } in (fst here + fst more, snd here + snd more)
+    else more;
+  _ -> (0, 0);
+};
+
+macro_fields = do {
+  m <- descendants_of_kind :macro_definition;
+  t <- pure m | descendants_of_kind :token_tree;
+  return (bodies (run children t));
+};
+
+pub_fields = do {
+  d <- collect (field_visibility | keep (\v -> v == "pub")) | arr length;
+  m <- collect (macro_fields | arr fst);
+  return (d + sum m);
+};
+
+crate_fields = do {
+  d <- collect (field_visibility | keep (\v -> v ~ r"^pub\((crate|super|in )")) | arr length;
+  m <- collect (macro_fields | arr snd);
+  return (d + sum m);
+};
+
+sum xs = case xs of {
+  [] -> 0;
+  x : rest -> x + sum rest;
+};
 
 panicking_macros = do {
   m <- descendants_of_kind :macro_invocation;
