@@ -26,6 +26,7 @@ mod grant;
 mod grant_text;
 mod ids;
 mod keep;
+mod logged;
 #[cfg(test)]
 pub(crate) mod meaning;
 mod memo;
@@ -58,6 +59,7 @@ pub use grant::{
     closes_option_cycle, deployment_grant, deployment_revoke, family_query, target_covers,
 };
 pub use keep::Kept;
+pub use logged::Logged;
 pub use recorded::{Migrated, OpSteps, Recorded};
 use resolved::Reached;
 pub use resolved::{
@@ -77,16 +79,6 @@ pub struct State {
 pub struct SourceDecl {
     pub module: String,
     pub text: String,
-}
-
-/// A migration of the log, with the schema before it.
-#[derive(Clone, Debug)]
-pub struct Logged {
-    pub number: u64,
-    pub module: String,
-    pub text: String,
-    pub operators: Vec<Operator>,
-    pub before: Arc<Source>,
 }
 
 /// Why a source gives no committed schema.

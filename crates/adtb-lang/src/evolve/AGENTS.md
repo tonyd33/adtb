@@ -21,6 +21,9 @@ its refusals and its revert is [evolution.md](../../../../docs/spec/evolution.md
 - An inverse holds after any later migration too: it restores what its migration dropped by id
   from the model before it, never by a name re-read now, and refuses a later change it cannot
   undo with a stated reason. Test a revert of an earlier migration after later ones.
+- A value held on a `Logged` derives only from that `Logged`'s own fields: every source whose
+  log holds the migration shares it. It assumes the run height `norm::set_run_height` sets does
+  not change while it lives.
 - A finding the migration search can draw but no fix has met is held off by a `SEARCH_*` switch
   in `crates/adtb-testkit/src/schemas/mod.rs`; the fix deletes its switch.
 

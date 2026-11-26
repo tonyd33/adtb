@@ -102,9 +102,9 @@ fn applied_hash(schema: &Schema, source: &Source, hash: oplog::Hash, applied: i6
         let row = codec.encode(
             k::MIGRATION,
             [
-                (MIGRATION_VERSION, key(m.number)),
+                (MIGRATION_VERSION, key(m.number())),
                 (MIGRATION_HASH, Value::Bytes(hash.to_vec())),
-                (MIGRATION_TEXT, Value::Text(m.text.clone())),
+                (MIGRATION_TEXT, Value::Text(m.text().to_string())),
                 (MIGRATION_APPLIED, Value::Instant(applied)),
             ],
         );
@@ -862,8 +862,8 @@ impl Builder<'_> {
     fn log(&mut self) {
         let log = oplog::Log::new(self.schema);
         for l in self.source.log() {
-            let ops = oplog::operators(&log, self.source, l.number);
-            self.migration(&log, l.number, &ops);
+            let ops = oplog::operators(&log, self.source, l.number());
+            self.migration(&log, l.number(), &ops);
         }
     }
 

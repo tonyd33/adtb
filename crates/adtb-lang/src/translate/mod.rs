@@ -147,15 +147,15 @@ impl<'a> Pinned<'a> {
         let to = to.schema();
         let mut ops = Vec::new();
         for (i, logged) in to_source.log().iter().enumerate() {
-            if logged.number <= from_source.version() {
+            if logged.number() <= from_source.version() {
                 continue;
             }
-            let resolved = to_source.resolved(logged.number).map_err(|f| {
-                let first = logged.operators.first();
-                failed(first.map(|op| operator_text(&logged.text, op)), f)
+            let resolved = to_source.resolved(logged.number()).map_err(|f| {
+                let first = logged.operators().first();
+                failed(first.map(|op| operator_text(logged.text(), op)), f)
             })?;
-            for (k, (op, r)) in logged.operators.iter().zip(resolved).enumerate() {
-                let text = operator_text(&logged.text, op);
+            for (k, (op, r)) in logged.operators().iter().zip(resolved).enumerate() {
+                let text = operator_text(logged.text(), op);
                 let reverts = matches!(r.op, Resolved::Revert { .. });
                 ops.push(Op {
                     from: Origin::Logged(i, k),
@@ -752,15 +752,15 @@ fn blamed(next: &Source, id: u64) -> Option<String> {
         Resolved::RedefineFn { function, .. } => function == id,
         _ => false,
     };
-    let at = match next.resolved(logged.number) {
+    let at = match next.resolved(logged.number()) {
         Ok(ops) => ops.iter().position(changes)?,
         Err(_) => 0,
     };
     Some(
         logged
-            .operators
+            .operators()
             .get(at)
-            .map_or_else(String::new, |op| operator_text(&logged.text, op)),
+            .map_or_else(String::new, |op| operator_text(logged.text(), op)),
     )
 }
 

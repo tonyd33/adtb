@@ -693,7 +693,7 @@ merge constructor T.(A | B) into M { k: K, z: Text }
     | B b -> M { k: B, z: b.z }",
     );
     assert_eq!(vec![1025, 1026], index_ids(&merged, "ts"));
-    let last = merged.log.last().expect("the merge is logged").number;
+    let last = merged.log.last().expect("the merge is logged").number();
     let reverted = applies(&merged, &format!("module auth\nrevert {last:04}"));
     assert_eq!(vec![1025, 1026], index_ids(&reverted, "ts"));
 }
@@ -721,7 +721,7 @@ set S of ts = A | B",
     for op in operators {
         let after = applies(&base, &format!("module auth\n{op}"));
         assert_eq!(vec![1025], index_ids(&after, "ts"), "{op}");
-        let last = after.log.last().expect("the operator is logged").number;
+        let last = after.log.last().expect("the operator is logged").number();
         let reverted = applies(&after, &format!("module auth\nrevert {last:04}"));
         assert_eq!(
             vec![1025],
@@ -1678,7 +1678,7 @@ impl Search {
         replaced: &[String],
         inverse: Vec<String>,
     ) {
-        let last = after.log.last().expect("the operator is logged").number;
+        let last = after.log.last().expect("the operator is logged").number();
         let Some(reverted) = self.step(after, &format!("revert {last:04}"), what) else {
             return;
         };
@@ -1771,7 +1771,7 @@ add index (n) in ts.S2",
         "set S2 of ts = A | B",
         flat(&decl(&unnested, "set", "ts.S2"))
     );
-    let last = unnested.log.last().expect("the unnest is logged").number;
+    let last = unnested.log.last().expect("the unnest is logged").number();
     applies(&unnested, &format!("module auth\nrevert {last:04}"));
 }
 

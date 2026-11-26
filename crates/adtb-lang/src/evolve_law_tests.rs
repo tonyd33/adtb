@@ -1532,7 +1532,7 @@ fn outside(logged: &Logged, next: &Source, ops: &[ResolvedOp]) -> Vec<String> {
         let around: BTreeSet<Reached> = held(&sources[k]).union(&held(after)).cloned().collect();
         for o in op.operands() {
             if !around.contains(&o) {
-                let shown = logged.text[logged.operators[k].span.range()]
+                let shown = logged.text()[logged.operators()[k].span.range()]
                     .lines()
                     .next()
                     .unwrap_or_default();
@@ -1642,7 +1642,7 @@ impl Found {
                 }
             }
         }
-        let before = format!("{:04}", was.log.last().map_or(0, |l| l.number));
+        let before = format!("{:04}", was.log.last().map_or(0, Logged::number));
         let text = case.text.replace("{first}", &before);
         let m = parse_migration(&text, Options::default())
             .ok()
@@ -1663,7 +1663,7 @@ impl Found {
                 .filter(|k| !UNINVERTED.contains(k))
                 .map(|&k| (k, bits)),
         );
-        let number = mid.log.last().expect("the case is logged").number;
+        let number = mid.log.last().expect("the case is logged").number();
         let base = was.clone();
         let cased = mid.clone();
         let (mid, target) = match (&case.then, &case.expect) {
@@ -1716,7 +1716,7 @@ impl Found {
         let logged = next.log.last().expect("a migration is logged");
         match logged.names() {
             Ok(names) => {
-                let ops: Vec<Span> = logged.operators.iter().map(|o| o.span).collect();
+                let ops: Vec<Span> = logged.operators().iter().map(|o| o.span).collect();
                 self.unresolved.extend(
                     names
                         .spans()
@@ -1732,7 +1732,7 @@ impl Found {
                 .extend(ds.into_iter().map(|d| (Aspect::Unresolved, d.message))),
             Err(Failed::Broken(d)) => panic!("{}", d.message),
         }
-        match next.resolved(logged.number) {
+        match next.resolved(logged.number()) {
             Err(Failed::Refused(ds)) => self
                 .unresolved
                 .extend(ds.into_iter().map(|d| (Aspect::Unresolved, d.message))),
@@ -2123,7 +2123,7 @@ fn the_migrations_of_the_cases_and_the_script_corpus_keep_their_laws() {
                 for first in &case.first {
                     was = lawful(&was, first, &mut seen).expect("a case's first migration applies");
                 }
-                let before = format!("{:04}", was.log.last().map_or(0, |l| l.number));
+                let before = format!("{:04}", was.log.last().map_or(0, Logged::number));
                 lawful(&was, &case.text.replace("{first}", &before), &mut seen);
                 continue;
             }

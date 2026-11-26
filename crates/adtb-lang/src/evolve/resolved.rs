@@ -498,7 +498,7 @@ impl Source {
     fn at(&self, number: u64) -> Result<usize, Vec<Diag>> {
         self.log
             .iter()
-            .position(|l| l.number == number)
+            .position(|l| l.number() == number)
             .ok_or_else(|| {
                 vec![Diag::new(
                     Span::default(),
@@ -516,11 +516,10 @@ impl Source {
     /// the names of its text.
     fn resolving(&self, number: u64) -> Replaying<(Vec<ResolvedOp>, Names)> {
         let logged = &self.log[self.at(number)?];
-        let unavailable = self.unavailable(&logged.operators);
+        let unavailable = self.unavailable(logged.operators());
         if !unavailable.is_empty() {
             return Err(Failed::Refused(unavailable));
         }
-        let (_, names, got) = model::replay(logged)?;
-        Ok((got.resolved(), names?))
+        logged.resolution()
     }
 }

@@ -338,10 +338,10 @@ enum ViewSlot {
 impl LogM {
     fn of(l: &super::Logged) -> LogM {
         LogM {
-            number: l.number,
-            module: l.module.clone(),
-            text: l.text.clone(),
-            operators: l.operators.len(),
+            number: l.number(),
+            module: l.module().to_string(),
+            text: l.text().to_string(),
+            operators: l.operators().len(),
         }
     }
 }

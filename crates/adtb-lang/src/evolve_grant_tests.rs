@@ -149,7 +149,7 @@ fn oauth() -> Source {
 
 /// Assert that reverting the last migration of `after` gives back the grants of `before`.
 fn reverts_to(before: &Source, after: &Source) {
-    let last = after.log.last().expect("a migration").number;
+    let last = after.log.last().expect("a migration").number();
     let s = applies(after, &format!("module auth\nrevert {last:04}"));
     assert_eq!(held(before), held(&s), "revert {last:04}");
 }
@@ -791,9 +791,9 @@ fn replaying_the_log_gives_the_same_grants() {
     );
     let s = applies(&s, "module auth\ngrant read identities.Federated to web");
     let s = applies(&s, SPLIT);
-    let mut replayed = (*s.log[0].before).clone();
+    let mut replayed = (*s.log[0].before()).clone();
     for l in &s.log {
-        replayed = applies(&replayed, &l.text);
+        replayed = applies(&replayed, l.text());
     }
     assert_eq!(s.grants, replayed.grants);
     assert_eq!(held(&s), held(&replayed));

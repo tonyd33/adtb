@@ -1278,8 +1278,10 @@ fn opened_hashes(catalog: &Catalog, regs: &[Registration]) -> Result<stated::Has
 fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
     let hash = catalog.version_hash();
     for (m, shipped) in catalog.source().log().iter().zip(&log.migrations) {
-        if &m.text != shipped && !same_hash(&hash, m, shipped)? {
-            return Err(OpenError::Diverged { version: m.number });
+        if m.text() != shipped && !same_hash(&hash, m, shipped)? {
+            return Err(OpenError::Diverged {
+                version: m.number(),
+            });
         }
     }
     Ok(())
@@ -1292,13 +1294,13 @@ fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
 /// the migration model fails on `text`.
 fn same_hash(hash: &catalog::VersionHash, m: &Logged, text: &str) -> Result<bool, OpenError> {
     let refused = |reason| OpenError::MigrationRefused {
-        version: m.number,
+        version: m.number(),
         reason,
     };
     let Ok(file) = parse_migration(text, ParseOptions::default()).ok() else {
         return Ok(false);
     };
-    let source = match m.before.migrate(&file, text) {
+    let source = match m.before().migrate(&file, text) {
         Ok(source) => source,
         Err(f) => {
             return catalog::model_fault(&f).map_or(Ok(false), |b| {
@@ -1313,8 +1315,8 @@ fn same_hash(hash: &catalog::VersionHash, m: &Logged, text: &str) -> Result<bool
         let h = hash.at(v).map_err(corrupt)?;
         Ok(h.expect("each version of the file's log has a hash"))
     };
-    let Ok(shipped) = catalog::chained_last(stored(m.number - 1)?, &source) else {
+    let Ok(shipped) = catalog::chained_last(stored(m.number() - 1)?, &source) else {
         return Ok(false);
     };
-    Ok(shipped == stored(m.number)?)
+    Ok(shipped == stored(m.number())?)
 }

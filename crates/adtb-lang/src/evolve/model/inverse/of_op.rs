@@ -132,7 +132,7 @@ impl Inverting<'_> {
             .as_ref()
             .map_err(|f| f.clone().map_refused(|ds| unresolved(self.op.span, &ds)))?;
         let mut out = Term::default();
-        out.copy(&self.logged.text, range, names, 0);
+        out.copy(self.logged.text(), range, names, 0);
         Ok(out)
     }
 
@@ -140,7 +140,7 @@ impl Inverting<'_> {
     pub(super) fn qualified(&self, q: &QName, end: usize) -> R<Term> {
         let mut out = match &q.module {
             Some(_) => Term::default(),
-            None => Term::from(format!("{}::", self.logged.module)),
+            None => Term::from(format!("{}::", self.logged.module())),
         };
         let start = q
             .module
@@ -277,7 +277,7 @@ impl Inverting<'_> {
     /// `on` qualified by its module.
     fn clause(&self, verb: &str, on: &ast::RelationRef) -> R<Term> {
         let span = self.op.span.range();
-        let text = &self.logged.text[span.clone()];
+        let text = &self.logged.text()[span.clone()];
         let word = text.find(char::is_whitespace).unwrap_or(text.len());
         let rest = span.start + text.len() - text[word..].trim_start().len();
         let q = &on.relation;
@@ -314,7 +314,7 @@ impl Inverting<'_> {
         match item {
             Item::Relation(r) => {
                 let typed = self.before.relation_type(&module, &name).is_some_and(|t| {
-                    self.logged.operators.iter().any(|op| {
+                    self.logged.operators().iter().any(|op| {
                         matches!(&op.kind, OperatorKind::DropType(q)
                             if self.module_of(q) == t.0 && q.name.text == t.1)
                     })
@@ -382,7 +382,7 @@ impl Inverting<'_> {
         };
         let m = self.after_m;
         let item = m
-            .find(&self.logged.module, kind, name)
+            .find(self.logged.module(), kind, name)
             .ok_or_else(missing)?;
         let key_kind = match kind {
             OpKind::Type => KeyKind::Type,
@@ -392,7 +392,11 @@ impl Inverting<'_> {
             OpKind::Constraint | OpKind::Check => KeyKind::Constraint,
         };
         let held = || {
-            let key = ObjectKey::named(key_kind, Owner::Module(self.logged.module.clone()), name);
+            let key = ObjectKey::named(
+                key_kind,
+                Owner::Module(self.logged.module().to_string()),
+                name,
+            );
             self.after.ids.get(&key).copied().ok_or_else(missing)
         };
         let decl = match item {
@@ -423,11 +427,11 @@ impl Inverting<'_> {
     pub(super) fn module_of(&self, n: &QName) -> String {
         n.module
             .as_ref()
-            .map_or(self.logged.module.clone(), |m| m.text.clone())
+            .map_or(self.logged.module().to_string(), |m| m.text.clone())
     }
 
     fn text(&self, s: Span) -> String {
-        self.logged.text[s.range()].to_string()
+        self.logged.text()[s.range()].to_string()
     }
 
     /// Returns the inverse renaming object `obj` back to the name it has before the operator.
@@ -677,11 +681,11 @@ impl Cx<'_> {
             .names()
             .map_err(|f| f.map_refused(|ds| unresolved(at.op.span, &ds)))?;
         let texts = logged
-            .operators
+            .operators()
             .iter()
             .map(|o| {
-                let mut text = Term::from(format!("module {}\n", logged.module));
-                text.copy(&logged.text, o.span.range(), &names, 0);
+                let mut text = Term::from(format!("module {}\n", logged.module()));
+                text.copy(logged.text(), o.span.range(), &names, 0);
                 text
             })
             .collect();

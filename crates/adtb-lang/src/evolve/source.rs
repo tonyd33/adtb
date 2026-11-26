@@ -217,13 +217,13 @@ impl Source {
             && failing.is_none()
             && let Ok(checked) = checked
         {
-            next.log.push(Logged {
-                number: next.version,
-                module: m.module.text.clone(),
-                text: text.to_string(),
-                operators: m.operators.clone(),
-                before: Arc::new(self.clone()),
-            });
+            next.log.push(Logged::new(
+                next.version,
+                m.module.text.clone(),
+                text.to_string(),
+                m.operators.clone(),
+                Arc::new(self.clone()),
+            ));
             return Ok((next, checked, got));
         }
         let ds: Vec<FileDiag> = checked

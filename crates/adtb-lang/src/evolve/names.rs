@@ -41,7 +41,7 @@ impl Logged {
     /// operator checks it. Any other operand naming an object resolves in the source before the
     /// operator, and the field an `add field` or `add computed` declares in the source after it.
     pub fn names(&self) -> Replaying<Names> {
-        Ok(model::replay(self)?.1?)
+        Ok(self.resolution()?.1)
     }
 
     /// Returns the source before this migration's first operator and after each.
@@ -59,7 +59,7 @@ impl Logged {
         let steps = got.op_steps(&m).into_iter().nth(k);
         let steps = steps.ok_or_else(|| {
             vec![Diag::new(
-                self.operators[k].span,
+                self.operators()[k].span,
                 "an earlier operator's steps fail",
             )]
         })??;

@@ -491,7 +491,7 @@ pub(super) fn mentioned(source: &Source) -> BTreeSet<String> {
     source
         .log()
         .iter()
-        .flat_map(|m| &m.operators)
+        .flat_map(adtb_lang::evolve::Logged::operators)
         .filter_map(|op| match &op.kind {
             OperatorKind::Grant(g) => Some(g.to.text.clone()),
             _ => None,

@@ -271,7 +271,7 @@ fn a_migration_takes_the_next_version_and_joins_the_log() {
     let s = applies(&running(), "module auth\nadd index (user) in identities");
     assert_eq!(1, s.version);
     assert_eq!(1, s.log.len());
-    assert_eq!(1, s.log[0].number);
+    assert_eq!(1, s.log[0].number());
 }
 
 #[test]
@@ -3424,10 +3424,10 @@ fn logged_term(src: &Source, operand: &str) -> String {
         .names()
         .unwrap_or_else(|ds| panic!("the names resolve: {ds:?}"));
     let at = logged
-        .text
+        .text()
         .find(operand)
-        .unwrap_or_else(|| panic!("no {operand:?} in {:?}", logged.text));
-    crate::canon::canonical_term(&logged.text, Span::new(at, at + operand.len()), &names)
+        .unwrap_or_else(|| panic!("no {operand:?} in {:?}", logged.text()));
+    crate::canon::canonical_term(logged.text(), Span::new(at, at + operand.len()), &names)
         .unwrap_or_else(|u| panic!("{u}"))
 }
 
@@ -3944,7 +3944,7 @@ type U = { id: I64, name: Text }
 relation us : U key id unique (name)",
     );
     let rekeyed = applies(&s, "module auth\nrekey relation us key name");
-    let last = rekeyed.log.last().expect("the rekey is logged").number;
+    let last = rekeyed.log.last().expect("the rekey is logged").number();
     let reverted = applies(&rekeyed, &format!("module auth\nrevert {last:04}"));
     let key = |s: &Source| {
         let schema = ids_of(s);

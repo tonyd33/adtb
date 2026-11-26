@@ -115,10 +115,10 @@ pub(in crate::evolve) type Replay = (Vec<Source>, Result<Names, Vec<Diag>>, Migr
 pub(in crate::evolve) fn logged_file(logged: &Logged) -> MigrationFile {
     MigrationFile {
         module: ast::Ident {
-            text: logged.module.clone(),
+            text: logged.module().to_string(),
             span: Span::default(),
         },
-        operators: logged.operators.clone(),
+        operators: logged.operators().to_vec(),
     }
 }
 
@@ -131,12 +131,12 @@ pub(in crate::evolve) fn logged_file(logged: &Logged) -> MigrationFile {
 pub(in crate::evolve) fn replay(logged: &Logged) -> crate::evolve::Replaying<Replay> {
     let m = logged_file(logged);
     let got =
-        migrated(&logged.before, &m, &logged.text, &[], false, true).map_err(Failed::Broken)?;
+        migrated(logged.before(), &m, logged.text(), &[], false, true).map_err(Failed::Broken)?;
     let refused: Vec<Diag> = got.refusals(&m).into_iter().map(|(_, d)| d).collect();
     if !refused.is_empty() || got.ops().iter().any(Result::is_err) {
         return Err(Failed::Refused(refused));
     }
-    let mut first = of(&logged.before)
+    let mut first = of(logged.before())
         .map_err(|e| Failed::Broken(fault(format!("the source does not lift: {e}"))))?;
     first.version += 1;
     first.expecting(&m);
@@ -196,7 +196,7 @@ impl Model {
         fills: &[(ast::FieldPath, Fill)],
     ) -> Res<Applied> {
         let mut src = self.source();
-        let number = src.logged_at(migration).map(|pos| src.log[pos].number);
+        let number = src.logged_at(migration).map(|pos| src.log[pos].number());
         let inverted = {
             let cx = Cx {
                 src: &mut src,

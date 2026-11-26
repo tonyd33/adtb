@@ -232,9 +232,10 @@ fn the_memo_keeps_the_most_recently_used_builds_up_to_its_bound() {
 
 #[test]
 fn the_memo_does_not_show_in_a_sources_debug_output() {
-    let src = Source::default();
+    let src = apply(&base(), WALK[0]);
     let cold = format!("{src:?}");
     src.built().unwrap();
+    src.resolved(src.version()).unwrap();
     assert_eq!(cold, format!("{src:?}"));
 }
 

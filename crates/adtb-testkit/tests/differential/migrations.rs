@@ -1401,6 +1401,11 @@ fn generated_migrations_keep_their_invariants() {
         adtb_lang::sampled::CHECKS.checked() as usize,
         1,
     );
+    adtb_testkit::profile::assert_reached(
+        "a held replay of a logged migration checked against the migration applied again",
+        adtb_lang::sampled::REPLAYS.checked() as usize,
+        1,
+    );
     if adtb_testkit::profile::every_case() {
         reached.floors();
     } else {

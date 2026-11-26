@@ -210,9 +210,9 @@ fn log_text(e: &Envelope, log: &[adtb_lang::evolve::Logged]) -> String {
     for l in log {
         out.push_str(&format!(
             "migration {} {}\n{}\n",
-            l.number,
-            l.text.len(),
-            l.text
+            l.number(),
+            l.text().len(),
+            l.text()
         ));
     }
     out

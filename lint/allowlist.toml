@@ -154,7 +154,7 @@
 "crates/adtb-lang/src/collation.rs" = 7
 "crates/adtb-lang/src/evolve/grant.rs" = 20
 "crates/adtb-lang/src/evolve/keep.rs" = 1
-"crates/adtb-lang/src/evolve/mod.rs" = 20
+"crates/adtb-lang/src/evolve/mod.rs" = 15
 "crates/adtb-lang/src/evolve/resolved.rs" = 8
 "crates/adtb-lang/src/evolve/rowmap.rs" = 5
 "crates/adtb-lang/src/kernel.rs" = 12

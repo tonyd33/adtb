@@ -64,6 +64,9 @@ pub static CHECKS: Sampler = Sampler::new(3);
 /// The uses of the engine's fixed ids a build of the built-in declarations shares.
 pub static ENGINE_IDS: Sampler = Sampler::new(2);
 
+/// The uses of a logged migration's held replay.
+pub static REPLAYS: Sampler = Sampler::new(4);
+
 /// Run `f`, checking every hit this thread makes while it runs.
 pub fn checking_every_hit<T>(f: impl FnOnce() -> T) -> T {
     let was = EVERY_HIT.with(|e| e.replace(true));

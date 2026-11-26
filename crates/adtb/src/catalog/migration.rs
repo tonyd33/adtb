@@ -615,8 +615,8 @@ impl Catalog {
         }
         if let Some(m) = next.source.log().last() {
             named.push(RootsRow::Migration {
-                version: m.number,
-                text: m.text.clone(),
+                version: m.number(),
+                text: m.text().to_string(),
             });
         }
         self.roots.delete(m, &gone)?;

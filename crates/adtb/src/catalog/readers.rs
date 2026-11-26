@@ -415,40 +415,40 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
     let Some(first) = pending.iter().map(|p| p.dropped).min() else {
         return Ok(None);
     };
-    let Some(start) = source.log().iter().find(|l| l.number == first) else {
+    let Some(start) = source.log().iter().find(|l| l.number() == first) else {
         return Err(Rot::DropVersion(first).into());
     };
-    let mut at = (*start.before).clone();
+    let mut at = (*start.before()).clone();
     let mut version = first;
-    for l in source.log().iter().filter(|l| l.number >= first) {
-        version = l.number;
-        let refused = |why: Vec<String>| Error::Unaccepted(l.number, why);
-        let mut file = parse_migration(&l.text, Options::default())
+    for l in source.log().iter().filter(|l| l.number() >= first) {
+        version = l.number();
+        let refused = |why: Vec<String>| Error::Unaccepted(l.number(), why);
+        let mut file = parse_migration(l.text(), Options::default())
             .ok()
             .map_err(|ds| refused(ds.into_iter().map(|d| d.message).collect()))?;
         let kept: Vec<Kept> = pending
             .iter()
-            .filter(|p| p.dropped <= l.number)
+            .filter(|p| p.dropped <= l.number())
             .filter_map(Pending::kept)
             .collect();
         let held: BTreeSet<CatIndexId> = pending
             .iter()
-            .filter(|p| p.dropped == l.number)
+            .filter(|p| p.dropped == l.number())
             .filter_map(Pending::unique)
             .collect();
         if !held.is_empty() {
             let before = l
-                .before
+                .before()
                 .schema()
                 .map_err(|ds| refused(ds.into_iter().map(|d| d.diag.message).collect()))?;
             let steps = l
-                .before
-                .record_steps(&file, &l.text)
-                .map_err(|r| unaccepted_at(l.number, super::refusal(r, Error::Refused)))?;
-            let stepped = super::steps::stepped(&steps, &file, &l.text)
-                .map_err(|e| unaccepted_at(l.number, e))?;
-            let drops = changes(&l.before, &before, &stepped)
-                .map_err(|e| unaccepted_at(l.number, e))?
+                .before()
+                .record_steps(&file, l.text())
+                .map_err(|r| unaccepted_at(l.number(), super::refusal(r, Error::Refused)))?;
+            let stepped = super::steps::stepped(&steps, &file, l.text())
+                .map_err(|e| unaccepted_at(l.number(), e))?;
+            let drops = changes(l.before(), &before, &stepped)
+                .map_err(|e| unaccepted_at(l.number(), e))?
                 .uniques;
             let skipped: BTreeSet<usize> = drops
                 .iter()
@@ -458,15 +458,15 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
             if let Some(id) = held.iter().find(|id| !drops.iter().any(|u| u.id == **id)) {
                 return Err(Rot::UniqueNotDropped {
                     index: *id,
-                    version: l.number,
+                    version: l.number(),
                 }
                 .into());
             }
             file = skipping(&file, &skipped);
         }
         at = at
-            .migrate_keeping(&file, &l.text, &kept)
-            .map_err(|r| unaccepted_at(l.number, super::unaccepted(l.number, r)))?;
+            .migrate_keeping(&file, l.text(), &kept)
+            .map_err(|r| unaccepted_at(l.number(), super::unaccepted(l.number(), r)))?;
     }
     let enforced = checked(at, |ds| {
         Error::Unchecked("the schema keeping the pending drops".to_string(), ds)
@@ -956,8 +956,8 @@ pub fn source_at(source: &Source, v: u64) -> Option<Source> {
     if v == source.version() {
         return Some(source.clone());
     }
-    let after = source.log().iter().find(|l| l.number == v + 1)?;
-    Some((*after.before).clone())
+    let after = source.log().iter().find(|l| l.number() == v + 1)?;
+    Some((*after.before()).clone())
 }
 
 /// Returns `reader` with its names resolved in `schema`, the schema of its version.

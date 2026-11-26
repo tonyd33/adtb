@@ -413,7 +413,7 @@ impl<R: Runtime> Engine<R> {
             .source()
             .log()
             .last()
-            .map_or(0, |migration| migration.number);
+            .map_or(0, adtb_lang::evolve::Logged::number);
         Envelope {
             release: env!("CARGO_PKG_VERSION").to_owned(),
             edition: super::bundle::EDITION.to_owned(),

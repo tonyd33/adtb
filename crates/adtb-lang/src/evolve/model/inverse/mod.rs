@@ -227,17 +227,17 @@ impl Source {
         if made.is_empty() {
             return Ok(Vec::new());
         }
-        let every: Vec<&Source> = self.log.iter().map(|l| &*l.before).chain([self]).collect();
+        let every: Vec<&Source> = self.log.iter().map(Logged::before).chain([self]).collect();
         let all = Keys::of(&every);
         let mut out = Vec::new();
         for (i, later) in self.log.iter().enumerate().skip(pos + 1) {
             let keys = Spelling {
-                near: Keys::of(&[&later.before, self.after(i), self.after(pos)]),
+                near: Keys::of(&[later.before(), self.after(i), self.after(pos)]),
                 all: &all,
             };
-            let named = keys.with_owners(self.named_by(later.number)?);
+            let named = keys.with_owners(self.named_by(later.number())?);
             if let Some(o) = named.intersection(&made).next() {
-                out.push((later.number, keys.shown(o)));
+                out.push((later.number(), keys.shown(o)));
             }
         }
         Ok(out)
@@ -253,7 +253,7 @@ impl Source {
                 .chain(s.modules.iter().cloned().map(Reached::Module))
                 .collect()
         };
-        let before = held(&self.log[pos].before);
+        let before = held(self.log[pos].before());
         held(self.after(pos)).difference(&before).cloned().collect()
     }
 
@@ -266,14 +266,14 @@ impl Source {
         after: &Source,
     ) -> Recreated {
         let mut again = Recreated::new();
-        let gone = removed(&self.log[pos].before, self.after(pos));
+        let gone = removed(self.log[pos].before(), self.after(pos));
         recreate(&mut again, &gone, &holding(&before.ids), &after.ids);
         again
     }
 
     /// Returns the source after the migration at `pos` of the log.
     fn after(&self, pos: usize) -> &Source {
-        self.log.get(pos + 1).map_or(self, |l| &*l.before)
+        self.log.get(pos + 1).map_or(self, |l| l.before())
     }
 }
 
@@ -539,7 +539,7 @@ impl Cx<'_> {
         };
         let logged = self.src.log[pos].clone();
         if logged
-            .operators
+            .operators()
             .iter()
             .any(|o| matches!(o.kind, OperatorKind::Script(_)))
         {
@@ -583,7 +583,7 @@ impl Cx<'_> {
         }
         let fills = Fills::new(fills);
         let transient = Transient::of(&states);
-        for (i, op) in logged.operators.iter().enumerate() {
+        for (i, op) in logged.operators().iter().enumerate() {
             let (before, state) = (&states[i], &states[i + 1]);
             if i > 0 && before.built().is_ok() {
                 start = before;
@@ -597,7 +597,7 @@ impl Cx<'_> {
             let mut step = self.inverse(&run.at(around, start, op, &ops[i]))?;
             // A replay applies the grants and revokes of the migration it applies again.
             if !step.iter().any(|s| matches!(s, Inverse::Replay { .. })) {
-                let (gone, kept) = grants_back(before, state, &logged.text[op.span.range()]);
+                let (gone, kept) = grants_back(before, state, &logged.text()[op.span.range()]);
                 if let Some(gone) = gone {
                     step.insert(0, gone);
                 }
