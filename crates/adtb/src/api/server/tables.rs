@@ -203,7 +203,7 @@ impl<'s> Tables<'s> {
 
     /// Returns each row of `codec`'s relation, read by `codec`, with its value.
     ///
-    /// Fail with `Internal` when `codec` refuses a row, which the heap decoded by its declared type.
+    /// Fail with the damage `codec` finds in a row, which the heap decoded by its declared type.
     fn typed<T: Decode, R: Runtime>(
         &self,
         e: &Entered<'_, R>,
@@ -213,9 +213,9 @@ impl<'s> Tables<'s> {
         self.read(e, tx, codec.relation())?
             .into_iter()
             .map(|v| {
-                let row = codec.decode_val(self.schema, &v).map_err(|r: Rot| {
-                    e.write_error(self.call, write::Broken::CatalogError(r.into()).into())
-                })?;
+                let row = codec
+                    .decode_val(self.schema, &v)
+                    .map_err(|r: Rot| e.write_error(self.call, write::Rot::Catalog(r).into()))?;
                 Ok((row, v))
             })
             .collect()

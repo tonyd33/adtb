@@ -54,12 +54,11 @@ pub(super) fn unchecked(version: u64, ds: Vec<FileDiag>) -> Error {
 }
 
 /// Returns the normal program of `compiled` when an index of `specs` has an element other than a
-/// field, `broken` making the error of a body that has none for a reason other than this build's
-/// limits.
+/// field, failing with [`Broken::StoredNotNormal`] for a body that has none for a reason other
+/// than this build's limits.
 pub(super) fn index_program<'s>(
     compiled: &Compiled,
     mut specs: impl Iterator<Item = &'s IndexSpec>,
-    broken: impl FnOnce(Box<Broken>) -> Error,
 ) -> Result<Option<NormalProgram>, Error> {
     let derived = specs.any(|s| {
         s.elements
@@ -71,7 +70,7 @@ pub(super) fn index_program<'s>(
     }
     norm::program(compiled).map(Some).map_err(|e| {
         not_normal(compiled.schema(), e, |e| {
-            broken(Box::new(Broken::StoredNotNormal(e)))
+            Error::from(Broken::StoredNotNormal(e))
         })
     })
 }

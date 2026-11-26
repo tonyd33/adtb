@@ -469,7 +469,10 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
             .map_err(|r| unaccepted_at(l.number(), super::unaccepted(l.number(), r)))?;
     }
     let enforced = checked(at, |ds| {
-        Error::Unchecked("the schema keeping the pending drops".to_string(), ds)
+        Error::from(Broken::Unchecked(
+            "the schema keeping the pending drops".to_string(),
+            ds,
+        ))
     })
     .map_err(|e| unaccepted_at(version, e))?;
     keeps_ids(enforced.schema(), pending).map_err(|e| unaccepted_at(version, e))?;
@@ -495,12 +498,12 @@ pub(super) fn unaccepted_at(version: u64, e: Error) -> Error {
         | Error::Internal(_)
         | Error::MissingFunction(_)
         | Error::OtherVersion(_)
-        | Error::Unchecked(..)
         | Error::PastLimits(_)
         | Error::FormatTooOld(_)
         | Error::Conflict(_)
         | Error::Spill(_)
-        | Error::Quarantined(_)) => e,
+        | Error::Quarantined(..)
+        | Error::Exec(_)) => e,
     }
 }
 

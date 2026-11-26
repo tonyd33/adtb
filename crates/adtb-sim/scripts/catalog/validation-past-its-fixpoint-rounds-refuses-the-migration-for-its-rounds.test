@@ -1,0 +1,7 @@
+# A constraint whose validation runs a fixpoint past the rounds a query takes refuses its migration
+# for those rounds.
+use shop
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: StatementLimit { limit: Rounds { rounds: 10000 } } } }
+  module shop
+  add constraint deep = from k in (fix n = [0] union (from k in n where k < 20000 select k + 1) in n) where k < 0 select k

@@ -494,3 +494,13 @@ include = ["crates/adtb-lang/src/evolve/**/*.rs"]
 kind = "zero"
 why = "A build in the migration checker outside `BuildInputs::build` can take an input the memo's key does not compare, so the memo and that build can answer the same key differently."
 fix = "Build through `BuildInputs::build`; a helper that calls `build_ahead` or `build_with` for you does not count."
+
+[[rule]]
+query = "wildcard-broken.tql"
+include = ["crates/adtb/src/**/*.rs", "crates/adtb-exec/src/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "**/testing/**", "**/testing.rs", "**/*_testing.rs"]
+
+[rule.rows.wildcard_broken]
+kind = "ratchet"
+why = "A wildcard arm that builds a `Broken` makes every case its match does not name an internal error, so damage, a refusal, a cancellation or a limit reaches the client as `Internal`."
+fix = "Name each case, or take the lower error's internal part with its `broken()` and lift the rest through the layer's `From`; a guard, an `e @ ..` binding or a helper that builds the `Broken` in its place does not count."

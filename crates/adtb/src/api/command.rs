@@ -708,7 +708,7 @@ impl<R: Runtime> Engine<R> {
                     ),
                 }));
             }
-            decoded => decoded.map_err(|r| write::Broken::CatalogError(r.into()))?,
+            decoded => decoded.map_err(write::Rot::Catalog)?,
         };
         let writer = self.bundle_writer();
         if matches!(

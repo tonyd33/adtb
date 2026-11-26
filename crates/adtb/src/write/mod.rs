@@ -84,7 +84,7 @@ pub use adtb_lang::schema::Stage;
 pub use broken::{Broken, TermKind, detail};
 #[cfg(any(test, feature = "testing"))]
 pub use check::idle_deltas_checked;
-pub use check::refusals;
+pub use check::{Unadmitted, refusals};
 pub use delta::{CheckPlan, Part, unchanged};
 pub(crate) use engine_row::EngineRow;
 pub use error::{Error, Rejection};
@@ -104,7 +104,7 @@ pub(crate) use writing::{Writing, outside_writer};
 
 use schema::Rels;
 pub(crate) use sequence::Sequences;
-pub use sequence::counter_page;
+pub use sequence::{CounterError, counter_page, past_room};
 
 #[cfg(test)]
 pub(crate) use sequence::full_counter_page;
@@ -1100,6 +1100,7 @@ impl<R: Runtime> Database<R> {
         self.sequences
             .lock(&self.rt)
             .draw(&self.pager, rel.0, floor)
+            .map_err(Error::from)
     }
 
     /// Returns how many transactions the serializer tracks.
@@ -1153,7 +1154,10 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the next value of `rel`'s sequence.
     fn next_sequence(&self, rel: RelId) -> Result<i64, Error> {
-        self.sequences.lock(&self.rt).draw(&self.pager, rel.0, 1)
+        self.sequences
+            .lock(&self.rt)
+            .draw(&self.pager, rel.0, 1)
+            .map_err(Error::from)
     }
 
     /// Advance `rel`'s sequence past `held`, a key a row of it holds.
@@ -1161,6 +1165,7 @@ impl<R: Runtime> Database<R> {
         self.sequences
             .lock(&self.rt)
             .advance(&self.pager, rel.0, held)
+            .map_err(Error::from)
     }
 
     /// Returns a `load` value never issued before and greater than `held`.
@@ -1168,6 +1173,7 @@ impl<R: Runtime> Database<R> {
         self.sequences
             .lock(&self.rt)
             .draw(&self.pager, sequence::LOADS, held.saturating_add(1))
+            .map_err(Error::from)
     }
 
     /// Returns the store the statements of `tx` read.

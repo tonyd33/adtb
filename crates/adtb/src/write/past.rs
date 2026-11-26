@@ -207,9 +207,7 @@ impl<R: Runtime> Database<R> {
         let ranged = |n: u64, field: &'static str| {
             i64::try_from(n).map_err(|_| {
                 let row = self.schema.relation(rel).name.clone();
-                Error::from(Broken::CatalogError(
-                    crate::catalog::Rot::OutOfRange { row, field }.into(),
-                ))
+                Error::from(Broken::PastRange { row, field })
             })
         };
         let position = EngineRow::new(

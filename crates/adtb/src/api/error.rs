@@ -350,7 +350,21 @@ impl Error {
             impl FnOnce(u32) -> Option<(RelId, u32)>,
         ),
     ) -> Error {
-        match e.into_error() {
+        Error::of_unmapped(schema, txn, e.into_error(), (names, relation))
+    }
+
+    /// Returns the client error of write-path failure `e` as [`Error::of_mapped`] does, for a
+    /// caller that holds no database whose damage it could map.
+    pub(super) fn of_unmapped(
+        schema: &Schema,
+        txn: TxnId,
+        e: write::Error,
+        (names, relation): (
+            impl FnOnce(&BTreeMap<Quarantine, Option<MarkFailure>>) -> String,
+            impl FnOnce(u32) -> Option<(RelId, u32)>,
+        ),
+    ) -> Error {
+        match e {
             write::Error::Rejected(r) => Error::rejected(rejection(schema, r)),
             write::Error::Denied(detail) => Error::rejected(RejectReason::Denied { detail }),
             write::Error::Quarantined { objects, .. } => Error::Fatal {
@@ -368,7 +382,13 @@ impl Error {
                 Error::invalid("the generated counter exhausted its integer range")
             }
             write::Error::Internal(b) => Error::internal(Broken::Write(*b)),
-            write::Error::Exec(e) => Error::of_exec(schema, txn, e, relation),
+            write::Error::Exec(e) => Error::of_exec(txn, e, |heap| {
+                relation(heap).map(|(rel, ctor)| {
+                    let r = schema.relation(rel);
+                    let name = &schema.ty(r.elem_def).ctors()[ctor as usize].name;
+                    format!("{}.{name}", qualified(schema, rel))
+                })
+            }),
             write::Error::Blocked { .. } => unreachable!("no caller maps a suspension"),
             write::Error::FileChanged(path) => Error::Retry {
                 reason: RetryReason::FileChanged { path },
@@ -385,12 +405,11 @@ impl Error {
     }
 
     /// Returns the client error of executor failure `e`, met by transaction `txn` of a database
-    /// of `schema` whose heaps' relations and constructor positions `relation` gives.
-    fn of_exec(
-        schema: &Schema,
+    /// whose heaps' constructor relations `relation` names.
+    pub(super) fn of_exec(
         txn: TxnId,
         e: exec::Error,
-        relation: impl FnOnce(u32) -> Option<(RelId, u32)>,
+        relation: impl FnOnce(u32) -> Option<String>,
     ) -> Error {
         match e {
             exec::Error::Fault(fault) => Error::rejected(RejectReason::Faulted { fault }),
@@ -410,14 +429,7 @@ impl Error {
             exec::Error::Serialization(f) => Error::Retry {
                 reason: RetryReason::Serialization {
                     txn,
-                    on: f
-                        .heap()
-                        .and_then(relation)
-                        .map_or_else(String::new, |(rel, ctor)| {
-                            let r = schema.relation(rel);
-                            let name = &schema.ty(r.elem_def).ctors()[ctor as usize].name;
-                            format!("{}.{name}", qualified(schema, rel))
-                        }),
+                    on: f.heap().and_then(relation).unwrap_or_default(),
                 },
             },
             exec::Error::Page(p) => Error::storage(Failure::Page(p)),
@@ -1101,7 +1113,7 @@ mod tests {
         };
         assert_eq!(
             Error::rejected(RejectReason::Internal {
-                what: "a version of 9000 bytes is longer than the 8000 a page holds".into()
+                what: "a heap writes every row its admission passed, found 9000 bytes against the limit of 8000".into()
             }),
             client(catalog::Error::Heap(too_large))
         );

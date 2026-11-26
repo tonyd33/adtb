@@ -1,0 +1,9 @@
+# A call that reads the stored hashes of the log, as printing the schema does, while the
+# constructor relation holding them is quarantined fails with the quarantine naming it.
+use users
+
+mark heap catalog::migrations Migration
+reopen
+
+fatal Quarantined { what: "catalog::migrations.Migration" }
+  print schema

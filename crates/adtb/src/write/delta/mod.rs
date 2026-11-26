@@ -647,9 +647,9 @@ impl Compiler<'_> {
 
     /// Returns why `what` has no bounded check, for `e`; fails with an internal error as itself.
     fn reason(&self, what: &str, e: plan::Error) -> Result<String, Outside> {
-        match e {
-            e @ plan::Error::Internal(_) => Err(Outside::Internal(Broken::BoundedPlan(e))),
-            e => Ok(format!("{what}: {}", self.refusal(&e))),
+        match e.broken() {
+            Ok(b) => Err(Outside::Internal(Broken::BoundedPlan(b))),
+            Err(e) => Ok(format!("{what}: {}", self.refusal(&e))),
         }
     }
 

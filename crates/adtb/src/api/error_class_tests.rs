@@ -363,16 +363,16 @@ fn broken_rows() -> Vec<Row> {
 
 fn store_broken_rows() -> Vec<Row> {
     use write::Broken as B;
-    let plan = || crate::plan::Error::Internal(crate::plan::Broken::GroupFieldMissing);
+    let plan = || crate::plan::Broken::GroupFieldMissing;
     let c = Class::Checker;
     vec![
         broken_row(B::BoundedPlan(plan()), c, "a group has a key and rows"),
         broken_row(B::StatementPlan(plan()), c, "a group has a key and rows"),
         broken_row(B::WholePlan(plan()), c, "a group has a key and rows"),
         broken_row(
-            B::Compile(exec::Error::NoCaller),
+            B::Compile(exec::Broken::EmptyRange),
             c,
-            "the plan reads `caller` and the statement has none",
+            "an aggregate that is not an Option ranges over a nonempty range",
         ),
         broken_row(
             B::DuplicateKey(vec![1]),
@@ -533,9 +533,36 @@ fn call_broken_rows() -> Vec<Row> {
             "a setting's value has field `f`",
         ),
         broken_row(
-            B::CatalogError(catalog::Error::Refused(vec!["r".into()])),
+            B::Catalog(Box::new(catalog::Broken::Unsettled)),
             c,
-            "r",
+            "a settled source's schema takes no relation as added later",
+        ),
+        broken_row(
+            B::EngineCtor {
+                ctor: adtb_lang::ids::engine_ctor::ROLE,
+                detail: "is not declared".into(),
+            },
+            c,
+            &format!(
+                "engine constructor {} is not declared",
+                adtb_lang::ids::engine_ctor::ROLE
+            ),
+        ),
+        broken_row(
+            B::PastRange {
+                row: "sys::commit_times".into(),
+                field: "lsn",
+            },
+            c,
+            "`lsn` of a row of sys::commit_times is past the range of an I64",
+        ),
+        broken_row(
+            B::EntryTooLong {
+                len: 9000,
+                max: 4000,
+            },
+            c,
+            "an entry of 9000 bytes is longer than the 4000 a page holds",
         ),
         broken_row(B::DeploymentRefused, c, "a deployment command was refused"),
         broken_row(
@@ -576,7 +603,7 @@ fn call_broken_rows() -> Vec<Row> {
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 78;
+const SLOTS: usize = 81;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -656,7 +683,10 @@ fn slot(e: &write::Error) -> usize {
             B::ExportNotSet => 61,
             B::SettingNotRecord => 62,
             B::SettingField(_) => 63,
-            B::CatalogError(_) => 64,
+            B::Catalog(_) => 64,
+            B::EngineCtor { .. } => 78,
+            B::PastRange { .. } => 79,
+            B::EntryTooLong { .. } => 80,
             B::DeploymentRefused => 65,
             B::NoDenial(_) => 66,
             B::Unadmitted { .. } => 67,

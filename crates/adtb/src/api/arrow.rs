@@ -11,6 +11,7 @@ use crate::catalog::layout::{self, batch_type, is_record, repr};
 use crate::exec::types::ctor_set;
 use crate::exec::{self, Val};
 
+use super::TxnId;
 use super::cause::Broken;
 use super::error::Error;
 use super::text::DynRows;
@@ -100,7 +101,7 @@ pub(super) fn stream(schema: &Schema, rows: DynRows) -> Result<ArrowStream, Erro
         by,
         BATCH_ROWS,
     )
-    .map_err(|e| Error::internal(Broken::Batches(e)))?;
+    .map_err(unbatched)?;
     let batches: Vec<RecordBatch> = batches
         .into_iter()
         .map(|batch| RecordBatch {
@@ -134,7 +135,7 @@ pub(super) fn record_batch(
         by,
         n.max(1),
     )
-    .map_err(|e| Error::internal(Broken::Batches(e)))?;
+    .map_err(unbatched)?;
     let batch = batches
         .pop()
         .unwrap_or_else(|| BatchBuilder::new(arrow.batch_schema()).finish());
@@ -142,6 +143,11 @@ pub(super) fn record_batch(
         schema: arrow.clone(),
         batch,
     })
+}
+
+/// Returns the client error of a batch that the executor could not fill with `e`.
+fn unbatched(e: exec::Error) -> Error {
+    Error::of_exec(TxnId(0), e, |_| None)
 }
 
 /// Returns the fields of the columns of a result whose elements are of type `elem`, and how

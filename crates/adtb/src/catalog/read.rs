@@ -127,8 +127,12 @@ impl Catalog {
     /// Fail with [`Error::Quarantined`] naming constructor `c` of relation `r` when the pager
     /// marks its heap.
     fn admit<R: Runtime>(&self, at: &Snapshot<'_, R>, r: RelId, c: u32) -> Result<(), Error> {
-        if at.marked(self.heap(r, c).id().0) {
-            return Err(Error::Quarantined(self.ctor_named(r, c)));
+        let id = self.heap(r, c).id().0;
+        if at.marked(id) {
+            return Err(Error::Quarantined(
+                Quarantine::Heap(id),
+                self.ctor_named(r, c),
+            ));
         }
         Ok(())
     }
@@ -197,7 +201,7 @@ impl<R: Runtime> StoredHashes for Migrations<R> {
             let hold = txns.take(Scope::Heaps(BTreeSet::from([id])))?;
             let at = Snapshot::new(pager, txns, (&hold, None));
             if at.marked(id) {
-                return Err(Error::Quarantined(self.name.clone()));
+                return Err(Error::Quarantined(Quarantine::Heap(id), self.name.clone()));
             }
             at.visible(&self.heap)?
         };
@@ -267,7 +271,7 @@ impl<R: Runtime> Judged<R> {
             if marks.contains(&Quarantine::Heap(id))
                 && let Some(name) = names.get(&id)
             {
-                return Err(Error::Quarantined(name.clone()));
+                return Err(Error::Quarantined(Quarantine::Heap(id), name.clone()));
             }
         }
         Ok(())

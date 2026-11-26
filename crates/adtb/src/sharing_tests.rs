@@ -158,7 +158,7 @@ impl Witness {
                 let (refused, w) =
                     work(|| crate::write::refusals(f.schema(), &f.normal, &f.catalog));
                 out.insert(Pass::Delta, w);
-                refused.unwrap_or_else(|e| panic!("`{text}` breaks the checker: {e}"));
+                refused.unwrap_or_else(|e| panic!("`{text}` breaks the checker: {e:?}"));
             }
         }
         out

@@ -191,6 +191,17 @@ pub enum Error {
     },
 }
 
+impl Error {
+    /// Returns the broken invariant this error holds, or the error itself when it is of another
+    /// class.
+    pub fn broken(self) -> Result<Broken, Error> {
+        match self {
+            Error::Internal(b) => Ok(*b),
+            e => Err(e),
+        }
+    }
+}
+
 impl From<batch::TooLarge> for Error {
     fn from(_: batch::TooLarge) -> Error {
         Broken::PastOffsets.into()

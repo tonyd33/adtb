@@ -1,7 +1,6 @@
 use adtb_lang::ids::{CatCtorId, CatFieldId};
 use adtb_lang::schema::Schema;
 
-use crate::catalog::Rot;
 use crate::exec::Val;
 
 use super::{Broken, Error};
@@ -23,10 +22,7 @@ impl<const N: usize> EngineRow<N> {
         ctor: CatCtorId,
         fields: [CatFieldId; N],
     ) -> Result<Self, Error> {
-        let broken = |detail: String| {
-            let row = format!("engine constructor {ctor}");
-            Error::from(Broken::CatalogError(Rot::CatalogRow { row, detail }.into()))
-        };
+        let broken = |detail: String| Error::from(Broken::EngineCtor { ctor, detail });
         let c = (schema.ids().ctor_of(ctor)).ok_or_else(|| broken("is not declared".into()))?;
         let declared: Vec<CatFieldId> = (schema.ids().type_field_ids(c.def()))
             .filter(|(f, _)| f.ctor().is_none_or(|own| own == c.index()))

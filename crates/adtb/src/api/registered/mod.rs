@@ -29,7 +29,7 @@ use super::admitted::{Authority, CALL_BYTES, Queued};
 use super::arrow::{self, ArrowStream};
 use super::bundle::{self, CallRow, Callable, EDITION, Header, Passed, Stored};
 use super::cause::{Broken, internal};
-use super::error::{Error, RejectReason};
+use super::error::{Error, FatalReason, RejectReason};
 use super::pinned;
 use super::reads::Reads;
 use super::server::{holds_monitor, monitored};
@@ -37,7 +37,7 @@ use super::settings::Settings;
 use super::stated::{self, Hashes};
 use super::text::{DynRows, Normal, Prepared, rows};
 use super::txn::{AdHocTransaction, Committed, TxnCallOptions};
-use super::{CallOptions, Database, Engine, OWNER_ID, OpenError};
+use super::{CallOptions, Database, Engine, OWNER_ID, OpenError, TxnId};
 
 mod check;
 
@@ -719,17 +719,40 @@ fn stale(now: &Over<'_>, c: &Checked) -> Result<Option<String>, Error> {
     let Some(reader) = c.reader() else {
         return Ok(None);
     };
-    catalog::stale(now.source, now.compiled.committed(), &reader).map_err(catalog_error)
+    let schema = now.compiled.committed();
+    catalog::stale(now.source, schema, &reader).map_err(|e| catalog_error(schema, e))
 }
 
-/// Returns the refusal of a registration whose catalog read or change fails with `e`.
-pub(super) fn catalog_error(e: catalog::Error) -> Error {
+/// Returns the failure of a registration over a database of `schema` whose catalog read or
+/// change fails with `e`: a refusal of the catalog as `Invalid`, and any other as a call meeting
+/// it would fail.
+pub(super) fn catalog_error(schema: &Schema, e: catalog::Error) -> Error {
+    use catalog::Error as C;
     match e {
-        catalog::Error::Refused(why) | catalog::Error::Unaccepted(_, why) => {
-            Error::invalid(why.join("\n"))
-        }
-        catalog::Error::PastLimits(_) => Error::too_large(),
-        other => Error::internal(Broken::CatalogError(other)),
+        C::Refused(why) | C::Unaccepted(_, why) => Error::invalid(why.join("\n")),
+        C::PastLimits(_) => Error::too_large(),
+        C::Quarantined(_, what) => Error::Fatal {
+            reason: FatalReason::Quarantined { what },
+        },
+        e @ (C::Page(_)
+        | C::Heap(_)
+        | C::Index(_)
+        | C::Txn(_)
+        | C::Missing(_)
+        | C::RefusedBy { .. }
+        | C::Corrupt(_)
+        | C::Internal(_)
+        | C::MissingFunction(_)
+        | C::OtherVersion(_)
+        | C::FormatTooOld(_)
+        | C::Conflict(_)
+        | C::Spill(_)
+        | C::Exec(_)) => Error::of_unmapped(
+            schema,
+            TxnId(0),
+            e.into(),
+            (|_: &BTreeMap<_, _>| String::new(), |_| None),
+        ),
     }
 }
 
@@ -775,7 +798,7 @@ pub(super) fn readers(
         let reader = c.reader().expect("a bundle's registration has a header");
         catalog
             .register(reader)
-            .map_err(|e| refused(catalog_error(e)))?;
+            .map_err(|e| refused(catalog_error(catalog.schema(), e)))?;
         let definer = definer(stored, &h.name, roles).map_err(refused)?;
         out.push(Live {
             checked: c,
@@ -800,7 +823,7 @@ pub(super) fn recheck(
     text: &str,
     live: &[Live],
     deployed: &[DeployedGrant],
-) -> Result<(), RejectReason> {
+) -> Result<(), Error> {
     if live.is_empty() {
         return Ok(());
     }
@@ -810,13 +833,14 @@ pub(super) fn recheck(
     let next = match catalog.source().migrate(&file, text) {
         Ok(next) => next,
         Err(f) => {
-            return catalog::model_fault(&f).map_or(Ok(()), |b| Err(internal(Broken::Catalog(b))));
+            return catalog::model_fault(&f)
+                .map_or(Ok(()), |b| Err(Error::internal(Broken::Catalog(b))));
         }
     };
     let Ok(compiled) = next.check() else {
         return Ok(());
     };
-    let compiled = settled(compiled)?;
+    let compiled = settled(compiled).map_err(Error::rejected)?;
     let mut lacking = Lacking::new(&next.grants, deployed);
     let mut operator = None;
     let mut blocked: BTreeMap<&str, Vec<String>> = BTreeMap::new();
@@ -825,7 +849,7 @@ pub(super) fn recheck(
         let pins = c.header.as_ref().map_or(0, |h| h.pins);
         let lines = blocked.entry(&c.name).or_default();
         let conflict = host_conflict(catalog.source(), &l.source, &next)
-            .map_err(|ds| internal(Broken::HostCode(ds)))?;
+            .map_err(|ds| Error::internal(Broken::HostCode(ds)))?;
         if let Some((op, f)) = conflict {
             operator.get_or_insert(op);
             lines.push(format!(
@@ -834,7 +858,8 @@ pub(super) fn recheck(
             ));
             continue;
         }
-        let served = match translations(c, &l.source, &compiled, &next).map_err(|b| internal(*b))? {
+        let translated = translations(c, &l.source, &compiled, &next);
+        let served = match translated.map_err(|b| Error::internal(*b))? {
             Ok(served) => served,
             Err((query, u)) => {
                 if let Some(op) = &u.operator {
@@ -851,10 +876,7 @@ pub(super) fn recheck(
             continue;
         };
         let runs = c.entries.iter().zip(served.iter().map(Served::run));
-        let lacks = lacking.of_runs(runs, owner).map_err(|e| match e {
-            Error::Rejected { reason } => reason,
-            other => internal(Broken::Lacking(other)),
-        })?;
+        let lacks = lacking.of_runs(runs, owner)?;
         if !lacks.is_empty() {
             let revoking = file.operators.iter().find(|op| match &op.kind {
                 OperatorKind::Revoke(r) => r.from.text == *owner,
@@ -874,7 +896,7 @@ pub(super) fn recheck(
     if lines.is_empty() {
         return Ok(());
     }
-    Err(RejectReason::SchemaRefused {
+    Err(Error::rejected(RejectReason::SchemaRefused {
         operator: operator.unwrap_or_else(|| {
             file.operators
                 .first()
@@ -882,7 +904,7 @@ pub(super) fn recheck(
                 .unwrap_or_default()
         }),
         detail: lines.join("\n"),
-    })
+    }))
 }
 
 /// The translation of each callable, or the name of the first that has none and why.
@@ -992,7 +1014,7 @@ impl<R: Runtime> Database<R> {
         let found = Registered::served(&self.engine, name);
         if found.is_none() {
             e.db.admit_database()
-                .map_err(|err| e.write_error(super::TxnId(0), err))?;
+                .map_err(|err| e.write_error(TxnId(0), err))?;
         }
         found.ok_or_else(|| {
             Error::rejected(RejectReason::UnknownBundle {

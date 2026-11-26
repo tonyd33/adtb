@@ -334,7 +334,10 @@ impl<R: Runtime> Query<'_, R> {
             RootKind::Constraint,
             options,
         )
-        .map_err(|e| Error::from(Broken::Plan(e)))?;
+        .map_err(|e| match e.broken() {
+            Ok(b) => Error::from(Broken::Plan(b)),
+            Err(e) => Error::Refused(vec![format!("{object} is not admitted: {e}")]),
+        })?;
         let program = hosts::program(object, (schema, catalog), &p, hosts, Broken::Validation)?;
         store.admit(program.reads())?;
         let store = store.store();

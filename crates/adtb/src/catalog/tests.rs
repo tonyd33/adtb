@@ -197,7 +197,7 @@ fn an_index_path_naming_no_field_is_internal() {
 }
 
 #[test]
-fn an_executor_failure_is_a_refusal_naming_its_object_damage_its_own_error_or_internal() {
+fn an_executor_failure_is_a_refusal_naming_its_object_or_keeps_its_class() {
     use crate::exec;
     let classify = |e| super::hosts::classify("index `x`", e, Broken::IndexKey);
     let rot = exec::Rot::SpillCut;
@@ -223,14 +223,20 @@ fn an_executor_failure_is_a_refusal_naming_its_object_damage_its_own_error_or_in
             exec::Error::OtherVersion("f".into()),
             Error::OtherVersion("f".into()),
         ),
-        (internal(), Error::from(Broken::IndexKey(internal()))),
         (
-            exec::Error::NoCaller,
-            Error::from(Broken::IndexKey(exec::Error::NoCaller)),
+            internal(),
+            Error::from(Broken::IndexKey(exec::Broken::EmptyRange)),
         ),
     ];
     for (e, want) in cases {
         assert_eq!(want, classify(e));
+    }
+    for e in [exec::Error::NoCaller, exec::Error::Cancelled] {
+        let kept = match classify(e.clone()) {
+            Error::Exec(failure) => Some(failure.into_error()),
+            _ => None,
+        };
+        assert_eq!(Some(e), kept);
     }
 }
 
@@ -438,7 +444,7 @@ fn a_refusal_met_enforcing_pending_drops_is_unaccepted_and_every_other_failure_k
         Error::Unaccepted(2, vec!["no `x` in scope".into()]),
         Error::Internal(Box::new(Broken::PendingRelations)),
         Error::PastLimits("auth::users".into()),
-        Error::Unchecked("the schema keeping the pending drops".into(), Vec::new()),
+        super::hosts::classify("x", crate::exec::Error::Cancelled, Broken::IndexKey),
     ];
     for e in kept {
         assert_eq!(e.clone(), unaccepted_at(4, e));

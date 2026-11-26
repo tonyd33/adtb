@@ -79,7 +79,6 @@ use adtb_lang::ids::CatIndexId;
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Committed, Schema};
-use adtb_lang::span::Diag;
 use adtb_lang::types::{KeyForm, RelId, Ty};
 
 use crate::btree::{self, BTree, Index};
@@ -98,6 +97,7 @@ pub use broken::{Broken, model_fault, refused_by, unresolved};
 pub use deploy::Rewrite;
 pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
 pub use grants::Dormant;
+pub use hosts::ExecFailure;
 use hosts::classify;
 pub use ids::engine_relation;
 pub use kept::{KeptField, KeptRow};
@@ -172,9 +172,6 @@ pub enum Error {
     /// The migration reached a host function whose body is bound at another version than its
     /// declaration names; the name the body is registered under.
     OtherVersion(String),
-    /// The checker refuses a schema the catalog builds and guarantees it admits; what was built
-    /// and each diagnostic.
-    Unchecked(String, Vec<Diag>),
     /// A stored body expands past this build's limits; the qualified name of its declaration.
     PastLimits(String),
     /// The catalog root page is of this older format, which this engine does not open.
@@ -183,9 +180,11 @@ pub enum Error {
     Conflict(mvcc::Conflict),
     /// The spill file of a query the catalog ran could not be made, written or read.
     Spill(IoError),
-    /// A heap the transaction reads is quarantined; the name a client sees of its constructor
-    /// relation.
-    Quarantined(String),
+    /// A heap the transaction reads is quarantined: its mark, and the name a client sees of its
+    /// constructor relation.
+    Quarantined(Quarantine, String),
+    /// A query the catalog runs fails as a statement's would.
+    Exec(ExecFailure),
 }
 
 impl From<PageError> for Error {
@@ -209,9 +208,23 @@ impl From<btree::Error> for Error {
     }
 }
 
+impl From<crate::write::CounterError> for Error {
+    fn from(e: crate::write::CounterError) -> Error {
+        use crate::write::CounterError as C;
+        match e {
+            C::Page(e) => Error::Page(e),
+            C::Index(e) => e.into(),
+            C::Exhausted => Error::Refused(vec![
+                "a generated counter exhausted its integer range".to_owned(),
+            ]),
+            C::Full(room) => Error::Refused(vec![crate::write::past_room(room)]),
+        }
+    }
+}
+
 impl From<crate::key::EncodeError> for Error {
     fn from(e: crate::key::EncodeError) -> Error {
-        Broken::IndexKey(e.into()).into()
+        Broken::IndexKey(exec::Broken::Unencodable(e)).into()
     }
 }
 
@@ -756,10 +769,8 @@ impl Catalog {
         let (held_compiled, held_texts) = readers.checking((&compiled, &texts));
         let held = held_compiled.committed();
         let specs =
-            pending::kept_indexes(held, held_texts, &readers.pending).map_err(Rot::KeptIndexes)?;
-        let normal = index_program(held_compiled, specs.values(), |b| {
-            Error::Corrupt(Rot::KeptIndexes(b))
-        })?;
+            pending::kept_indexes(held, held_texts, &readers.pending).map_err(Error::Internal)?;
+        let normal = index_program(held_compiled, specs.values())?;
         let mut stored = BTreeMap::new();
         for (id, spec) in specs {
             let Some(&at) = named.indexes.get(&id) else {
@@ -767,12 +778,10 @@ impl Catalog {
             };
             let index = Index::open(
                 BTree::open(at, owner(id).ok_or(Rot::IndexOwner(id.raw()))?),
-                key_schema(held, normal.as_ref(), &named.keys, &spec)
-                    .map_err(|e| Rot::IndexKeying(Box::new(e)))?,
+                key_schema(held, normal.as_ref(), &named.keys, &spec)?,
                 index_ctors(held, &spec),
             );
-            let keys = index_keys(held, normal.as_ref(), &spec, &Arc::default())
-                .map_err(|e| Rot::IndexKeying(Box::new(e)))?;
+            let keys = index_keys(held, normal.as_ref(), &spec, &Arc::default())?;
             stored.insert(id, (spec, index, keys));
         }
         let kept = Kept::open(

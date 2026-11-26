@@ -5,7 +5,7 @@ use adtb_sys::os::{Backend, Faults, OsRuntime};
 use adtb_testkit::scratch::Scratch;
 
 use crate::storage::{Damage, HEADER_LEN, Options, PageKind, Pager};
-use crate::write::Error;
+use crate::write::CounterError;
 
 use super::{BLOCK, Counter, Sequences};
 
@@ -101,11 +101,8 @@ impl Fixture {
     }
 }
 
-fn refused<T: Debug>(result: Result<T, Error>, detail: &str) {
-    assert!(
-        matches!(&result, Err(Error::Exec(crate::exec::Error::Unsupported(got))) if got == detail),
-        "expected {detail:?}, got {result:?}"
-    );
+fn refused<T: Debug + PartialEq>(result: Result<T, CounterError>, room: usize) {
+    assert_eq!(Err(CounterError::Full(room)), result);
 }
 
 #[test]
@@ -114,16 +111,16 @@ fn a_refused_draw_cannot_return_an_unreserved_identity_on_retry() {
     let extra = u32::try_from(f.seqs.counters.len()).unwrap();
     let before = f.seqs.counters.clone();
     let bytes = f.bytes();
-    let detail = format!("more than {extra} generated counters");
+    let room = f.seqs.counters.len();
     for _ in 0..3 {
-        refused(f.seqs.draw(&f.pager, extra, 1), &detail);
+        refused(f.seqs.draw(&f.pager, extra, 1), room);
         assert_eq!(before, f.seqs.counters);
         assert_eq!(bytes, f.bytes());
     }
     assert_eq!(1, f.seqs.draw(&f.pager, 0, 1).unwrap());
     f = f.crash();
     assert!(!f.seqs.counters.contains_key(&extra));
-    refused(f.seqs.draw(&f.pager, extra, 1), &detail);
+    refused(f.seqs.draw(&f.pager, extra, 1), room);
     assert!(f.seqs.draw(&f.pager, 0, 1).unwrap() > 1);
     f.pager.close();
 }
@@ -134,16 +131,16 @@ fn a_refused_advance_cannot_report_an_unpersisted_reservation_on_retry() {
     let extra = u32::try_from(f.seqs.counters.len()).unwrap();
     let before = f.seqs.counters.clone();
     let bytes = f.bytes();
-    let detail = format!("more than {extra} generated counters");
+    let room = f.seqs.counters.len();
     for _ in 0..3 {
-        refused(f.seqs.advance(&f.pager, extra, 7), &detail);
+        refused(f.seqs.advance(&f.pager, extra, 7), room);
         assert_eq!(before, f.seqs.counters);
         assert_eq!(bytes, f.bytes());
     }
     f.seqs.advance(&f.pager, 0, 100).unwrap();
     f = f.crash();
     assert!(!f.seqs.counters.contains_key(&extra));
-    refused(f.seqs.advance(&f.pager, extra, 7), &detail);
+    refused(f.seqs.advance(&f.pager, extra, 7), room);
     assert!(f.seqs.draw(&f.pager, 0, 1).unwrap() > 100);
     f.pager.close();
 }
@@ -189,16 +186,10 @@ fn damaged_counter_page_refuses_retries_without_advancing_cached_reservations() 
     for id in [0, 1] {
         for _ in 0..2 {
             let draw = f.seqs.draw(&f.pager, id, 100);
-            assert!(
-                matches!(draw, Err(Error::Exec(crate::exec::Error::Page(p))) if p == page),
-                "{draw:?}"
-            );
+            assert_eq!(Err(CounterError::Page(page)), draw);
             assert_eq!(before, f.seqs.counters);
             let advance = f.seqs.advance(&f.pager, id, 100);
-            assert!(
-                matches!(advance, Err(Error::Exec(crate::exec::Error::Page(p))) if p == page),
-                "{advance:?}"
-            );
+            assert_eq!(Err(CounterError::Page(page)), advance);
             assert_eq!(before, f.seqs.counters);
         }
     }

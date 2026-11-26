@@ -1,0 +1,19 @@
+-- wildcard_broken: a match arm whose pattern is `_` or a lone binding and whose value builds a
+-- `Broken` variant with a payload or calls `internal(`. It makes every case its match does not
+-- name an internal error, whatever its class. Not counted: a top-level module of tests. Not seen:
+-- a binding with a guard, an `e @ ..` binding, an `Err(e)` arm, an arm whose value is a unit
+-- variant `Broken::X` with no payload, and an arm that hands its case to a helper building the
+-- `Broken`, as `classify(.., Broken::X)` does.
+
+builds = r"\bBroken::[A-Z]\w*\s*[({]|\binternal\s*\(";
+
+main = do {
+  i <- children;
+  guard $ not (text i ~ r"^mod\s+tests\b");
+  a <- pure i | descendants_of_kind :match_arm;
+  p <- pure a | #pattern;
+  guard $ text p ~ r"^(_|[a-z_][a-z0-9_]*)$";
+  v <- pure a | #value;
+  guard $ text v ~ builds;
+  return ("wildcard_broken", range a);
+};

@@ -1270,7 +1270,10 @@ fn opened_hashes(catalog: &Catalog, regs: &[Registration]) -> Result<stated::Has
     if !regs.is_empty() {
         hash.read().map_err(corrupt)?;
     }
-    Ok(stated::Hashes::new(hash, registered::catalog_error))
+    let schema = catalog.compiled().shared_schema().clone();
+    Ok(stated::Hashes::new(hash, move |e| {
+        registered::catalog_error(&schema, e)
+    }))
 }
 
 /// Refuse a log whose migrations at or below the file's version differ from the file's by

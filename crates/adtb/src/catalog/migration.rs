@@ -20,6 +20,7 @@ use crate::mvcc::{Scope, Transactions};
 use crate::plan::HeapId;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
+use crate::write::Unadmitted;
 
 use super::Rot;
 use super::admit::{self, Indexing};
@@ -128,7 +129,7 @@ impl Catalog {
             Err((mark, _)) => {
                 (self.source.grants, self.sequences) = before;
                 let what = self.mark_named(mark);
-                return Err(change.fail(self, Error::Quarantined(what)));
+                return Err(change.fail(self, Error::Quarantined(mark, what)));
             }
         };
         let landed = match change.commit_naming(self.root, |r| r.sequences = sequences, release) {
@@ -233,8 +234,12 @@ impl Catalog {
             index_keys(schema, Some(&normal), spec, &self.hosts)?;
         }
         let catalog = planned(schema, specs.values(), &heaps);
-        let why = crate::write::refusals(schema, &normal, &catalog)
-            .map_err(|e| Error::from(Broken::Admission(e)))?;
+        let why = crate::write::refusals(schema, &normal, &catalog).map_err(|e| match e {
+            Unadmitted::Broken(b) => Error::from(Broken::Admission(b)),
+            Unadmitted::Exec(c, e) => classify(&format!("constraint {c}"), e, |b| {
+                Broken::Admission(crate::write::Broken::Compile(b))
+            }),
+        })?;
         if why.is_empty() {
             return Ok(());
         }

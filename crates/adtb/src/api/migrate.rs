@@ -58,7 +58,7 @@ pub(super) fn migrate<'p, R: Runtime>(
     for text in log.migrations.iter().skip(stored) {
         let version = catalog.source().version() + 1;
         registered::recheck(catalog, text, live, &deployed)
-            .map_err(|reason| refused(version, reason))?;
+            .map_err(|reason| OpenError::MigrationRefused { version, reason })?;
         let applied = if let Some(held) = replay {
             catalog.replay_holding((pager, txns), text, held).map(drop)
         } else {
@@ -80,7 +80,7 @@ pub(super) fn migrate<'p, R: Runtime>(
                 },
             ),
             catalog::Error::Internal(what) => refused(version, internal(Broken::Catalog(*what))),
-            catalog::Error::Quarantined(what) => OpenError::MigrationRefused {
+            catalog::Error::Quarantined(_, what) => OpenError::MigrationRefused {
                 version,
                 reason: Error::Fatal {
                     reason: FatalReason::Quarantined { what },
@@ -88,14 +88,21 @@ pub(super) fn migrate<'p, R: Runtime>(
             },
             catalog::Error::MissingFunction(name) => OpenError::HostFnMissing { name },
             catalog::Error::OtherVersion(name) => OpenError::HostFnMismatch { name },
-            catalog::Error::Unchecked(built, ds) => refused(
+            catalog::Error::Exec(e) => OpenError::MigrationRefused {
                 version,
-                internal(Broken::Unchecked {
-                    built,
-                    messages: ds.into_iter().map(|d| d.message).collect(),
-                }),
-            ),
-            other => corrupt(other),
+                reason: Error::of_exec(TxnId(0), e.into_error(), |_| None),
+            },
+            e @ (catalog::Error::Page(_)
+            | catalog::Error::Heap(_)
+            | catalog::Error::Index(_)
+            | catalog::Error::Txn(_)
+            | catalog::Error::Missing(_)
+            | catalog::Error::Corrupt(_)
+            | catalog::Error::Unaccepted(..)
+            | catalog::Error::PastLimits(_)
+            | catalog::Error::FormatTooOld(_)
+            | catalog::Error::Conflict(_)
+            | catalog::Error::Spill(_)) => corrupt(e),
         })?;
     }
     Ok(Migrated { pager })

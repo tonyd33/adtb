@@ -90,7 +90,10 @@ impl Broken {
             | Broken::ExportNotSet
             | Broken::SettingNotRecord
             | Broken::SettingField(_)
-            | Broken::CatalogError(_)
+            | Broken::Catalog(_)
+            | Broken::EngineCtor { .. }
+            | Broken::PastRange { .. }
+            | Broken::EntryTooLong { .. }
             | Broken::DeploymentRefused
             | Broken::NoDenial(_)
             | Broken::Unadmitted { .. }

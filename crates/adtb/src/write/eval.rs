@@ -882,9 +882,9 @@ impl<R: Runtime> Database<R> {
             kind,
             crate::plan::Options::default(),
         )
-        .map_err(|e| match e {
-            e @ crate::plan::Error::Internal(_) => Broken::StatementPlan(e).into(),
-            e => Error::Exec(exec::Error::Unsupported(e.to_string())),
+        .map_err(|e| match e.broken() {
+            Ok(b) => Broken::StatementPlan(b).into(),
+            Err(e) => Error::Exec(exec::Error::Unsupported(e.to_string())),
         })
     }
 

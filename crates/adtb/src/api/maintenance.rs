@@ -467,8 +467,6 @@ impl<R: Runtime> Background<R> {
     }
 }
 
-/// Returns what `body` returns, or the text of its panic. A fatal I/O error, and a payload with no
-/// text, which is the runtime's own unwinding, go on up.
 fn done(page: u64, end: u64) -> f64 {
     if end == 0 {
         return 0.0;

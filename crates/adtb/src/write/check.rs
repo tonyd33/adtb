@@ -76,33 +76,35 @@ pub fn denials(
 /// when the schema admits every one.
 ///
 /// Errors:
-/// - The guarantee of the checker that compiling a check breaks.
+/// - [`Unadmitted::Broken`] with the guarantee of the checker that planning a check breaks.
+/// - [`Unadmitted::Exec`] with the constraint and the executor's failure to compile one of its
+///   queries for another reason than a form it does not run.
 pub fn refusals(
     schema: &Committed,
     normal: &NormalProgram,
     catalog: &Catalog,
-) -> Result<Vec<(String, String)>, Broken> {
+) -> Result<Vec<(String, String)>, Unadmitted> {
     let mut terms = normal.terms().clone();
     let checks = match delta::compile(schema, normal, &mut terms, catalog) {
         Ok(checks) => checks,
         Err(delta::Unadmitted::Refused(why)) => {
             return Ok(why.into_iter().map(|r| (r.constraint, r.detail)).collect());
         }
-        Err(delta::Unadmitted::Internal(b)) => return Err(b),
+        Err(delta::Unadmitted::Internal(b)) => return Err(Unadmitted::Broken(b)),
     };
     let mut out = Vec::new();
     for c in &checks {
         for d in &c.deltas {
-            let why = uncompiled(exec::compile(schema, catalog, &d.plan, None))?;
+            let why = uncompiled(&c.name, exec::compile(schema, catalog, &d.plan, None))?;
             out.extend(why.map(|why| (c.name.clone(), why)));
         }
     }
     let roots: Vec<(Tm, Vec<Var>)> = checks.iter().map(|c| (c.whole(), Vec::new())).collect();
-    let terms =
-        adtb_lang::kernel::ValidTerms::new(schema, terms, &roots).map_err(Broken::IllTyped)?;
+    let terms = adtb_lang::kernel::ValidTerms::new(schema, terms, &roots)
+        .map_err(|e| Unadmitted::Broken(Broken::IllTyped(e)))?;
     for c in &checks {
         let options = plan::Options::default();
-        let whole = plan::plan(
+        let planned = plan::plan(
             schema,
             normal,
             catalog,
@@ -110,9 +112,16 @@ pub fn refusals(
             c.whole(),
             RootKind::Constraint,
             options,
-        )
-        .map_err(Broken::WholePlan)?;
-        let why = uncompiled(exec::compile(schema, catalog, &whole, None))?;
+        );
+        let whole = match planned.map_err(plan::Error::broken) {
+            Ok(whole) => whole,
+            Err(Ok(b)) => return Err(Unadmitted::Broken(Broken::WholePlan(b))),
+            Err(Err(e)) => {
+                out.push((c.name.clone(), e.to_string()));
+                continue;
+            }
+        };
+        let why = uncompiled(&c.name, exec::compile(schema, catalog, &whole, None))?;
         out.extend(why.map(|why| (c.name.clone(), why)));
     }
     out.dedup();
@@ -128,12 +137,24 @@ pub fn idle_deltas_checked() -> u64 {
     IDLE_CHECKED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Returns why the executor cannot compile a program, or `None` when it compiled.
-fn uncompiled<T>(compiled: Result<T, exec::Error>) -> Result<Option<String>, Broken> {
+/// Why the admission of a schema's constraints did not finish.
+#[derive(Debug)]
+pub enum Unadmitted {
+    Broken(Broken),
+    /// Compiling a query of this constraint fails in this class.
+    Exec(String, exec::Error),
+}
+
+/// Returns the form the executor does not run that a program of `constraint` uses, or `None`
+/// when it compiled.
+fn uncompiled<T>(
+    constraint: &str,
+    compiled: Result<T, exec::Error>,
+) -> Result<Option<String>, Unadmitted> {
     match compiled {
         Ok(_) => Ok(None),
         Err(exec::Error::Unsupported(why)) => Ok(Some(why)),
-        Err(e) => Err(Broken::Compile(e)),
+        Err(e) => Err(Unadmitted::Exec(constraint.to_owned(), e)),
     }
 }
 

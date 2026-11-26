@@ -425,6 +425,17 @@ pub enum Error {
     Outside(&'static str),
 }
 
+impl Error {
+    /// Returns the broken guarantee this error holds, or the error itself when it is of another
+    /// class.
+    pub fn broken(self) -> Result<Broken, Error> {
+        match self {
+            Error::Internal(b) => Ok(b),
+            e => Err(e),
+        }
+    }
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

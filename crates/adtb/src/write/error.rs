@@ -152,10 +152,12 @@ impl From<vacuum::Error> for Error {
 
 impl From<crate::btree::Error> for Error {
     fn from(e: crate::btree::Error) -> Error {
+        use crate::btree::Error as B;
         match e {
-            crate::btree::Error::Page(p) => p.into(),
-            crate::btree::Error::Key(e) => e.into(),
-            other => Rot::Index(other).into(),
+            B::Page(p) => p.into(),
+            B::Key(e) => e.into(),
+            e @ (B::Malformed(_) | B::Entry(..)) => Rot::Index(e).into(),
+            B::TooLong { len, max } => Broken::EntryTooLong { len, max }.into(),
         }
     }
 }
@@ -175,19 +177,44 @@ impl From<crate::mvcc::Error> for Error {
 impl From<crate::catalog::Error> for Error {
     fn from(e: crate::catalog::Error) -> Error {
         use crate::catalog::Error as C;
+        let refused = |e: &C| {
+            Error::Rejected(Rejection::Invalid {
+                detail: crate::catalog::detail(e),
+            })
+        };
         match e {
-            C::Page(p)
-            | C::Heap(crate::heap::Error::Page(p))
-            | C::Index(crate::btree::Error::Page(p)) => p.into(),
-            C::Index(e @ (crate::btree::Error::Malformed(_) | crate::btree::Error::Entry(..))) => {
-                Rot::Index(e).into()
-            }
+            C::Page(p) => p.into(),
+            C::Heap(e) => e.into(),
+            C::Index(e) => e.into(),
             C::Corrupt(r) => Rot::Catalog(r).into(),
             C::Missing(what) => Rot::NoRoot(what).into(),
             C::Txn(e) => Error::Transactions(e),
             C::Spill(io) => Error::Exec(exec::Error::Spill(io)),
-            C::Conflict(c) | C::Heap(crate::heap::Error::Changed(c)) => c.into(),
-            other => Broken::CatalogError(other).into(),
+            C::Conflict(c) => c.into(),
+            C::Internal(b) => Broken::Catalog(b).into(),
+            C::Exec(e) => Error::Exec(e.into_error()),
+            C::MissingFunction(name) => Error::Exec(exec::Error::MissingFunction(name)),
+            C::OtherVersion(name) => Error::Exec(exec::Error::OtherVersion(name)),
+            C::Quarantined(object, _) => Error::admitted(object),
+            e @ (C::Refused(_)
+            | C::RefusedBy { .. }
+            | C::Unaccepted(..)
+            | C::PastLimits(_)
+            | C::FormatTooOld(_)) => refused(&e),
+        }
+    }
+}
+
+impl From<super::CounterError> for Error {
+    fn from(e: super::CounterError) -> Error {
+        use super::CounterError as C;
+        match e {
+            C::Page(p) => p.into(),
+            C::Index(e) => e.into(),
+            C::Exhausted => Error::SequenceExhausted,
+            C::Full(room) => {
+                Error::Exec(exec::Error::Unsupported(super::sequence::past_room(room)))
+            }
         }
     }
 }

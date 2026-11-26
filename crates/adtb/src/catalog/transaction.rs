@@ -10,7 +10,7 @@ use crate::runtime::Runtime;
 use crate::storage::{Lsn, Pager, Pid, Release};
 
 use super::root::{self, Changing, Root};
-use super::{Broken, Catalog, Error, Migrating, update_root};
+use super::{Catalog, Error, Migrating, update_root};
 
 /// A catalog transaction under way.
 pub(super) struct Change<'a, R: Runtime> {
@@ -307,13 +307,10 @@ impl Catalog {
     /// nothing.
     pub(super) fn counter_page<R: Runtime>(&self, pager: &Pager<R>) -> Result<Pid, Error> {
         let ids = &self.schema().ids();
-        crate::write::counter_page(pager, self.schema(), |r| {
+        let pid = crate::write::counter_page(pager, self.schema(), |r| {
             ids.key_id(r).map(|k| &self.indexes[&k].1)
-        })
-        .map_err(|e| match e {
-            crate::write::Error::Exec(crate::exec::Error::Page(e)) => Error::Page(e),
-            other => Error::from(Broken::KeyCounter(other)),
-        })
+        })?;
+        Ok(pid)
     }
 
     /// Free every page a schema change `landed` left unreached, counting the versions of the

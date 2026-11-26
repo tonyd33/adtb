@@ -28,7 +28,7 @@ pub(super) fn scalar(
     (schema, terms): (&Schema, Valid<'_>),
     (var, body): (Var, Tm),
     hosts: &Arc<exec::Hosts>,
-    internal: fn(exec::Error) -> Broken,
+    internal: fn(exec::Broken) -> Broken,
 ) -> Result<exec::Scalar, Error> {
     let mut scalar =
         exec::Scalar::new(schema, terms, var, body).map_err(|e| classify(object, e, internal))?;
@@ -45,7 +45,7 @@ pub(super) fn program(
     (schema, catalog): (&Schema, &plan::Catalog),
     p: &plan::Plan,
     hosts: &Arc<exec::Hosts>,
-    internal: fn(exec::Error) -> Broken,
+    internal: fn(exec::Broken) -> Broken,
 ) -> Result<exec::Program, Error> {
     let mut program =
         exec::compile(schema, catalog, p, None).map_err(|e| classify(object, e, internal))?;
@@ -53,24 +53,16 @@ pub(super) fn program(
     Ok(program)
 }
 
-/// Returns the error of a migration whose evaluation `e` reached a host function with no body
-/// bound at the version its declaration names, or `None` when `e` is another error.
-pub fn unbound(e: &exec::Error) -> Option<Error> {
-    match e {
-        exec::Error::MissingFunction(function) => Some(Error::MissingFunction(function.clone())),
-        exec::Error::OtherVersion(symbol) => Some(Error::OtherVersion(symbol.clone())),
-        _ => None,
-    }
-}
-
 /// Returns `e`, a failure of the executor on `object`, as the catalog's: a form the executor
-/// does not run as a refusal naming `object`, damage and a page failure as themselves, a call of
-/// a host function with no body bound as its own error, and any other as `internal` of it.
-pub(super) fn classify(object: &str, e: exec::Error, internal: fn(exec::Error) -> Broken) -> Error {
-    if let Some(e) = unbound(&e) {
-        return e;
-    }
+/// does not run as a refusal naming `object`, a call of a host function with no body bound as
+/// its own error, a broken guarantee as `internal` of it, and any other in its own class.
+pub(super) fn classify(
+    object: &str,
+    e: exec::Error,
+    internal: fn(exec::Broken) -> Broken,
+) -> Error {
     match e {
+        exec::Error::Internal(b) => Error::from(internal(*b)),
         exec::Error::Unsupported(why) => {
             Error::Refused(vec![format!("{object} is not admitted: {why}")])
         }
@@ -78,6 +70,33 @@ pub(super) fn classify(object: &str, e: exec::Error, internal: fn(exec::Error) -
         exec::Error::Spill(e) => Error::Spill(e),
         exec::Error::Corrupt(rot) => Rot::Exec(rot).into(),
         exec::Error::OrphanEntry(index) => Rot::Orphaned(index).into(),
-        other => Error::from(internal(other)),
+        exec::Error::Serialization(c) => Error::Conflict(c),
+        exec::Error::MissingFunction(function) => Error::MissingFunction(function),
+        exec::Error::OtherVersion(symbol) => Error::OtherVersion(symbol),
+        e @ (exec::Error::Fault(_)
+        | exec::Error::StatementLimit(_)
+        | exec::Error::NoCaller
+        | exec::Error::Rejected(_)
+        | exec::Error::Cancelled
+        | exec::Error::Overloaded
+        | exec::Error::DeadlineExceeded
+        | exec::Error::HistoryUnavailable { .. }
+        | exec::Error::WrongVersion { .. }) => Error::Exec(ExecFailure(e)),
+    }
+}
+
+/// An executor failure of a query the catalog runs that a statement's query would fail with too:
+/// a fault, a statement limit, a cancellation, a deadline, an overload, a rejection, a read of
+/// `caller` or of the past. Only [`classify`] builds one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecFailure(exec::Error);
+
+impl ExecFailure {
+    pub fn error(&self) -> &exec::Error {
+        &self.0
+    }
+
+    pub fn into_error(self) -> exec::Error {
+        self.0
     }
 }

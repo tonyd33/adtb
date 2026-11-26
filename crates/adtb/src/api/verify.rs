@@ -841,7 +841,6 @@ impl<R: Runtime> Engine<R> {
     fn unchained(&self, tx: &write::Txn) -> Result<Vec<Found>, write::Error> {
         let schema = self.catalog.schema();
         let codec = Codec::<MigrationRow>::new(schema);
-        let broken = |e: catalog::Error| write::Error::from(write::Broken::CatalogError(e));
         let rows = match self.db.relation_rows(tx, codec.relation(), None) {
             Ok(rows) => rows,
             // The page check reports the damage.
@@ -852,11 +851,11 @@ impl<R: Runtime> Engine<R> {
         for row in rows {
             let row = codec
                 .decode_val(schema, &row)
-                .map_err(|r| broken(r.into()))?;
+                .map_err(write::Rot::Catalog)?;
             stored.insert(row.version(), *row.hash());
         }
         let unchained = catalog::unchained(self.catalog.source(), &stored)
-            .map_err(|f| broken(catalog::unresolved(f).into()))?;
+            .map_err(|f| write::Broken::Catalog(Box::new(catalog::unresolved(f))))?;
         Ok(unchained
             .into_iter()
             .map(|(v, stored, chained)| {

@@ -21,11 +21,6 @@ pub(super) enum Broken {
     Write(write::Broken),
     Exec(exec::Broken),
     Catalog(catalog::Broken),
-    CatalogError(catalog::Error),
-    Unchecked {
-        built: String,
-        messages: Vec<String>,
-    },
     UnprintableKey(PrintError),
     NoRows,
     AdhocNoRequirements(permission::Error),
@@ -50,8 +45,6 @@ pub(super) enum Broken {
         owned: String,
     },
     HostCode(Vec<FileDiag>),
-    Lacking(Error),
-    Batches(exec::Error),
     NoColumn(Ty),
     /// An error whose value does not read as a value of the prelude sum `Error`.
     NoValue(Error),
@@ -63,10 +56,6 @@ impl fmt::Display for Broken {
             Broken::Write(b) => write!(f, "{b}"),
             Broken::Exec(e) => write!(f, "{e}"),
             Broken::Catalog(e) => write!(f, "{e}"),
-            Broken::CatalogError(e) => f.write_str(&catalog::detail(e)),
-            Broken::Unchecked { built, messages } => {
-                write!(f, "{built} does not check: {}", messages.join("; "))
-            }
             Broken::UnprintableKey(e) => f.write_str(&e.message),
             Broken::NoRows => f.write_str("a command returns its rows"),
             Broken::AdhocNoRequirements(e) => {
@@ -107,8 +96,6 @@ impl fmt::Display for Broken {
             }
             Broken::NoRole { id, owned } => write!(f, "no role has id {id}, which owns {owned}"),
             Broken::HostCode(ds) => write!(f, "{ds:?}"),
-            Broken::Lacking(e) => write!(f, "{e:?}"),
-            Broken::Batches(e) => f.write_str(&exec::detail(e)),
             Broken::NoColumn(ty) => write!(f, "a result of type {ty:?} has no column"),
             Broken::NoValue(e) => write!(f, "{}", e.value()),
         }

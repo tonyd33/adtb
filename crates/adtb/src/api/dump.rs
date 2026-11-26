@@ -950,13 +950,13 @@ impl<R: Runtime> Entered<'_, R> {
         self.admit_dump().map_err(Refusal::own)?;
         let envelope = self.envelope().map_err(Refusal::own)?;
         let failed = |e| self.met(id, e);
-        let broken = |r: Rot| failed(write::Error::from(write::Broken::CatalogError(r.into())));
+        let rotten = |r: Rot| failed(write::Error::from(write::Rot::Catalog(r)));
         let rows = |r| self.db.relation_rows(tx, r, None).map_err(failed);
         let schema = self.schema();
         let grants = Codec::<RoleGrant>::new(schema);
         let (mut logged, mut given) = (BTreeSet::new(), BTreeSet::new());
         for g in rows(grants.relation())? {
-            match grants.decode_val(schema, &g).map_err(broken)?.kind() {
+            match grants.decode_val(schema, &g).map_err(rotten)?.kind() {
                 GrantKind::Log => logged.insert(g),
                 GrantKind::Deployment => given.insert(g),
             };
@@ -985,7 +985,7 @@ impl<R: Runtime> Entered<'_, R> {
         let deployed = self.db.deployed(tx, &self.deployment);
         let deployed = deployed.map_err(|e| self.met(id, e.into()))?;
         let bundled = rows_of(schema, &BUNDLED, rows)?;
-        let bundles = bundle_entries(&envelope, schema, &bundled, &deployed).map_err(broken)?;
+        let bundles = bundle_entries(&envelope, schema, &bundled, &deployed).map_err(rotten)?;
         entries.extend(bundles);
         let mut streams = Vec::new();
         for r in dumped(schema) {

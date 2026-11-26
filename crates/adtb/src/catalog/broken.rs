@@ -38,12 +38,13 @@ pub enum Broken {
     IllTyped(Invalid),
     /// A stored schema with a derived index element has no normal form.
     StoredNotNormal(norm::Error),
-    /// The planner refuses a constraint of a checked schema.
-    Plan(plan::Error),
-    /// The executor fails computing an index key.
-    IndexKey(exec::Error),
-    /// The executor fails validating a constraint.
-    Validation(exec::Error),
+    /// Planning a constraint of a checked schema breaks a guarantee of the checker or the
+    /// normaliser.
+    Plan(plan::Broken),
+    /// Computing an index key breaks a guarantee of the executor.
+    IndexKey(exec::Broken),
+    /// Validating a constraint breaks a guarantee of the executor.
+    Validation(exec::Broken),
     /// A constraint's query returns this value, not a set.
     NotASet(Val),
     /// A constraint's query has this type, not a set's.
@@ -52,18 +53,13 @@ pub enum Broken {
     Admission(write::Broken),
     /// A change of the catalog ended while its root page records this other change in progress.
     ChangeMoved(Changing),
-    KeyCounter(write::Error),
-    GrantId(write::Error),
     /// A grant row id is drawn with no page of id counters named.
     NoSequences,
     /// Rows share a key of a unique, of this catalog id, whose constructors at the migration's
     /// end do not reach theirs.
     UnreachedShared(CatIndexId),
     /// The model gave steps for a number of operators other than the migration's.
-    Unstepped {
-        operators: usize,
-        stepped: usize,
-    },
+    Unstepped { operators: usize, stepped: usize },
     /// A log grant names an object the schema lacks.
     GrantTarget(LogGrant),
     /// A relation kept across a migration lacks an id for one of its constructors.
@@ -82,8 +78,8 @@ pub enum Broken {
         name: String,
         index: CatIndexId,
     },
-    /// The executor fails a data map.
-    Map(exec::Error),
+    /// A data map breaks a guarantee of the executor.
+    Map(exec::Broken),
     /// A fill or routing takes this many parameters, not the row alone.
     RowParams(usize),
     /// A constructor has no field of this name.
@@ -122,6 +118,9 @@ pub enum Broken {
     Unshaped(Value),
     /// The migration model fails on a migration, for this reason.
     Model(String),
+    /// The checker refuses a schema the catalog builds and guarantees it admits; what was built
+    /// and each diagnostic.
+    Unchecked(String, Vec<Diag>),
 }
 
 impl From<Broken> for Error {
@@ -169,18 +168,15 @@ impl fmt::Display for Broken {
                 e.at(),
                 e.reason()
             ),
-            Broken::Plan(e) => write!(f, "{e}"),
-            Broken::IndexKey(exec::Error::Internal(why)) => write!(f, "{why}"),
-            Broken::IndexKey(e) => write!(f, "an index key evaluates: {}", exec::detail(e)),
-            Broken::Validation(e) => f.write_str(&exec::detail(e)),
+            Broken::Plan(b) => write!(f, "a broken invariant: {b}"),
+            Broken::IndexKey(b) | Broken::Validation(b) => write!(f, "{b}"),
+            Broken::Map(b) => write!(f, "a data map fails: {b}"),
             Broken::NotASet(v) => write!(f, "a constraint returns a set, found {v:?}"),
             Broken::NotSetTyped(t) => write!(f, "a constraint is typed as a set, found {t:?}"),
             Broken::Admission(b) => write!(f, "{b}"),
             Broken::ChangeMoved(c) => {
                 write!(f, "a change of the catalog ended during its change {c:?}")
             }
-            Broken::KeyCounter(e) => write!(f, "advancing a key counter: {}", write::detail(e)),
-            Broken::GrantId(e) => write!(f, "drawing a grant id: {}", write::detail(e)),
             Broken::NoSequences => f.write_str("a grant row id needs a named page of id counters"),
             Broken::UnreachedShared(id) => {
                 write!(
@@ -210,7 +206,6 @@ impl fmt::Display for Broken {
             Broken::NoImage { module, name, .. } => {
                 write!(f, "pending-dropped {module}::{name} has no image")
             }
-            Broken::Map(e) => write!(f, "a data map fails: {}", exec::detail(e)),
             Broken::RowParams(n) => write!(f, "a fill or routing takes the row, not {n} values"),
             Broken::NoField(n) => write!(f, "no field `{n}`"),
             Broken::Unrouted(n) => write!(f, "field `{n}` has no value in the routed row"),
@@ -230,6 +225,14 @@ impl fmt::Display for Broken {
             Broken::Model(why) => write!(f, "{why}"),
             Broken::Unshaped(v) => {
                 write!(f, "a stored value has another shape than its type: {v:?}")
+            }
+            Broken::Unchecked(built, diags) => {
+                write!(f, "{built} does not check: ")?;
+                for (at, d) in diags.iter().enumerate() {
+                    let sep = if at == 0 { "" } else { "; " };
+                    write!(f, "{sep}{}", d.message)?;
+                }
+                Ok(())
             }
             Broken::ForeignCtor(c) => write!(
                 f,

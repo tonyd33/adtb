@@ -1,5 +1,6 @@
 use std::fmt;
 
+use adtb_lang::ids::CatCtorId;
 use adtb_lang::kernel::{Const, Invalid, Kind};
 use adtb_lang::textual::PrintError;
 
@@ -15,14 +16,14 @@ use super::{Error, Rejection};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Broken {
     /// Planning an incremental check breaks a guarantee of the checker or the normaliser.
-    BoundedPlan(plan::Error),
+    BoundedPlan(plan::Broken),
     /// Planning a statement's read breaks a guarantee of the checker or the normaliser.
-    StatementPlan(plan::Error),
+    StatementPlan(plan::Broken),
     /// Planning the whole query of a constraint or check breaks a guarantee of the checker or the
     /// normaliser.
-    WholePlan(plan::Error),
+    WholePlan(plan::Broken),
     /// Compiling a plan breaks a guarantee of the planner.
-    Compile(exec::Error),
+    Compile(exec::Broken),
     DuplicateKey(Vec<u8>),
     /// A bulk build was handed this entry after one not below it.
     UnsortedBuild(Vec<u8>),
@@ -70,10 +71,26 @@ pub enum Broken {
     ExportNotSet,
     SettingNotRecord,
     SettingField(String),
-    /// A catalog call fails with a catalog error other than a damaged page, an index entry or
-    /// node that does not decode, a stored row that does not decode, a missing root or a
-    /// failure of the transactions layer.
-    CatalogError(catalog::Error),
+    /// A catalog call breaks a guarantee of the catalog.
+    Catalog(Box<catalog::Broken>),
+    /// The schema declares engine constructor `ctor` otherwise than the engine gives it, as
+    /// `detail` states.
+    EngineCtor {
+        ctor: CatCtorId,
+        detail: String,
+    },
+    /// Field `field` of a row of the engine relation `row` takes a value from the transactions
+    /// layer past the range of an `I64`.
+    PastRange {
+        row: String,
+        field: &'static str,
+    },
+    /// An index the write path writes was handed an entry of `len` bytes, longer than the `max`
+    /// a page holds.
+    EntryTooLong {
+        len: usize,
+        max: usize,
+    },
     DeploymentRefused,
     /// The normal form of a checked schema holds no term of the constraint or check of this
     /// qualified name.
@@ -181,13 +198,10 @@ fn rejection(r: &Rejection) -> String {
 impl fmt::Display for Broken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Broken::BoundedPlan(plan::Error::Internal(b))
-            | Broken::StatementPlan(plan::Error::Internal(b))
-            | Broken::WholePlan(plan::Error::Internal(b)) => write!(f, "{b}"),
-            Broken::BoundedPlan(e) | Broken::StatementPlan(e) | Broken::WholePlan(e) => {
-                write!(f, "{e}")
+            Broken::BoundedPlan(b) | Broken::StatementPlan(b) | Broken::WholePlan(b) => {
+                write!(f, "{b}")
             }
-            Broken::Compile(e) => f.write_str(&exec::detail(e)),
+            Broken::Compile(b) => write!(f, "{b}"),
             Broken::DuplicateKey(key) => write!(f, "a duplicate of key {key:?} in a unique index"),
             Broken::UnsortedBuild(entry) => {
                 write!(
@@ -264,7 +278,15 @@ impl fmt::Display for Broken {
             }
             Broken::SettingNotRecord => f.write_str("a setting's value is a record"),
             Broken::SettingField(name) => write!(f, "a setting's value has field `{name}`"),
-            Broken::CatalogError(e) => f.write_str(&catalog::detail(e)),
+            Broken::Catalog(b) => write!(f, "{b}"),
+            Broken::EngineCtor { ctor, detail } => write!(f, "engine constructor {ctor} {detail}"),
+            Broken::PastRange { row, field } => {
+                write!(f, "`{field}` of a row of {row} is past the range of an I64")
+            }
+            Broken::EntryTooLong { len, max } => write!(
+                f,
+                "an entry of {len} bytes is longer than the {max} a page holds"
+            ),
             Broken::DeploymentRefused => f.write_str("a deployment command was refused"),
             Broken::NoDenial(name) => write!(f, "constraint or check {name} has a normal form"),
         }

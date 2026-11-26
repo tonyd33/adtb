@@ -5,7 +5,6 @@ use crate::key::{Value, hex, listed};
 use crate::storage::Pid;
 use crate::verify::Finding;
 
-use super::Broken;
 use super::Error;
 use super::ids::CatIndexId;
 
@@ -37,10 +36,6 @@ pub enum Rot {
     },
     /// A stored index has this id, which no index takes.
     IndexOwner(u64),
-    /// The stored indexes do not follow from the stored schema and pending drops.
-    KeptIndexes(Box<Broken>),
-    /// A stored index does not key under the stored schema.
-    IndexKeying(Box<Error>),
     /// A row of a catalog relation, `row` naming the relation and its constructor when it has one,
     /// that does not have the shape the relation declares.
     CatalogRow {
@@ -123,20 +118,13 @@ pub fn detail(e: &Error) -> String {
         Error::OtherVersion(name) => {
             format!("host function {name} is bound at another version than declared")
         }
-        Error::Unchecked(built, diags) => format!(
-            "{built} does not check: {}",
-            diags
-                .iter()
-                .map(|d| d.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
-        ),
         Error::PastLimits(object) => format!("{object} expands past this build's limits"),
         Error::Conflict(_) => {
             "another transaction wrote a key of the catalog this one writes".into()
         }
         Error::Spill(e) => format!("the spill file failed: {}", crate::storage::io_text(*e)),
-        Error::Quarantined(what) => format!("{what} is quarantined"),
+        Error::Quarantined(_, what) => format!("{what} is quarantined"),
+        Error::Exec(e) => exec::detail(e.error()),
         Error::FormatTooOld(format) => format!(
             "the file is of catalog format {format}; this engine opens only format {}",
             super::root::FORMAT
@@ -181,8 +169,6 @@ impl fmt::Display for Rot {
                 pid.0, found.0, found.1
             ),
             Rot::IndexOwner(id) => write!(f, "a stored index has id {id}, which no index takes"),
-            Rot::KeptIndexes(b) => write!(f, "{b}"),
-            Rot::IndexKeying(e) => f.write_str(&detail(e)),
             Rot::CatalogRow { row, detail } => write!(f, "a row of {row} {detail}"),
             Rot::OutOfRange { row, field } => {
                 write!(f, "a row of {row} holds `{field}` outside its range")

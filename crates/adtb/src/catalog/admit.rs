@@ -99,7 +99,7 @@ impl<'a> Indexing<'a> {
         let held = compiled.committed();
         let pending = &readers.pending[..];
         let specs = pending::kept_indexes(held, texts, pending).map_err(Error::Internal)?;
-        let normal = index_program(compiled, specs.values(), Error::Internal)?;
+        let normal = index_program(compiled, specs.values())?;
         let mut keyed = BTreeMap::new();
         for (id, spec) in &specs {
             keyed.insert(

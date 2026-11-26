@@ -14,7 +14,7 @@ use crate::key::Value;
 use crate::mvcc::{Hold, Scope, Transactions, Xid};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
-use crate::write::{self, Sequences};
+use crate::write::{CounterError, Sequences};
 
 use super::Rot;
 use super::codec::{
@@ -119,13 +119,12 @@ fn log_grant_row<'a>(g: &'a LogGrant, target: &'a str) -> GrantRow<'a> {
 }
 
 /// Returns the catalog error of a failed draw from the page of id counters.
-fn drawn(e: write::Error) -> Error {
+fn drawn(e: CounterError) -> Error {
     match e {
-        write::Error::Exec(crate::exec::Error::Page(e)) => Error::Page(e),
-        write::Error::SequenceExhausted => {
+        CounterError::Exhausted => {
             Error::Refused(vec!["the ids of catalog::grants are spent".to_owned()])
         }
-        other => Error::from(Broken::GrantId(other)),
+        e @ (CounterError::Page(_) | CounterError::Index(_) | CounterError::Full(_)) => e.into(),
     }
 }
 
@@ -445,7 +444,7 @@ impl Catalog {
                 .max()
                 .unwrap_or(0)
                 .checked_add(1)
-                .ok_or(write::Error::SequenceExhausted)
+                .ok_or(CounterError::Exhausted)
                 .map_err(drawn)?;
             let Some(page) = self.sequences() else {
                 return Err(Error::from(Broken::NoSequences));
