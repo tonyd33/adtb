@@ -1,0 +1,47 @@
+# A replacement a split states is a new clause: one that is one with the image of a clause the
+# relation variable holds is refused naming that image, two replacements that are one are refused
+# naming both, and the relation variable keeps the clause it held.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { x: Text, y: Text } | B { y: Text }
+  add relation ts : T key id generate sequence
+  add unique (y) in ts.A
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "split constructor T.A into A1 { x: Text, z: Text }", detail: "`unique (z) in A1` of `ts` is one with `unique (z) in A1`, which `ts` already holds" } } }
+  module ts
+  split constructor T.A into A1 { x: Text, z: Text }
+    by match
+      | A { x, y } -> A1 { x: x, z: y }
+    unique (z) in A1
+
+migrate at 2
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, clause: i.clause }
+----
+{ clause: "key id", id: indexes.key(1024) }
+{ clause: "unique (y) in A", id: indexes.key(1025) }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "split constructor T.A into A1 { x: Text, z: Text }", detail: "`ts` declares `index (x) in A1` and `index (x) in A1`, which are one" } } }
+  module ts
+  split constructor T.A into A1 { x: Text, z: Text }
+    by match
+      | A { x, y } -> A1 { x: x, z: y }
+    index (x) in A1
+    index (x) in A1
+
+migrate at 2
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, clause: i.clause }
+----
+{ clause: "key id", id: indexes.key(1024) }
+{ clause: "unique (y) in A", id: indexes.key(1025) }

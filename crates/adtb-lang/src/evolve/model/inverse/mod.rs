@@ -8,6 +8,7 @@ type R<T> = Replaying<T>;
 
 mod by_id;
 mod of_op;
+mod restore;
 mod structural;
 
 pub(in crate::evolve) use super::Term;
@@ -111,6 +112,15 @@ pub(in crate::evolve::model) enum Inverse {
         kind: &'static str,
         name: String,
         text: Term,
+        of: String,
+    },
+    /// Apply operator `text`, as [`Inverse::Apply`] does, adding back unique or index `index`
+    /// once each object of `awaits`, by its catalog key, is back; `of` is the text of the
+    /// operator inverted.
+    RestoreIndex {
+        index: u64,
+        text: Term,
+        awaits: Vec<ObjectKey>,
         of: String,
     },
     /// Add back the declaration `text` of relation variable `name` of module `module`, `typed`
@@ -606,6 +616,7 @@ impl Cx<'_> {
             steps.push((step, removed(before, state)));
         }
         transient.drop_named(&mut steps);
+        restore::after_awaited(&mut steps);
         if self.accepting && !self.replaying {
             self.untaken(migration, &fills)?;
         }

@@ -10,7 +10,7 @@ use crate::evolve::model::admin::canonical;
 use crate::evolve::model::clause::scope_objects;
 use crate::evolve::model::defaults::Taken;
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::indexes::{Held, NewIndex, Part};
+use crate::evolve::model::indexes::{Held, ImageIdentity, NewIndex, Part};
 use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at, refuse_first};
 use crate::evolve::model::reselect::Mode;
 use crate::evolve::model::run::{Built, Late, Run, checked_in_migration};
@@ -377,16 +377,8 @@ impl Model {
                     )
                     .collect::<Res<Vec<Part>>>()?;
                 let clause = NewIndex::new(*kind, vec![Term::text(elems)], Some(parts), Vec::new());
-                match added.iter().position(|(x, _)| x == text) {
-                    Some(k) => {
-                        added[k].1 = clause.clone();
-                        at.push(k);
-                    }
-                    None => {
-                        at.push(added.len());
-                        added.push((text.clone(), clause.clone()));
-                    }
-                }
+                at.push(added.len());
+                added.push((text.clone(), clause));
             }
             rewrites.replaced_at.insert(*r, at);
         }
@@ -480,6 +472,7 @@ impl Model {
         replacements: &[Stated],
     ) -> Res<Rewrites> {
         let mut out = Rewrites::default();
+        let mut ones: BTreeMap<u64, Vec<(ImageIdentity, usize)>> = BTreeMap::new();
         let (c, source, carries) = (image.ctor, &image.source, image.carries);
         let product_id = |n: &String| {
             let at = image.products.iter().position(|p| p == n);
@@ -564,20 +557,27 @@ impl Model {
                     sel_text(&names)
                 );
                 let was = cl.id.into_iter().collect::<Vec<u64>>();
-                match entry.1.iter_mut().find(|(x, _)| *x == text) {
-                    Some((_, held)) => held.also_image_of(was),
+                let ids: Vec<u64> = names.iter().map(&product_id).collect();
+                let Some(elems) = self.product_elems(t, (cl.relation, cl.at), &fs, (&ids, &[]))
+                else {
+                    return broken("a product holds each field the routing carries to it");
+                };
+                let parts = ids
+                    .iter()
+                    .zip(&names)
+                    .map(|(&p, n)| Part::held((Space::Shared, p), n))
+                    .collect::<Vec<_>>();
+                let one = self.image_identity((cl.relation, cl.at), &elems, parts.clone());
+                let held = ones.entry(cl.relation).or_default();
+                let found = one
+                    .as_ref()
+                    .and_then(|x| held.iter().find(|(y, _)| x.is_one(y)).map(|(_, k)| *k));
+                match found {
+                    Some(k) => entry.1[k].1.also_image_of(was),
                     None => {
-                        let ids: Vec<u64> = names.iter().map(&product_id).collect();
-                        let Some(elems) =
-                            self.product_elems(t, (cl.relation, cl.at), &fs, (&ids, &[]))
-                        else {
-                            return broken("a product holds each field the routing carries to it");
-                        };
-                        let parts = ids
-                            .iter()
-                            .zip(&names)
-                            .map(|(&p, n)| Part::held((Space::Shared, p), n))
-                            .collect::<Vec<_>>();
+                        if let Some(x) = one {
+                            held.push((x, entry.1.len()));
+                        }
                         entry
                             .1
                             .push((text, NewIndex::new(cl.kind, elems, Some(parts), was)));

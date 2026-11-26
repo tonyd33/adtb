@@ -16,59 +16,6 @@ pub(in crate::evolve) enum Undo {
     Unnest(u64, Vec<(u64, String)>),
 }
 
-/// A unique or index clause of a relation: its id, the declaration, its position among the
-/// declaration's clauses and the range of its text.
-type IndexClause = (u64, usize, usize, Range<usize>);
-
-/// Returns the declaration of relation `rel` of `schema`, the schema of `src`, parsed, with the
-/// range of each of its clauses.
-fn relation_clauses(
-    src: &Source,
-    schema: &Schema,
-    rel: RelId,
-) -> Option<(usize, ast::RelationDecl, Vec<Range<usize>>)> {
-    let rd = schema.relation(rel);
-    let m = &schema.module(rd.module).name;
-    let i = src.find("relation", m, &rd.name)?;
-    let Some(Decl::Relation(d)) = src.parsed(i) else {
-        return None;
-    };
-    let ranges = clause_ranges(header(m).len(), &d);
-    Some((i, d, ranges))
-}
-
-/// Returns each unique and index clause of relation `rel` of `schema`, the schema of `src`, in
-/// written order.
-fn index_clauses(src: &Source, schema: &Schema, rel: RelId) -> Vec<IndexClause> {
-    let Some((i, d, ranges)) = relation_clauses(src, schema, rel) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    let mut at = 0;
-    for (k, cl) in d.clauses.iter().enumerate() {
-        if !matches!(
-            cl,
-            RelationClause::Unique(..) | RelationClause::Index { .. }
-        ) {
-            continue;
-        }
-        if let Some(id) = schema.ids().index_id(rel, at) {
-            out.push((id.raw(), i, k, ranges[k].clone()));
-        }
-        at += 1;
-    }
-    out
-}
-
-/// Returns relation `rel` of `schema` qualified by its module, held by its id.
-fn relation_spelled(schema: &Schema, rel: RelId) -> Term {
-    let rd = schema.relation(rel);
-    let mut out = Term::from(format!("{}::", schema.module(rd.module).name));
-    let id = schema.ids().relation_id(rel).map(CatRelId::raw);
-    out.push_name(&rd.name, Space::Shared, id);
-    out
-}
-
 /// Returns type `t` of module `m` qualified by its module, held by its id in `src`.
 fn type_spelled(src: &Source, m: &str, t: &str) -> Term {
     let mut out = Term::from(format!("{m}::"));
@@ -86,44 +33,37 @@ fn ctor_spelled(src: &Source, m: &str, t: &str, c: &str) -> Term {
 
 impl Inverting<'_> {
     /// Returns each unique and index the operator created over a relation of type `t` of module
-    /// `m`, and the operators that add back each it removed, each on a line after a line break.
-    fn clauses_back(&self, m: &str, t: &str) -> R<(Vec<u64>, Term)> {
-        let (before, after) = (self.before(), self.after());
-        let replays = || vec![Diag::new(self.op().span, "the log does not replay")];
-        let bs = before.schema().map_err(|_| replays())?;
-        let r#as = after.schema().map_err(|_| replays())?;
+    /// `m`, and the steps that add back each it removed.
+    fn clauses_back(&self, m: &str, t: &str) -> R<(Vec<u64>, Vec<Inverse>)> {
+        let bs = self
+            .before()
+            .schema()
+            .map_err(|_| vec![Diag::new(self.op().span, "the log does not replay")])?;
         let def = bs
             .module_named(m)
             .and_then(|mid| bs.module(mid).types.get(t).copied())
             .ok_or_else(|| vec![Diag::new(self.op().span, "the log does not hold the type")])?;
         let mut drops = Vec::new();
-        let mut adds = Term::default();
+        let mut adds = Vec::new();
         for (rel, ..) in Cx::relations_of(&bs, def) {
-            let was = index_clauses(before, &bs, rel);
-            let Some(ar) = bs
-                .ids()
-                .relation_id(rel)
-                .and_then(|id| r#as.ids().relation_of(id))
-            else {
+            let Some(r) = bs.ids().relation_id(rel).map(CatRelId::raw) else {
                 continue;
             };
-            let now = index_clauses(after, &r#as, ar);
-            for (id, ..) in &now {
-                if !was.iter().any(|c| c.0 == *id) {
-                    drops.push(*id);
+            let (was, now) = (
+                self.before_m().relations.get(&r),
+                self.after_m().relations.get(&r),
+            );
+            let (Some(was), Some(now)) = (was, now) else {
+                continue;
+            };
+            for (_, h) in now.indexes() {
+                if let Some(id) = h.id().filter(|&id| !was.holds_index(id)) {
+                    drops.push(id);
                 }
             }
-            for (id, i, _, range) in &was {
-                if !now.iter().any(|c| c.0 == *id) {
-                    let text = &before.decls[*i].text;
-                    adds.push("\n");
-                    adds.append(clause_op(
-                        "add",
-                        text,
-                        range,
-                        &relation_spelled(&bs, rel),
-                        |r| self.decl_range(*i, r),
-                    )?);
+            for (_, h) in was.indexes() {
+                if let Some(id) = h.id().filter(|&id| !now.holds_index(id)) {
+                    adds.push(self.index_back(r, id)?);
                 }
             }
         }
@@ -214,48 +154,27 @@ impl Inverting<'_> {
     }
 
     /// Returns the step applying `op`, the inverse operator, as `how` says, after dropping the
-    /// clauses the operator created over the relations of type `ty` and before adding back
+    /// clauses the operator created over the relations of type `ty`, then the steps adding back
     /// those it removed.
-    fn restructure(&self, ty: &QName, op: Term, how: Undo, checks: Vec<(u64, Term)>) -> R<Inverse> {
+    fn restructure(
+        &self,
+        ty: &QName,
+        op: Term,
+        how: Undo,
+        checks: Vec<(u64, Term)>,
+    ) -> R<Vec<Inverse>> {
         let (drops, adds) = self.clauses_back(&self.module_of(ty), &ty.name.text)?;
-        Ok(Inverse::Restructure {
+        let mut out = vec![Inverse::Restructure {
             drops,
             op,
-            adds,
+            adds: Term::default(),
             how,
             checks,
             of: self.of(),
-        })
+        }];
+        out.extend(adds);
+        Ok(out)
     }
-}
-
-/// Returns operator `verb` of the clause at `range` of `text`, on relation `rel`, its text copied
-/// by `copy`.
-fn clause_op(
-    verb: &str,
-    text: &str,
-    range: &Range<usize>,
-    rel: &Term,
-    copy: impl Fn(Range<usize>) -> R<Term>,
-) -> R<Term> {
-    let clause = text[range.clone()].trim_end();
-    let end = range.start + clause.len();
-    let mut out = Term::from(format!("{verb} "));
-    match clause.rfind(") in ") {
-        Some(p) => {
-            out.append(copy(range.start..range.start + p + 1)?);
-            out.push(" in ");
-            out.append(rel.clone());
-            out.push(".");
-            out.append(copy(range.start + p + 5..end)?);
-        }
-        None => {
-            out.append(copy(range.start..end)?);
-            out.push(" in ");
-            out.append(rel.clone());
-        }
-    }
-    Ok(out)
 }
 
 impl Cx<'_> {
@@ -381,12 +300,7 @@ impl Cx<'_> {
         op.push("\n  by match");
         op.append(inverse_arms);
         op.append(at.restored_arms(clauses, &path.ty, std::slice::from_ref(&path.ctor.text))?);
-        Ok(vec![at.restructure(
-            &path.ty,
-            op,
-            Undo::Derived,
-            Vec::new(),
-        )?])
+        at.restructure(&path.ty, op, Undo::Derived, Vec::new())
     }
 
     pub(super) fn merge_inverse(
@@ -482,10 +396,9 @@ impl Cx<'_> {
         op.append(out_arms);
         op.append(at.restored_arms(clauses, ty, &sources)?);
         let checks = self.carried_checks_back(at, &schema, ty, &sources)?;
-        Ok(vec![
-            at.restructure(ty, op, Undo::Written, checks)?,
-            self.placed_back(at, ty, &sources)?,
-        ])
+        let mut out = at.restructure(ty, op, Undo::Written, checks)?;
+        out.push(self.placed_back(at, ty, &sources)?);
+        Ok(out)
     }
 
     /// Returns the step that puts constructors `ctors` of type `ty` back each at its place in
@@ -607,10 +520,9 @@ impl Cx<'_> {
             .schema()
             .map_err(|_| vec![Diag::new(self.span, "the log does not replay")])?;
         let checks = self.carried_checks_back(at, &was, ty, &names)?;
-        Ok(vec![
-            at.restructure(ty, op, Undo::Unnest(ty_id, products), checks)?,
-            self.placed_back(at, ty, &names)?,
-        ])
+        let mut out = at.restructure(ty, op, Undo::Unnest(ty_id, products), checks)?;
+        out.push(self.placed_back(at, ty, &names)?);
+        Ok(out)
     }
 
     pub(super) fn unnest_inverse(
@@ -645,12 +557,7 @@ impl Cx<'_> {
         op.push(format!(".({}) into ", products.join(" | ")));
         op.append(ctext);
         op.append(at.restored_arms(clauses, &path.ty, std::slice::from_ref(&path.ctor.text))?);
-        Ok(vec![at.restructure(
-            &path.ty,
-            op,
-            Undo::Written,
-            Vec::new(),
-        )?])
+        at.restructure(&path.ty, op, Undo::Written, Vec::new())
     }
 
     /// Returns the inverse of `move field path to to`, moving a field of constructor `path.ctor`
@@ -678,10 +585,9 @@ impl Cx<'_> {
                 op.append(ty);
                 op.push(".");
                 op.append(ctor_spelled(before, &m, t, &c.text));
-                Ok(vec![
-                    at.restructure(&path.ty, op, Undo::Written, Vec::new())?,
-                    at.reorder(moved),
-                ])
+                let mut out = at.restructure(&path.ty, op, Undo::Written, Vec::new())?;
+                out.push(at.reorder(moved));
+                Ok(out)
             }
             (None, Some(sel)) => {
                 let names: Vec<String> = sel_idents(sel).iter().map(|x| x.text.clone()).collect();
@@ -747,10 +653,9 @@ impl Cx<'_> {
                             "the log does not hold the constructor",
                         )]
                     })?;
-                Ok(vec![
-                    at.restructure(&path.ty, op, Undo::UpFrom(from), Vec::new())?,
-                    at.reorder(moved),
-                ])
+                let mut out = at.restructure(&path.ty, op, Undo::UpFrom(from), Vec::new())?;
+                out.push(at.reorder(moved));
+                Ok(out)
             }
             _ => Ok(Vec::new()),
         }
@@ -839,12 +744,12 @@ impl Cx<'_> {
             arms,
             of: at.of(),
         }];
-        let (drops, mut adds) = at.clauses_back(&m, &t)?;
+        let (drops, restores) = at.clauses_back(&m, &t)?;
         let fields = at.before_m().ctors[&ctor]
             .fields
             .clone()
             .unwrap_or_default();
-        adds.append(at.defaults_back(None, &fields)?);
+        let adds = at.defaults_back(None, &fields)?;
         if !drops.is_empty() || !adds.is_empty() {
             out.push(Inverse::Restructure {
                 drops,
@@ -855,6 +760,7 @@ impl Cx<'_> {
                 of: at.of(),
             });
         }
+        out.extend(restores);
         out.push(at.states_back(|s| match s {
             StateKey::Relation(_, c) | StateKey::Value(c) => c == ctor,
         }));

@@ -100,26 +100,6 @@ impl<'a> Inverting<'a> {
 }
 
 impl Inverting<'_> {
-    /// Returns the id of the one index the operator adds, when the sources before and after it
-    /// build.
-    fn added_index(&self) -> Option<u64> {
-        let ids = |src: &Source| -> Option<BTreeSet<u64>> {
-            Some(
-                src.schema()
-                    .ok()?
-                    .ids()
-                    .index_ids()
-                    .map(|(_, id)| id.raw())
-                    .collect(),
-            )
-        };
-        let (a, b) = (ids(self.before)?, ids(self.after)?);
-        match b.difference(&a).collect::<Vec<_>>().as_slice() {
-            [id] => Some(**id),
-            _ => None,
-        }
-    }
-
     pub(super) fn of(&self) -> String {
         self.text(self.op.span)
     }
@@ -184,7 +164,7 @@ impl Inverting<'_> {
 
     /// Returns relation variable `r` of the model before the operator qualified by its module,
     /// held by its id.
-    fn relation_term(&self, r: u64) -> R<Term> {
+    pub(super) fn relation_term(&self, r: u64) -> R<Term> {
         let m = self.before_m;
         let missing = || {
             vec![Diag::new(
@@ -273,32 +253,15 @@ impl Inverting<'_> {
         Ok(out)
     }
 
-    /// Returns the operator's text after its first word, `verb` in its place and the relation of
-    /// `on` qualified by its module.
-    fn clause(&self, verb: &str, on: &ast::RelationRef) -> R<Term> {
-        let span = self.op.span.range();
-        let text = &self.logged.text()[span.clone()];
-        let word = text.find(char::is_whitespace).unwrap_or(text.len());
-        let rest = span.start + text.len() - text[word..].trim_start().len();
-        let q = &on.relation;
-        let rel = q
-            .module
-            .as_ref()
-            .map_or(q.name.span.start, |m| m.span.start) as usize;
-        let mut out = Term::from(format!("{verb} "));
-        out.append(self.op_text(rest..rel)?);
-        out.append(self.qualified(q, span.end)?);
-        Ok(out)
-    }
-
     /// Returns the whole text of declaration `i` of `before` as [`Inverting::decl_range`] does.
     pub(super) fn decl(&self, i: usize) -> R<Term> {
         self.decl_range(i, 0..self.before.decls[i].text.len())
     }
 
     /// Returns the step adding back declaration `item` of the model before the operator, which
-    /// the operator removes, with the write states it held: a relation variable's with its named
-    /// sets, typed when the migration also drops the type its declaration names.
+    /// the operator removes, with the write states it held: a relation variable's without its
+    /// uniques and indexes, then its named sets, then each unique and index, typed when the
+    /// migration also drops the type its declaration names.
     fn restore(&self, item: Item) -> R<Vec<Inverse>> {
         let m = self.before_m;
         let i = m.decl_at(item).ok_or_else(|| {
@@ -322,7 +285,7 @@ impl Inverting<'_> {
                 let mut out = vec![Inverse::RestoreRelation {
                     module,
                     name,
-                    text,
+                    text: self.relation_without_indexes(i)?,
                     of: of.clone(),
                     typed,
                 }];
@@ -339,6 +302,7 @@ impl Inverting<'_> {
                         });
                     }
                 }
+                out.extend(self.indexes_back(r)?);
                 out.push(self.states_back(|s| matches!(s, StateKey::Relation(x, _) if x == r)));
                 Ok(out)
             }
@@ -567,18 +531,17 @@ impl Cx<'_> {
                 }
                 apply(text, of)
             }
-            Op::AddIndex { kind, on, .. } => match (kind, at.added_index()) {
-                (IndexKind::Unique, _) | (_, None) => apply(at.clause("drop", on)?, of),
-                (_, Some(id)) => Ok(vec![Inverse::Restructure {
-                    drops: vec![id],
-                    op: Term::default(),
-                    adds: Term::default(),
-                    how: Undo::Written,
-                    checks: Vec::new(),
-                    of,
-                }]),
-            },
-            Op::DropIndex { on, .. } => apply(at.clause("add", on)?, of),
+            Op::AddIndex { relation, .. } => Ok(vec![Inverse::Restructure {
+                drops: vec![at.index_added(*relation)?],
+                op: Term::default(),
+                adds: Term::default(),
+                how: Undo::Written,
+                checks: Vec::new(),
+                of,
+            }]),
+            Op::DropIndex { relation, .. } => Ok(vec![
+                at.index_back(*relation, at.index_removed(*relation)?)?,
+            ]),
             Op::Rekey {
                 relation, carry, ..
             } => self.rekey_inverse(at, *relation, carry),

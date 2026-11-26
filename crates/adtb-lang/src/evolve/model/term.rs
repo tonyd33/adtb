@@ -305,6 +305,17 @@ impl Term {
             })
     }
 
+    /// Returns whether `other` holds as many pieces, each of the kind of the piece at its
+    /// position here.
+    pub(super) fn same_pieces(&self, other: &Term) -> bool {
+        self.0.len() == other.0.len()
+            && self
+                .0
+                .iter()
+                .zip(&other.0)
+                .all(|(a, b)| std::mem::discriminant(a) == std::mem::discriminant(b))
+    }
+
     /// Returns what the name at piece `at` resolves to, `None` when that piece is no name.
     pub(super) fn bound_at(&self, at: usize) -> Option<Bound> {
         match self.0.get(at)? {

@@ -1,0 +1,47 @@
+# A revert of `drop unique` adds back the unique the relation variable held, with the scope and
+# elements it held rather than as the drop wrote them: a drop naming the constructors of a unique
+# scoped to a named set gives back the unique over the set, its element named as a later
+# migration renamed its field.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: I64 } | B { n: I64 }
+  add relation ts : T key id generate sequence
+  add set S of ts = A
+  add unique (n) in ts.S
+
+migrate
+  module ts
+  drop unique (n) in ts.A
+
+migrate
+  module ts
+  rename field T.A.n to m
+
+migrate
+  module ts
+  revert 0002
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, clause: i.clause }
+----
+{ clause: "key id", id: indexes.key(1024) }
+{ clause: "unique (m) in A", id: indexes.key(1026) }
+
+migrate
+  module ts
+  add constructor T.C { m: I64 }
+    joins ts.S
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, clause: i.clause }
+----
+{ clause: "key id", id: indexes.key(1024) }
+{ clause: "unique (m) in (A | C)", id: indexes.key(1026) }

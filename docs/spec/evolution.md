@@ -699,6 +699,9 @@ field the routing carries whole into a new constructor is indexed
 there under its new name. A unique or index naming a field that no new
 constructor keeps (here `provider`) is refused unless the split states
 its replacements, as `unique` and `index` clauses after the routing.
+A replacement is a new clause: one that is one with the image of a
+unique or index the relation variable holds is refused naming that
+image (§4.10).
 A default on a field of the split constructor becomes a default with
 the same value on each product field the routing carries that field
 to whole. A split whose routing carries a field with a default whole

@@ -1,0 +1,37 @@
+# A revert of a migration that adds a unique to a relation variable and then drops the relation
+# variable and its type gives the relation variable back with the clauses it held before that
+# migration: the unique the migration both added and dropped does not come back.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T = { id: Key ts, a: I64 }
+  add relation ts : T key id generate sequence
+
+migrate
+  module ts
+  add unique (a) in ts
+  drop relation ts
+  drop type T
+
+migrate
+  module ts
+  revert 0002
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None select { clause: i.clause }
+----
+{ clause: "key id" }
+
+run
+  insert ts { a: 1 }
+  insert ts { a: 1 }
+
+query rowsort
+  from t in ts select { id: t.id, a: t.a }
+----
+{ a: 1, id: ts.key(1) }
+{ a: 1, id: ts.key(2) }

@@ -1,0 +1,41 @@
+# A revert of `add unique` drops the unique it added by its id, whatever a later migration renamed
+# the field it names to, and leaves the relation variable's other uniques.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T = { id: Key ts, a: I64, c: I64 }
+  add relation ts : T key id generate sequence
+    unique (c)
+
+migrate
+  module ts
+  add unique (a) in ts
+
+migrate
+  module ts
+  rename field T.a to b
+
+migrate
+  module ts
+  revert 0002
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, clause: i.clause }
+----
+{ clause: "key id", id: indexes.key(1024) }
+{ clause: "unique (c)", id: indexes.key(1025) }
+
+run
+  insert ts { b: 1, c: 1 }
+  insert ts { b: 1, c: 2 }
+
+query rowsort
+  from t in ts select { b: t.b, c: t.c }
+----
+{ b: 1, c: 1 }
+{ b: 1, c: 2 }

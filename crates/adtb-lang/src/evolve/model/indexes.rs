@@ -408,6 +408,18 @@ impl NewIndex {
     }
 }
 
+/// What makes the image an operator makes of a unique or index one with another's, before a
+/// build lifts it.
+pub(super) struct ImageIdentity(Identity<Bound>);
+
+impl ImageIdentity {
+    /// Returns whether the two images are one, as `same::same_unique` and `same::same_index`
+    /// decide.
+    pub(super) fn is_one(&self, other: &ImageIdentity) -> bool {
+        self.0.same(&other.0, &|a, b| a == b)
+    }
+}
+
 impl Held {
     /// Returns the id, `None` while it is an image without one.
     pub(super) fn id(&self) -> Option<u64> {
@@ -1166,6 +1178,45 @@ impl RelM {
 }
 
 impl Model {
+    /// Returns what makes the image of clause `at` of relation variable `r` one with another:
+    /// of its kind, over `terms`, each the term of the element at its position with its names
+    /// held by other objects, in the scope `parts` names. `None` when an element has no tree, or
+    /// its image does not keep the pieces of its term.
+    pub(super) fn image_identity(
+        &self,
+        (r, at): (u64, usize),
+        terms: &[Term],
+        parts: Vec<Part>,
+    ) -> Option<ImageIdentity> {
+        let held = self.relations.get(&r)?.index_at(at)?;
+        if held.elems.len() != terms.len() {
+            return None;
+        }
+        let elems = held
+            .elems
+            .iter()
+            .zip(terms)
+            .map(|(e, t)| {
+                e.term.same_pieces(t).then(|| Elem {
+                    term: t.clone(),
+                    tree: e.tree.clone(),
+                })
+            })
+            .collect::<Option<Vec<Elem>>>()?;
+        let image = Held {
+            key: Key::Pending(0),
+            kind: held.kind,
+            scope: ScopeIds::of(Some(parts)),
+            elems,
+            was: Vec::new(),
+        };
+        let every = self
+            .relation_type(r)
+            .map(|t| self.ctors_of(t).into_iter().collect())
+            .unwrap_or_default();
+        image.identity(self, &every).map(ImageIdentity)
+    }
+
     /// Print the clause of unique or index `x` of relation variable `rel`.
     pub(super) fn print_index(&self, rel: &RelM, x: &IndexRef, out: &mut Printed) {
         let h = rel.clauses.get(x);

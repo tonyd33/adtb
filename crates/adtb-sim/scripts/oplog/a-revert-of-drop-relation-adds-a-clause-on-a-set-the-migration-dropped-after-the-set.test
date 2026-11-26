@@ -1,0 +1,50 @@
+# A revert of a migration that drops a named set, then the relation variable holding it and its
+# type, gives the relation variable back with an index scoped to that set once the set is back:
+# the index ranges over the set and gains a constructor that later joins it.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { a: Text } | B { b: Text }
+  add relation ts : T key id generate sequence
+
+migrate
+  module ts
+  add set S of ts = B
+  add index (b) in ts.S
+  split constructor T.B into E { b: Text }
+    by match
+      | B c -> E { b: c.b }
+
+migrate
+  module ts
+  drop set S of ts
+  drop relation ts
+  drop type T
+
+migrate
+  module ts
+  revert 0003
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, clause: i.clause }
+----
+{ clause: "index (b) in E", id: indexes.key(1027) }
+{ clause: "key id", id: indexes.key(1026) }
+
+migrate
+  module ts
+  add constructor T.F { b: Text }
+    joins ts.S
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, clause: i.clause }
+----
+{ clause: "index (b) in (E | F)", id: indexes.key(1027) }
+{ clause: "key id", id: indexes.key(1026) }

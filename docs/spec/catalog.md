@@ -109,7 +109,7 @@ within an operator in this order:
 | `store f` | the relation variable of the view; then, when the view's element type is anonymous, a type for it with one constructor, then that constructor's fields when the element type is a record, in the order the function's result type writes them; then an index for its key and for each `unique` and `index` clause, in written order |
 | `install` | what each declaration of the package creates, as the `add` operator that declares it, in package order |
 | `add computed` | the computed field |
-| `revert` | what each of its inverse operators creates, as that operator |
+| `revert` | what each of its inverse operators creates, as that operator; the inverse of `drop relation` is `add relation` without the relation variable's uniques and indexes, then `add unique` or `add index` for each of them in clause order but those the reverted migration added, one that names a named set or function the migration dropped after the inverse of the earliest such drop |
 
 ```adt fragment
 -- 0101, from a version 100 of a separate history, before Apple,

@@ -8,7 +8,7 @@ use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::{Carries, arm_image, element_head};
 use crate::evolve::model::defaults::Taken;
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::indexes::{NewIndex, Part};
+use crate::evolve::model::indexes::{ImageIdentity, NewIndex, Part};
 use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::{Edit, Mode, sel_range};
 use crate::evolve::model::run::{Built, Late, Run};
@@ -249,12 +249,13 @@ struct Rewrite {
     added: Vec<NewIndex>,
 }
 
-/// A clause over one merged constructor alone, by its relation variable, kind and elements as
-/// the merge maps them.
-type Alike = (u64, IndexKind, Vec<String>);
-
 /// A clause over one merge source alone: its position, the source, its text and its id.
 type Alone = (usize, u64, String, Option<u64>);
+
+/// The clauses over one merge source alone whose images over the merged constructor are one:
+/// their relation variable, kind, elements as the merge maps them and the image's identity, and
+/// the clauses.
+type Alike = (u64, IndexKind, Vec<String>, ImageIdentity, Vec<Alone>);
 
 impl Model {
     /// Merge constructors `sel` of `ty` into `into`. With `derived`, the values the routing's arms
@@ -481,7 +482,7 @@ impl Model {
     ) -> Res<BTreeMap<u64, Rewrite>> {
         let header = self.header_names(t);
         let mut out: BTreeMap<u64, Rewrite> = BTreeMap::new();
-        let mut alone: BTreeMap<Alike, Vec<Alone>> = BTreeMap::new();
+        let mut alone: Vec<Alike> = Vec::new();
         for cl in self.scoped(built, t, sources, &[c]) {
             let Some(reached) = &cl.reached else { continue };
             let inside: Vec<u64> = reached
@@ -530,10 +531,27 @@ impl Model {
             let fields = fields.unwrap_or_default();
             if inside.len() != sources.len() {
                 if let ([one], 1) = (inside.as_slice(), reached.len()) {
-                    alone
-                        .entry((cl.relation, cl.kind, fields))
-                        .or_default()
-                        .push((cl.at, *one, shown, cl.id));
+                    let Some(held) =
+                        self.product_elems(t, (cl.relation, cl.at), &fields, (&[c], &[]))
+                    else {
+                        return broken(
+                            "the merged constructor holds each field the routing carries to it",
+                        );
+                    };
+                    let over = vec![Part::held((Space::Shared, c), image.ctor)];
+                    let Some(x) = self.image_identity((cl.relation, cl.at), &held, over) else {
+                        return refuse(format!(
+                            "`{shown}` ranges over some but not all of the merged constructors and has no image under the merge"
+                        ));
+                    };
+                    let clause = (cl.at, *one, shown, cl.id);
+                    match alone
+                        .iter_mut()
+                        .find(|a| a.0 == cl.relation && a.3.is_one(&x))
+                    {
+                        Some(a) => a.4.push(clause),
+                        None => alone.push((cl.relation, cl.kind, fields, x, vec![clause])),
+                    }
                     continue;
                 }
                 return refuse(format!(
@@ -566,7 +584,8 @@ impl Model {
                 cl.id.into_iter().collect(),
             ));
         }
-        for ((r, kind, fields), held) in alone {
+        alone.sort_by(|a, b| (a.0, a.1, &a.2).cmp(&(b.0, b.1, &b.2)));
+        for (r, kind, fields, _, held) in alone {
             let each = sources
                 .iter()
                 .all(|s| held.iter().any(|(_, one, _, _)| one == s));

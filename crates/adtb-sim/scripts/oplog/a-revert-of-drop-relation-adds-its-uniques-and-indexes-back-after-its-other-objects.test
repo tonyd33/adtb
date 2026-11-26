@@ -1,0 +1,44 @@
+# A revert of `drop relation` adds the relation variable back with every object `add relation`
+# creates but its uniques and indexes, its implied indexes among them, then adds back each unique
+# and index it held, in clause order, each taking the next id as its own `add` would.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type U = { id: Key us }
+  add relation us : U key id generate sequence
+  add type T = { id: Key ts, u: Key us, a: I64, b: I64 }
+  add relation ts : T key id generate sequence
+    unique (a)
+    index (b)
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, kind: i.kind }
+----
+{ id: indexes.key(1025), kind: PrimaryKey }
+{ id: indexes.key(1026), kind: Unique }
+{ id: indexes.key(1027), kind: Plain }
+{ id: indexes.key(1028), kind: Implied }
+
+migrate
+  module ts
+  drop relation ts
+  drop type T
+
+migrate
+  module ts
+  revert 0002
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, kind: i.kind, clause: i.clause }
+----
+{ clause: "index (b)", id: indexes.key(1032), kind: Plain }
+{ clause: "index (u) in T", id: indexes.key(1030), kind: Implied }
+{ clause: "key id", id: indexes.key(1029), kind: PrimaryKey }
+{ clause: "unique (a)", id: indexes.key(1031), kind: Unique }

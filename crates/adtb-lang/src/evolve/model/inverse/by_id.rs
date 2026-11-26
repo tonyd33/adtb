@@ -183,6 +183,10 @@ impl Inverse {
                     ts.iter_mut().for_each(term);
                 }
             }
+            Inverse::RestoreIndex { index, text, .. } => {
+                id(Space::Index, index);
+                term(text);
+            }
             Inverse::Apply { text, .. }
             | Inverse::Restore { text, .. }
             | Inverse::RestoreRelation { text, .. } => term(text),
@@ -273,6 +277,7 @@ impl Inverse {
                 (out, of)
             }
             Inverse::Unadd { ctor, of, .. } => (vec![shared(ctor)], of),
+            Inverse::RestoreIndex { index, of, .. } => (vec![(Space::Index, *index)], of),
             Inverse::Readd {
                 ty,
                 joins,

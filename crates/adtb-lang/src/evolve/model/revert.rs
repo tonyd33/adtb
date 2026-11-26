@@ -288,6 +288,7 @@ impl Model {
                     inv,
                     Inverse::Restructure { .. }
                         | Inverse::Apply { .. }
+                        | Inverse::RestoreIndex { .. }
                         | Inverse::Rename { .. }
                         | Inverse::DropSet { .. }
                         | Inverse::AddSet { .. }
@@ -361,7 +362,7 @@ impl Model {
                 checks,
                 of,
             } => self.restructure(run, (drops, op, adds, how, checks), &of, gone, undone),
-            Inverse::Apply { text, of } => {
+            Inverse::Apply { text, of } | Inverse::RestoreIndex { text, of, .. } => {
                 let text = self.spell_copies(&text, &of, gone)?;
                 self.undo_ops(run, run.module(), text, How::Written, &[], undone)
             }

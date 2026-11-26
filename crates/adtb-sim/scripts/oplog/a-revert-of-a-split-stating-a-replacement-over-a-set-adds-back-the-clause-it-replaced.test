@@ -1,0 +1,54 @@
+# A split whose routing takes the field of an index over a named set to another name states the
+# index's replacement over the set; a revert of the split drops the replacement and adds back the
+# index the relation variable held, over the set, so that it gains a constructor that later
+# joins the set.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { x: Text, y: Text } | B { z: Text, y: Text }
+  add relation ts : T key id generate sequence
+  add set S of ts = A | B
+  add index (y) in ts.S
+
+migrate
+  module ts
+  split constructor T.A into A1 { x: Text, z: Text }
+    by match
+      | A { x, y } -> A1 { x: x, z: y }
+    index (z) in S
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, clause: i.clause }
+----
+{ clause: "index (z) in (A1 | B)", id: indexes.key(1026) }
+{ clause: "key id", id: indexes.key(1024) }
+
+migrate
+  module ts
+  revert 0002
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, clause: i.clause }
+----
+{ clause: "index (y) in (A | B)", id: indexes.key(1027) }
+{ clause: "key id", id: indexes.key(1024) }
+
+migrate
+  module ts
+  add constructor T.C { y: Text }
+    joins ts.S
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, clause: i.clause }
+----
+{ clause: "index (y) in (A | B | C)", id: indexes.key(1027) }
+{ clause: "key id", id: indexes.key(1024) }

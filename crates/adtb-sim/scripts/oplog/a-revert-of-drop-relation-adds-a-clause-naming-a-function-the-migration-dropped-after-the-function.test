@@ -1,0 +1,46 @@
+# A revert of `drop relation` adds back an index naming a function the migration dropped after
+# the inverse that adds the function back, so after an index a later operator of the migration
+# dropped.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  define fn g (x: I64) -> I64 = x * 2
+  add type T { id: Key ts } = A { n: I64, m: I64 } | B { n: I64, m: I64 }
+  add relation ts : T key id generate sequence
+  add set S of ts = B
+  add index (g(n)) in ts.S
+  add index (m) in ts
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, clause: i.clause }
+----
+{ clause: "index (m)", id: indexes.key(1026) }
+{ clause: "index (ts::g ( n )) in B", id: indexes.key(1025) }
+{ clause: "key id", id: indexes.key(1024) }
+
+migrate
+  module ts
+  drop fn g
+  drop index (m) in ts
+  drop set S of ts
+  drop relation ts
+  drop type T
+
+migrate
+  module ts
+  revert 0002
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id and i.dropped == None
+    select { id: i.id, clause: i.clause }
+----
+{ clause: "index (m)", id: indexes.key(1028) }
+{ clause: "index (ts::g ( n )) in B", id: indexes.key(1029) }
+{ clause: "key id", id: indexes.key(1027) }
+
