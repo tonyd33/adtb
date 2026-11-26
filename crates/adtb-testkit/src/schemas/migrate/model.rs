@@ -71,8 +71,10 @@ impl Model {
             .iter()
             .any(|(_, _, f)| matches!(f.ty.target(), Some((t, Scope::Named)) if t == i));
         named
-            || r.checks
+            || r.uniques
                 .iter()
+                .chain(&r.indexes)
+                .chain(&r.checks)
                 .any(|k| k.ctors.is_some() && k.ctors == r.set)
     }
 
@@ -133,11 +135,18 @@ impl Model {
             .flatten()
             .map(|f| f.name.as_str());
         let dropped = |k: &Clause| Some(k.field.as_str()) == flag && meets(&scope(k));
-        let folds = matches!(kind, Kind::Merge | Kind::Nest | Kind::Unnest);
-        let default = r
-            .defaults
-            .iter()
-            .any(|(d, f, _)| cs.contains(d) && (folds || Some(f.as_str()) == flag));
+        let folds = matches!(kind, Kind::Nest | Kind::Unnest);
+        let alike = |f: &str, v: &str| {
+            cs.iter().all(|c| {
+                r.defaults
+                    .iter()
+                    .any(|(d, g, w)| d == c && g == f && w == v)
+            })
+        };
+        let default = r.defaults.iter().any(|(d, f, v)| {
+            cs.contains(d)
+                && (folds || Some(f.as_str()) == flag || kind == Kind::Merge && !alike(f, v))
+        });
         r.uniques.iter().any(|k| clause(k) || dropped(k))
             || r.indexes.iter().any(|k| clause(k) || dropped(k))
             || r.checks.iter().any(|k| check(k) || dropped(k))
@@ -157,19 +166,34 @@ impl Model {
     /// Returns whether a clause, constraint or default of relation `i` names field `f` of
     /// constructor `c`, or of the header when `c` is `None`.
     pub(super) fn clause_names_field(&self, i: usize, c: Option<usize>, f: &str) -> bool {
+        self.rel(i)
+            .defaults
+            .iter()
+            .any(|(d, g, _)| g == f && c.is_none_or(|c| c == *d))
+            || self.names_beside_defaults(i, c, f)
+    }
+
+    /// Returns whether a unique, index, check or constraint of relation `i` names field `f` of
+    /// constructor `c`, or of the header when `c` is `None`. A check covering `c` counts as
+    /// naming each `Tag` field of `c`, which a merge of some of the constructors it ranged over
+    /// matches on.
+    pub(super) fn names_beside_defaults(&self, i: usize, c: Option<usize>, f: &str) -> bool {
         let r = self.rel(i);
         let covers = |k: &Clause| match (&k.ctors, c) {
             (None, _) | (_, None) => true,
             (Some(cs), Some(c)) => cs.contains(&c),
         };
+        let tag = c.is_some_and(|c| {
+            r.ctors[c]
+                .field(f)
+                .is_some_and(|g| matches!(g.ty, Ty::Tag(..)))
+        });
         r.uniques
             .iter()
             .chain(&r.indexes)
             .chain(&r.checks)
             .any(|k| k.field == f && covers(k))
-            || r.defaults
-                .iter()
-                .any(|(d, g, _)| g == f && c.is_none_or(|c| c == *d))
+            || tag && r.checks.iter().any(covers)
             || self
                 .s
                 .constraints
@@ -302,17 +326,14 @@ impl Model {
             });
         }
         let defaults = std::mem::take(&mut r.defaults);
-        r.defaults = defaults
-            .into_iter()
-            .flat_map(|(c, f, v)| {
-                let held: Vec<usize> = map[c]
-                    .iter()
-                    .copied()
-                    .filter(|&d| r.ctors[d].field(&f).is_some())
-                    .collect();
-                held.into_iter().map(move |d| (d, f.clone(), v.clone()))
-            })
-            .collect();
+        for (c, f, v) in defaults {
+            for &d in &map[c] {
+                let held = r.ctors[d].field(&f).is_some();
+                if held && !r.defaults.iter().any(|x| x.0 == d && x.1 == f) {
+                    r.defaults.push((d, f.clone(), v.clone()));
+                }
+            }
+        }
         self.s.constraints.retain_mut(|k| {
             if k.rel != i {
                 return true;
@@ -542,7 +563,9 @@ impl Model {
                 rel.uniques.clear();
                 self.s.rels.push(rel);
                 self.keys.add();
-                let (mut out, reach, last) = match self.s.extra.next % 8 {
+                let waiting = self.want == Some(super::Reach::DroppedWaiting);
+                let draw = if waiting { 5 } else { self.s.extra.next % 8 };
+                let (mut out, reach, last) = match draw {
                     0..=4 => {
                         let f = self.fresh("f");
                         let decl = format!("{f} (k: Key {name}) -> Key {name} = k");
@@ -786,10 +809,75 @@ impl Model {
         }
     }
 
+    /// Returns the declaration of function `f` of relation `i`'s type, matching each of its
+    /// constructors to 1.
+    fn matching(&self, i: usize, f: &str) -> String {
+        let r = self.rel(i);
+        let arms: String = r
+            .ctors
+            .iter()
+            .map(|c| format!("\n  | {} x -> 1", c.name))
+            .collect();
+        format!("{f} (t: {}) -> I64 = match t{arms}", r.ty)
+    }
+
+    /// Push to `out` a split of a constructor of a relation of another type than `ty`, drawn
+    /// while the declarations do not build as one operator, if one is drawn; when `wanted`,
+    /// trying eight draws for one reaching [`super::Reach::ReplacedWhileUnbuilt`], then a split
+    /// of a type and relation added and dropped around it.
+    fn split_while_unbuilt(&mut self, rng: &mut Rng, wanted: bool, ty: &str, out: &mut Vec<Op>) {
+        let before = self.clone();
+        let own = format!("split constructor {ty}.");
+        let tries = if wanted { 8 } else { 1 };
+        for _ in 0..tries {
+            self.unbuilt = true;
+            let split = self.split(rng, false).filter(|ops| match ops.as_slice() {
+                [op] => !op.text().starts_with(&own),
+                _ => false,
+            });
+            self.unbuilt = false;
+            let reached = |ops: &Vec<Op>| ops.last().is_some_and(|o| o.reach == self.want);
+            match split {
+                Some(ops) if !wanted || reached(&ops) => {
+                    out.extend(ops);
+                    return;
+                }
+                _ => *self = before.clone(),
+            }
+        }
+        if wanted {
+            let n = self.fresh("u");
+            let (t, r, p, q, m) = (
+                format!("T{n}"),
+                format!("r{n}"),
+                format!("P{n}"),
+                format!("Q{n}"),
+                format!("R{n}"),
+            );
+            let split = format!(
+                "split constructor {t}.{p} into {m} {{ a: I64 }}\n  by match\n    | {p} c -> {m} {{ a: c.a }}"
+            );
+            out.extend([
+                op(
+                    Kind::AddType,
+                    format!("add type {t} {{ id: Key {r} }} = {p} {{ a: I64 }} | {q} {{ a: I64 }}"),
+                ),
+                op(
+                    Kind::AddRelation,
+                    format!("add relation {r} : {t} key id generate sequence\n  unique (a) in {p}"),
+                ),
+                op(Kind::Split, split).reaching(Some(super::Reach::ReplacedWhileUnbuilt)),
+                op(Kind::DropRelation, format!("drop relation {r}")),
+                op(Kind::DropType, format!("drop type {t}")),
+            ]);
+        }
+    }
+
     /// Draw a constructor operator of `kind`, as [`Model::draw`] does.
     fn constructor(&mut self, rng: &mut Rng, kind: Kind, broke: bool) -> Option<Vec<Op>> {
         match kind {
             Kind::AddConstructor => {
+                let wanted = self.want == Some(super::Reach::ReplacedWhileUnbuilt);
                 let i = *rng.pick_some(&self.sums())?;
                 let ty = self.rel(i).ty.clone();
                 if broke {
@@ -818,18 +906,10 @@ impl Model {
                 if joins {
                     text.push_str(&format!("\n  joins {}.{}", r.name, r.set_name));
                 }
-                let matcher = (rng.below(4) != 0).then(|| {
+                let matcher = (wanted || rng.below(4) != 0).then(|| {
                     let f = self.fresh("f");
-                    let names: Vec<String> =
-                        self.rel(i).ctors.iter().map(|c| c.name.clone()).collect();
-                    let body = |names: &[String]| {
-                        let arms: String =
-                            names.iter().map(|c| format!("\n  | {c} x -> 1")).collect();
-                        format!("{f} (t: {ty}) -> I64 = match t{arms}")
-                    };
-                    let mut all = names.clone();
-                    all.push(name.clone());
-                    (f.clone(), body(&names), body(&all))
+                    let without = self.matching(i, &f);
+                    (f, without)
                 });
                 let r = &mut self.s.rels[i];
                 let c = r.ctors.len();
@@ -838,24 +918,15 @@ impl Model {
                 if joins && let Some(set) = &mut r.set {
                     set.push(c);
                 }
-                let Some((f, without, with)) = matcher else {
+                let Some((f, without)) = matcher else {
                     return Some(vec![op(kind, text)]);
                 };
                 let mut out = vec![
                     op(Kind::DefineFn, format!("define fn {without}")),
                     op(kind, text).reaching(Some(super::Reach::ArmLater)),
                 ];
-                let before = self.clone();
-                self.unbuilt = true;
-                let own = format!("split constructor {ty}.");
-                let split = self
-                    .split(rng, false)
-                    .filter(|ops| ops.len() == 1 && !ops[0].text().starts_with(&own));
-                self.unbuilt = false;
-                match split {
-                    Some(ops) => out.extend(ops),
-                    None => *self = before,
-                }
+                self.split_while_unbuilt(rng, wanted, &ty, &mut out);
+                let with = self.matching(i, &f);
                 out.push(op(Kind::RedefineFn, format!("redefine fn {with}")));
                 out.push(op(Kind::DropFn, format!("drop fn {f}")));
                 Some(out)
@@ -890,9 +961,14 @@ impl Model {
                     ty: self.rel(i).ty.clone(),
                     ctor: self.rel(i).ctors[c].name.clone(),
                 };
-                let mut out: Vec<Op> = self.tag_of(rng, i, &[c], false).into_iter().collect();
+                let alone = self.want == Some(super::Reach::RemovedAlone);
+                let mut out: Vec<Op> = match alone {
+                    true => Vec::new(),
+                    false => self.tag_of(rng, i, &[c], false).into_iter().collect(),
+                };
                 self.replace(i, &[c], Vec::new(), Vec::new());
-                out.push(emptying(kind, text, target).with(effect));
+                let reach = alone.then_some(super::Reach::RemovedAlone);
+                out.push(emptying(kind, text, target).with(effect).reaching(reach));
                 Some(out)
             }
             Kind::RenameConstructor => {

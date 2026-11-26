@@ -128,7 +128,7 @@ impl Walk {
         let version = self.log.len() as u64 + 1;
         (0..n).filter_map(move |t| {
             self.case
-                .migration(t << 48 | self.seed << 8 | k, kind, false, version)
+                .migration(t << 48 | self.seed << 8 | k, (kind, false, None), version)
         })
     }
 

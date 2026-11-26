@@ -26,6 +26,8 @@ use adtb_testkit::schemas::{self, Kind, Migration, Reach, Rows};
 use super::schemas::{Reached as Written, statements};
 use super::{Got, close, engine_eval, panic_message, process, seeds_of, try_open};
 
+#[path = "migrations/earlier.rs"]
+mod earlier;
 #[path = "migrations/reasons.rs"]
 mod reasons;
 
@@ -34,14 +36,70 @@ mod reasons;
 const CASES: u64 = 1;
 
 /// Returns how many migrations are drawn over each case: enough under the profile `deep` for
-/// [`scheduled`] to name every operator kind whole and broken more than once over its cases.
+/// [`scheduled`] to name every operator kind whole and broken more than once over its cases, in
+/// the slots [`WANTED`] leaves it.
 fn migrations() -> u64 {
     if adtb_testkit::profile::every_case() {
-        40
+        44
     } else {
         3
     }
 }
+
+/// Returns how many migrations of each case [`scheduled`] names.
+fn kinds_drawn() -> u64 {
+    if adtb_testkit::profile::every_case() {
+        migrations() - migrations() / WANTED_EVERY
+    } else {
+        migrations()
+    }
+}
+
+/// The period of the slots of a case that take one of [`WANTED`] under the profile `deep`.
+const WANTED_EVERY: u64 = 3;
+
+/// The kind, brokenness and steered shape of the migrations the profile `deep` draws in turn
+/// in every [`WANTED_EVERY`]th slot of a case, each kind or shape too rare otherwise to clear its
+/// floor.
+const WANTED: [(Kind, bool, Option<Reach>); 33] = [
+    (Kind::Rekey, false, None),
+    (Kind::AddRelation, false, Some(Reach::DroppedWaiting)),
+    (Kind::Split, false, None),
+    (Kind::Merge, false, None),
+    (Kind::Merge, true, None),
+    (Kind::RemoveConstructor, false, None),
+    (Kind::Split, false, Some(Reach::RenamedCarry)),
+    (Kind::Split, true, None),
+    (Kind::Split, true, Some(Reach::UncarriedDefault)),
+    (Kind::Split, false, Some(Reach::RenamedDefault)),
+    (Kind::DropDefault, false, Some(Reach::DroppedBesideField)),
+    (Kind::DropDefault, false, Some(Reach::RevertedRenamedFill)),
+    (Kind::RenameField, false, Some(Reach::RenamedBesideDropped)),
+    (Kind::MoveFieldDown, false, Some(Reach::MovedDownDefault)),
+    (Kind::AddDefault, false, Some(Reach::DefaultOverSeveral)),
+    (Kind::DropField, false, Some(Reach::DroppedBesideDefault)),
+    (Kind::RenameField, false, Some(Reach::RenamedBesideDropped)),
+    (Kind::MoveFieldDown, false, Some(Reach::MovedDownAction)),
+    (
+        Kind::AddConstructor,
+        false,
+        Some(Reach::ReplacedWhileUnbuilt),
+    ),
+    (Kind::Nest, true, Some(Reach::NestedDefault)),
+    (Kind::DropDefault, false, Some(Reach::DroppedBesideField)),
+    (Kind::AddDefault, false, Some(Reach::DefaultBeforeCtor)),
+    (Kind::RenameField, true, Some(Reach::SharedElementRenamed)),
+    (Kind::MoveFieldDown, false, Some(Reach::MovedDownAction)),
+    (Kind::AddDefault, false, Some(Reach::DefaultOverSeveral)),
+    (Kind::DropField, false, Some(Reach::DroppedBesideDefault)),
+    (Kind::RenameField, false, Some(Reach::RenamedBesideDropped)),
+    (Kind::Deprecate, false, None),
+    (Kind::RemoveConstructor, false, Some(Reach::RemovedAlone)),
+    (Kind::Merge, false, Some(Reach::MergeUnderCheck)),
+    (Kind::Unnest, false, None),
+    (Kind::Deprecate, true, Some(Reach::DeprecateRetagTarget)),
+    (Kind::Disable, true, Some(Reach::DisableRetagTarget)),
+];
 
 /// The cases that run at once, each worker thread taking the next seed no worker has taken. The
 /// search's override under the profile `deep` holds as many test threads.
@@ -74,6 +132,9 @@ struct Reached {
     unimaged: BTreeMap<Kind, usize>,
     /// Each shape committed, or refused as the broken operator.
     shapes: BTreeMap<Reach, usize>,
+    /// Each kind of [`EARLIER`] a committed revert of an earlier migration undid, a `drop field`
+    /// or `remove constructor` only when the defaults it was predicted to leave were not none.
+    earlier: BTreeMap<Kind, usize>,
 }
 
 impl Reached {
@@ -84,6 +145,7 @@ impl Reached {
             (&mut self.refused, other.refused),
             (&mut self.tagged, other.tagged),
             (&mut self.unimaged, other.unimaged),
+            (&mut self.earlier, other.earlier),
         ] {
             for (k, n) in from {
                 *to.entry(k).or_default() += n;
@@ -130,10 +192,50 @@ impl Reached {
                     .filter(|k| !self.unimaged.contains_key(k))
                     .map(|k| format!("{k:?} refused for an object with no exact image")),
             )
+            .chain(
+                EARLIER
+                    .into_iter()
+                    .filter(|k| !self.earlier.contains_key(k))
+                    .map(|k| format!("{k:?} undone by a revert after later migrations")),
+            )
             .collect();
         assert_eq!(missed, Vec::<String>::new(), "kinds under their floor of 1");
     }
 }
+
+/// The kinds whose revert, after later migrations change fields or defaults, the search draws.
+const EARLIER: [Kind; 3] = [Kind::DropDefault, Kind::DropField, Kind::RemoveConstructor];
+
+/// The kinds besides those of [`EARLIER`] a migration a revert of it after later migrations
+/// undoes may hold: none drops or carries a default or a field.
+const ALONGSIDE: [Kind; 11] = [
+    Kind::AddField,
+    Kind::AddConstructor,
+    Kind::AddType,
+    Kind::AddModule,
+    Kind::AddDefault,
+    Kind::RenameType,
+    Kind::RenameRelation,
+    Kind::AddCheck,
+    Kind::AddIndex,
+    Kind::AddUnique,
+    Kind::AddSet,
+];
+
+/// The most reverts of an earlier migration a case tries for each kind of [`EARLIER`], whether
+/// a rename beside a dropped default picks the migration or the latest one holding the kind is
+/// picked.
+const EARLIER_TRIES: usize = 4;
+
+/// The kinds of a migration after which the search reverts an earlier one of [`EARLIER`].
+const EARLIER_AFTER: [Kind; 6] = [
+    Kind::RenameField,
+    Kind::AddField,
+    Kind::DropField,
+    Kind::AlterField,
+    Kind::AddDefault,
+    Kind::DropDefault,
+];
 
 /// The kinds that replace a constructor by no one constructor, refused when a stored tag names it.
 const TAGGED: [Kind; 5] = [
@@ -173,6 +275,52 @@ enum Ended {
     Tagged(Kind),
 }
 
+/// A committed migration as a revert of it after later migrations reads it.
+struct Undo {
+    /// The kinds of its operators when a revert has what it needs to commit, else none.
+    kinds: Vec<Kind>,
+    /// The fill of each field it drops, by the field's path as it drops it.
+    fills: Vec<(String, String)>,
+    /// The catalog it left.
+    left: earlier::Catalog,
+    /// It drops a default, or a field whose default naming no constructor fills a field of
+    /// another constructor, so a later rename may rename a field that default fills.
+    renamed: bool,
+}
+
+impl Undo {
+    /// Returns migration `m`, or the first migration when `None`, with the defaults of the
+    /// catalog relations `cat` it leaves.
+    fn of(m: Option<&Migration>, cat: &[Got]) -> Result<Undo, Finding> {
+        let left = earlier::Catalog::of(cat).map_err(|e| found("the catalog does not read", e))?;
+        let Some(m) = m.filter(|m| m.revertible()) else {
+            return Ok(Undo {
+                kinds: Vec::new(),
+                fills: Vec::new(),
+                left,
+                renamed: false,
+            });
+        };
+        let fills = m
+            .ops()
+            .iter()
+            .filter(|o| o.kind() == Kind::DropField)
+            .filter_map(|o| {
+                let path = o.text().strip_prefix("drop field ")?;
+                Some((path.to_owned(), o.fill()?.to_owned()))
+            })
+            .collect();
+        Ok(Undo {
+            kinds: m.ops().iter().map(schemas::Op::kind).collect(),
+            fills,
+            left,
+            renamed: m.ops().iter().any(|o| {
+                o.kind() == Kind::DropDefault || o.reach() == Some(Reach::DroppedBesideDefault)
+            }),
+        })
+    }
+}
+
 /// A database a case's migrations run against, and what the judge knows of it.
 struct Run {
     sim: Sim,
@@ -188,6 +336,15 @@ struct Run {
     hash: Option<Value>,
     /// The pages allocated after a sweep in a session that opened `log` and wrote nothing.
     pages: usize,
+    /// Each migration of `log` as a later revert of it reads it.
+    undo: Vec<Undo>,
+    /// Each kind a committed revert of an earlier exact migration holding it undid, as
+    /// [`Reached`] counts it.
+    earlier: BTreeMap<Kind, usize>,
+    /// The reverts of an earlier migration tried for each kind it holds.
+    tried: BTreeMap<Kind, usize>,
+    /// The shapes committed reverts of an earlier migration reached.
+    shapes: BTreeMap<Reach, usize>,
 }
 
 /// Returns the contents of each relation of `case` on `db`.
@@ -452,11 +609,25 @@ fn relations_shape(schema: &Schema, app: ModuleId) -> Vec<String> {
     out
 }
 
-/// Returns the lines of `a` not in `b`, each marked `-`, then those of `b` not in `a`, `+`.
+/// Returns, in line order, each copy of a line `a` holds more often than `b` marked `-`, and each
+/// copy of one `b` holds more often marked `+`.
 fn diff(a: &[String], b: &[String]) -> String {
-    let (sa, sb): (BTreeSet<&String>, BTreeSet<&String>) = (a.iter().collect(), b.iter().collect());
-    let mut out: Vec<String> = sa.difference(&sb).map(|l| format!("-{l}")).collect();
-    out.extend(sb.difference(&sa).map(|l| format!("+{l}")));
+    let count = |xs: &[String]| {
+        let mut n: BTreeMap<String, i64> = BTreeMap::new();
+        for x in xs {
+            *n.entry(x.clone()).or_default() += 1;
+        }
+        n
+    };
+    let mut n = count(a);
+    for (l, k) in count(b) {
+        *n.entry(l).or_default() -= k;
+    }
+    let mut out: Vec<String> = Vec::new();
+    for (l, k) in &n {
+        let sign = if *k > 0 { '-' } else { '+' };
+        out.extend((0..k.abs()).map(|_| format!("{sign}{l}")));
+    }
     out.join("\n")
 }
 
@@ -615,7 +786,7 @@ fn checked(source: &Source, m: &Migration) -> Result<bool, Finding> {
                 .map(|d| d.message.as_str())
                 .chain(r.recheck.iter().map(|d| d.diag.message.as_str()))
                 .collect();
-            if let Err(want) = reasons::stated((op.kind(), op.unimaged()), &why, &own) {
+            if let Err(want) = reasons::stated(op, &why, &own) {
                 return Err(found(
                     format!(
                         "the checker refuses a broken {:?} for another reason",
@@ -726,7 +897,7 @@ fn engine_refusal(m: &Migration, operator: &str, detail: &str) -> Option<Finding
     if let Some(b) = m.broken() {
         let op = &m.ops()[b];
         let named = op.text().lines().any(|l| l.trim() == operator);
-        return match reasons::stated((op.kind(), op.unimaged()), &lines, &[]) {
+        return match reasons::stated(op, &lines, &[]) {
             Ok(()) if named => None,
             Ok(()) => Some(found(
                 format!(
@@ -758,16 +929,28 @@ fn engine_refusal(m: &Migration, operator: &str, detail: &str) -> Option<Finding
     })
 }
 
-/// Returns why a refusal of `op`, which replaces a constructor a stored tag names, with
-/// `operator` and `detail`, does not name `op` or gives a line outside `lines`.
+/// Returns why a refusal of `op` of `m`, which replaces a constructor a stored tag names, with
+/// `operator` and `detail`, does not name `op`, gives no line of `lines`, or gives a line neither
+/// of `lines` nor a data refusal of an operator of `m` reading data.
 fn tag_refusal(
+    m: &Migration,
     op: &schemas::Op,
     lines: &BTreeSet<String>,
     operator: &str,
     detail: &str,
 ) -> Option<Finding> {
-    let named = op.text().lines().any(|l| l.trim() == operator);
-    let stated = detail.lines().count() > 0 && detail.lines().all(|l| lines.contains(l));
+    let read = |l: &str| {
+        m.ops()
+            .iter()
+            .any(|o| o.reads() && reasons::data(o.kind(), l))
+    };
+    let first = detail.lines().next().unwrap_or_default();
+    let named = op.text().lines().any(|l| l.trim() == operator)
+        || m.ops()
+            .iter()
+            .any(|o| o.reads() && o.names(operator) && reasons::data(o.kind(), first));
+    let stated = detail.lines().any(|l| lines.contains(l))
+        && detail.lines().all(|l| lines.contains(l) || read(l));
     (!named || !stated).then(|| {
         found(
             "the engine refuses an operator replacing a constructor a stored tag names otherwise",
@@ -803,6 +986,7 @@ impl Run {
         })
         .map_err(|e| found("the engine does not open the schema", format!("{e:?}")))??;
         let (catalog, hash) = ran;
+        let undo = vec![Undo::of(None, &catalog)?];
         let rows = held(&fx, &case)?;
         Ok(Run {
             sim,
@@ -814,6 +998,10 @@ impl Run {
             catalog,
             hash,
             pages: 0,
+            undo,
+            earlier: BTreeMap::new(),
+            tried: BTreeMap::new(),
+            shapes: BTreeMap::new(),
         })
     }
 
@@ -885,9 +1073,7 @@ impl Run {
             }
             Ok(x) => x,
             Err(OpenError::MigrationRefused { version: v, reason }) if v == version => {
-                let kind = tagged.as_ref().map(|(op, _)| op.kind());
-                let ended = self.refused(m, reason, tagged)?;
-                return Ok(kind.map_or(ended, Ended::Tagged));
+                return self.refused(m, reason, tagged);
             }
             Err(e) => return Err(found("the migration fails, not refused", format!("{e:?}"))),
         };
@@ -919,6 +1105,7 @@ impl Run {
         if m.exact() {
             self.law(&log, &source, &migrated, &want_rows)?;
         }
+        self.earlier_law(&log, m, &cat)?;
         let mut fx = reference(&migrated, &want_rows)?;
         let probes = migrated.probes();
         opened(&mut self.sim, &log, |db| {
@@ -941,10 +1128,137 @@ impl Run {
         self.rows = held(&fx, &migrated)?;
         self.source = source;
         self.log = log;
+        self.undo.push(Undo::of(Some(m), &cat)?);
         self.case = migrated;
         self.catalog = cat;
         self.hash = hash;
         Ok(Ended::Committed)
+    }
+
+    /// Check, on a copy of the store, when migration `m` that ends `log` changes a field or a
+    /// default, a revert of the latest earlier migration of `log` whose operators are each of a
+    /// kind of [`EARLIER`] or [`ALONGSIDE`], at most one `drop default`, holding a kind tried fewer than
+    /// [`EARLIER_TRIES`] times, with a fill for each field it drops that the refusals ask for:
+    /// that it commits leaving the defaults [`earlier::predict`] gives from `cat`, the catalog
+    /// relations at the end of `log`, or is refused for a reason it predicts, and that a log it
+    /// commits replays with every migration resolving. Counts the kind it undid when it commits,
+    /// a `drop field` or `remove constructor` only when the defaults it predicts are not none.
+    fn earlier_law(&mut self, log: &[String], m: &Migration, cat: &[Got]) -> Result<(), Finding> {
+        let changes = m.ops().iter().any(|o| EARLIER_AFTER.contains(&o.kind()));
+        let only = |u: &Undo| {
+            u.kinds
+                .iter()
+                .all(|k| EARLIER.contains(k) || ALONGSIDE.contains(k))
+                && u.kinds.iter().filter(|&&k| k == Kind::DropDefault).count() <= 1
+        };
+        let renames = m
+            .ops()
+            .iter()
+            .any(|o| o.reach() == Some(Reach::RenamedBesideDropped));
+        let open = |u: &Undo, k: &&Kind| {
+            u.kinds.contains(k) && self.tried.get(k).copied().unwrap_or(0) < EARLIER_TRIES
+        };
+        let beside = self.undo.iter().enumerate().rev().find_map(|(j, u)| {
+            let kind = EARLIER.iter().find(|k| open(u, k))?;
+            (renames && u.renamed && only(u)).then_some((j, *kind))
+        });
+        let undone = beside.or_else(|| {
+            self.undo.iter().enumerate().rev().find_map(|(j, u)| {
+                EARLIER
+                    .iter()
+                    .find(|k| open(u, k))
+                    .filter(|_| only(u))
+                    .map(|&k| (j, k))
+            })
+        });
+        let (Some((j, kind)), true) = (undone, changes) else {
+            return Ok(());
+        };
+        *self.tried.entry(kind).or_default() += 1;
+        let unread = |e: String| found("the catalog does not read", e);
+        let now = earlier::Catalog::of(cat).map_err(unread)?;
+        let fills = &self.undo[j].fills;
+        let drops = self.undo[j].kinds.iter().filter(|&&k| k == Kind::DropField);
+        let unfilled = fills.len() < drops.count();
+        let predicted = earlier::predict(
+            &now,
+            &self.undo[j - 1].left,
+            &self.undo[j].left,
+            &log[j + 1..],
+            unfilled,
+        );
+        let want = predicted.map_err(|e| found("the catalog does not read", e))?;
+        let mut given: Vec<String> = Vec::new();
+        let (reverted, after) = loop {
+            let mut copy = Sim::with_files(self.seed, Config::default(), self.sim.files());
+            let mut reverted = log.to_vec();
+            let filled: String = given.iter().map(|f| format!("  fill {f}\n")).collect();
+            reverted.push(format!("module app\nrevert {:04}\n{filled}", j + 1));
+            let detail = match opened(&mut copy, &reverted, catalog) {
+                Ok(after) => break (reverted, after),
+                Err(OpenError::MigrationRefused {
+                    version,
+                    reason:
+                        Error::Rejected {
+                            reason: RejectReason::SchemaRefused { detail, .. },
+                        },
+                }) if version == reverted.len() as u64 => detail,
+                Err(e) => {
+                    return Err(found(
+                        "the revert of an earlier migration fails, not refused",
+                        format!("revert {:04}: {e:?}", j + 1),
+                    ));
+                }
+            };
+            let fill = earlier::unfilled(&detail).and_then(|(path, key)| {
+                let (_, lit) = fills.iter().find(|(p, _)| p == path)?;
+                let fill = format!("{key} = {lit}");
+                (!given.contains(&fill)).then_some(fill)
+            });
+            if let Some(f) = fill {
+                given.push(f);
+                continue;
+            }
+            if reasons::reverted(&detail, &want.refusals) {
+                return Ok(());
+            }
+            return Err(found(
+                "the revert of an earlier migration is refused for no stated reason",
+                format!("revert {:04}: {detail}", j + 1),
+            ));
+        };
+        let Some(live) = &want.commits else {
+            return Err(found(
+                "the revert of an earlier migration commits where a stated reason refuses it",
+                format!("revert {:04}: {:?}", j + 1, want.refusals),
+            ));
+        };
+        let after = earlier::Catalog::of(&after).map_err(unread)?;
+        let got = earlier::left(&now, &after).map_err(unread)?;
+        if let Some(d) = earlier::differs(live, &got) {
+            return Err(found(
+                "the revert of an earlier migration leaves other defaults than it gives back",
+                format!("revert {:04}: {d}", j + 1),
+            ));
+        }
+        let shapes = earlier::renamed(&now, &self.undo[j - 1].left, &self.undo[j].left);
+        let now = replayed(&reverted)
+            .map_err(|e| found("the revert of an earlier migration does not replay", e))?;
+        for n in 1..=now.version() {
+            if let Err(ds) = now.resolved(n) {
+                return Err(found(
+                    "a migration of the log does not resolve after a revert of an earlier one",
+                    format!("migration {n}: {ds:?}"),
+                ));
+            }
+        }
+        if kind == Kind::DropDefault || !live.is_empty() {
+            *self.earlier.entry(kind).or_default() += 1;
+        }
+        for r in shapes {
+            *self.shapes.entry(r).or_default() += 1;
+        }
+        Ok(())
     }
 
     /// Check that `log` replays to the version hash `hash` the engine stored, and that a reopen
@@ -993,9 +1307,10 @@ impl Run {
         Ok(source)
     }
 
-    /// Judge a refusal of `m`: the reason the broken operator's
-    /// precondition states, then a reopen with `verify` clean, and the catalog, version hash,
-    /// rows and swept page count as before it.
+    /// Judge a refusal of `m`: the reason the broken operator's precondition states, or for
+    /// `tagged` the stored tag or a stated refusal of another operator of `m` reading data; then
+    /// a reopen with `verify` clean, and the catalog, version hash, rows and swept page count as
+    /// before it. Returns [`Ended::Tagged`] only for the stored tag's refusal.
     fn refused(
         &mut self,
         m: &Migration,
@@ -1011,8 +1326,15 @@ impl Run {
                 format!("{reason:?}"),
             ));
         };
+        let mut ended = Ended::Refused;
         let wrong = match tagged {
-            Some((op, lines)) => tag_refusal(op, &lines, operator, detail),
+            Some((op, lines)) => match tag_refusal(m, op, &lines, operator, detail) {
+                None => {
+                    ended = Ended::Tagged(op.kind());
+                    None
+                }
+                Some(f) => engine_refusal(m, operator, detail).map(|_| f),
+            },
             None => engine_refusal(m, operator, detail),
         };
         if let Some(f) = wrong {
@@ -1059,7 +1381,7 @@ impl Run {
                 format!("{} before, {pages} after", self.pages),
             ));
         }
-        Ok(Ended::Refused)
+        Ok(ended)
     }
 
     /// Check, on a copy of the store, that a revert of the migration `log` ends with restores
@@ -1163,11 +1485,23 @@ pub(super) fn held(fx: &Fixture, case: &schemas::Case) -> Result<Rows, Finding> 
         .map_err(|e| found("the reference holds rows of another schema", e))
 }
 
+/// Returns the kind, brokenness and steered shape of migration `k` of the case of `seed`: under
+/// the profile `deep` every [`WANTED_EVERY`]th one of [`WANTED`] in turn, the others as [`scheduled`] names
+/// them.
+fn slot(seed: u64, k: u64) -> (Kind, bool, Option<Reach>) {
+    if adtb_testkit::profile::every_case() && k % WANTED_EVERY == WANTED_EVERY - 1 {
+        let at = seed * (migrations() / WANTED_EVERY) + k / WANTED_EVERY;
+        return WANTED[at as usize % WANTED.len()];
+    }
+    let (kind, broke) = scheduled(seed, k - k / WANTED_EVERY);
+    (kind, broke, None)
+}
+
 /// Returns the kind and brokenness of migration `k` of the case of `seed`: under the profile
 /// `deep` kinds in turn, each whole and then broken, a `remove` after the `deprecate` it needs;
 /// by default spread across the kinds.
 fn scheduled(seed: u64, k: u64) -> (Kind, bool) {
-    let at = seed * migrations() + k;
+    let at = seed * kinds_drawn() + k;
     let n = Kind::ALL.len() as u64;
     let kind = if adtb_testkit::profile::every_case() {
         at / 2 % n
@@ -1197,16 +1531,22 @@ fn run(seed: u64, reached: &mut Reached, last: u64, instead: Option<&Migration>)
         };
         let mut pending = Vec::new();
         for k in 0..=last {
-            pending.push(scheduled(seed, k));
+            pending.push(slot(seed, k));
             let version = run.log.len() as u64 + 1;
-            let drawn = pending.iter().enumerate().find_map(|(p, &(kind, broke))| {
-                (0..DRAWS)
-                    .find_map(|t| {
-                        run.case
-                            .migration(t << 48 | seed << 8 | k, kind, broke, version)
-                    })
-                    .map(|m| (p, kind, broke, m))
-            });
+            let drawn = pending
+                .iter()
+                .enumerate()
+                .find_map(|(p, &(kind, broke, want))| {
+                    (0..DRAWS)
+                        .find_map(|t| {
+                            run.case.migration(
+                                t << 48 | seed << 8 | k,
+                                (kind, broke, want),
+                                version,
+                            )
+                        })
+                        .map(|m| (p, kind, broke, m))
+                });
             let Some((p, kind, broke, m)) = drawn else {
                 continue;
             };
@@ -1255,6 +1595,12 @@ fn run(seed: u64, reached: &mut Reached, last: u64, instead: Option<&Migration>)
                 }
                 Err(finding) => return Some((run.log.clone(), Some(m), finding)),
             }
+        }
+        for (k, n) in &run.earlier {
+            *reached.earlier.entry(*k).or_default() += n;
+        }
+        for (r, n) in &run.shapes {
+            *reached.shapes.entry(*r).or_default() += n;
         }
         None
     }));
@@ -1346,6 +1692,12 @@ fn generated_migrations_keep_their_invariants() {
     } else {
         "default"
     };
+    if adtb_testkit::profile::every_case() {
+        eprintln!(
+            "shapes reached: {:?}\nkinds undone by an earlier revert: {:?}",
+            reached.shapes, reached.earlier
+        );
+    }
     if let Some((seed, first)) = failures.first() {
         let small = shrink(
             *seed,

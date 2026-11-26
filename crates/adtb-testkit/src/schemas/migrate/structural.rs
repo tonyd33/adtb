@@ -10,32 +10,25 @@ impl Model {
     pub(super) fn split(&mut self, rng: &mut Rng, broke: bool) -> Option<Vec<Op>> {
         let can = self.replaceable();
         let mut before = Vec::new();
-        let shape = if broke && rng.below(2) == 0 {
-            self.unimaged_split(rng, &can, &mut before)
-        } else {
-            None
-        };
-        let can: Vec<((usize, usize), bool)> = can
-            .into_iter()
-            .filter_map(|(i, c)| {
-                if !self.replaces_under(i, &[c], 1, Kind::Split) {
-                    return None;
-                }
-                let two = self.flagged((i, c)) && self.replaces_under(i, &[c], 2, Kind::Split);
-                let seeds = !self.clone().seeded(i, c).is_empty();
-                if self.unbuilt {
-                    return Some(((i, c), !seeds && self.unique_scoped(i, c)));
-                }
-                Some(((i, c), two || seeds))
-            })
+        let uncarried = broke && self.want == Some(Reach::UncarriedDefault);
+        let shape = self.split_shape(rng, &can, (broke, uncarried), &mut before);
+        let can = self.splittable(can);
+        let renaming = !broke
+            && !self.unbuilt
+            && matches!(self.want, Some(Reach::RenamedCarry | Reach::RenamedDefault));
+        let renamable: Vec<(usize, usize)> = can
+            .iter()
+            .copied()
+            .filter(|&(i, c)| renaming && self.renamable(i, c))
             .collect();
-        let can = Model::steered(can);
         let (i, c) = match shape {
             Some(p) => p,
+            None if !renamable.is_empty() => *rng.pick(&renamable),
             None => *rng.pick_some(&can)?,
         };
         let wrong = broke && shape.is_none();
-        if !broke && shape.is_none() && self.version % 3 == 1 && self.renamable(i, c) {
+        let renames = renaming || self.version % 3 == 1;
+        if !broke && !self.unbuilt && shape.is_none() && renames && self.renamable(i, c) {
             return Some(self.renamed_split(rng, (i, c)));
         }
         let mut out = if broke { Vec::new() } else { self.seeded(i, c) };
@@ -133,7 +126,15 @@ impl Model {
             (text, made)
         };
         if shape.is_some() {
-            before.push(unimaged(Kind::Split, text));
+            let defaulted = flag.is_some_and(|b| {
+                let flag = &src.fields[b].name;
+                self.rel(i)
+                    .defaults
+                    .iter()
+                    .any(|(d, f, _)| *d == c && f == flag)
+            });
+            let reach = defaulted.then_some(Reach::UncarriedDefault);
+            before.push(unimaged(Kind::Split, text).reaching(reach));
             return Some(before);
         }
         if broke {
@@ -161,6 +162,17 @@ impl Model {
     /// them to the model.
     fn renamed_split(&mut self, rng: &mut Rng, (i, c): (usize, usize)) -> Vec<Op> {
         let mut out: Vec<Op> = self.tag_of(rng, i, &[c], false).into_iter().collect();
+        let r = self.rel(i);
+        let bare = r.ctors[c]
+            .fields
+            .iter()
+            .find(|f| f.ty.literal() && !r.has_default(c, &f.name))
+            .cloned();
+        if self.want == Some(Reach::RenamedDefault)
+            && let Some(f) = bare
+        {
+            out.push(self.defaulted(i, c, &f));
+        }
         let path = self.ctor_path(i, c);
         let name = self.ctor_name(i);
         let src = self.rel(i).ctors[c].clone();
@@ -198,6 +210,14 @@ impl Model {
                 k.field.clone_from(to);
             }
         }
+        let defaulted = r.defaults.iter().any(|(d, _, _)| *d == c);
+        for (d, g, _) in &mut r.defaults {
+            if let Some((_, to)) = renamed.iter().find(|(from, _)| *from == *g)
+                && *d == c
+            {
+                g.clone_from(to);
+            }
+        }
         let effect = Effect::Split {
             rel: r.name.clone(),
             ty: r.ty.clone(),
@@ -209,17 +229,17 @@ impl Model {
         let state = r.states[c];
         let made = Ctor { name, fields };
         self.replace(i, &[c], vec![made], vec![state]);
-        out.push(
-            op(Kind::Split, text)
-                .with(effect)
-                .reaching(Some(Reach::RenamedCarry)),
-        );
+        let reach = match defaulted {
+            true => Reach::RenamedDefault,
+            false => Reach::RenamedCarry,
+        };
+        out.push(op(Kind::Split, text).with(effect).reaching(Some(reach)));
         out
     }
 
     /// Returns whether a split of constructor `c` of relation `i` may carry each field under a
-    /// new name: no default, check or constraint names a field of `c`, and every unique or
-    /// index naming a field of `c` is scoped to `c` alone.
+    /// new name: no check or constraint names a field of `c`, and every unique or index naming a
+    /// field of `c` is scoped to `c` alone.
     fn renamable(&self, i: usize, c: usize) -> bool {
         let r = self.rel(i);
         let own = |f: &str| r.ctors[c].field(f).is_some();
@@ -229,7 +249,6 @@ impl Model {
             && r.checks
                 .iter()
                 .all(|k| k.ctors.as_ref().is_some_and(|cs| !cs.contains(&c)))
-            && r.defaults.iter().all(|(d, _, _)| *d != c)
             && self
                 .s
                 .constraints
@@ -259,6 +278,46 @@ impl Model {
             .fields
             .iter()
             .any(|f| f.ty == Ty::Bool && f.action == Action::Unstated)
+    }
+
+    /// Returns the constructors of `can` a split has an exact image for, steered to those
+    /// [`Model::steered`] prefers: one that splits in two or seeds rows, or while the
+    /// declarations do not build, one a unique names that seeds none.
+    fn splittable(&self, can: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+        let can: Vec<((usize, usize), bool)> = can
+            .into_iter()
+            .filter_map(|(i, c)| {
+                if !self.replaces_under(i, &[c], 1, Kind::Split) {
+                    return None;
+                }
+                let two = self.flagged((i, c)) && self.replaces_under(i, &[c], 2, Kind::Split);
+                let seeds = !self.clone().seeded(i, c).is_empty();
+                if self.unbuilt {
+                    return Some(((i, c), !seeds && self.unique_scoped(i, c)));
+                }
+                Some(((i, c), two || seeds))
+            })
+            .collect();
+        Model::steered(can)
+    }
+
+    /// Returns the constructor a broken split by its flag has no exact image for, its operators
+    /// pushed to `before`: with `uncarried`, one [`Model::defaulted_flag`] adds; else, on half
+    /// the draws, one [`Model::unimaged_split`] picks. `None` for any other split.
+    fn split_shape(
+        &mut self,
+        rng: &mut Rng,
+        can: &[(usize, usize)],
+        (broke, uncarried): (bool, bool),
+        before: &mut Vec<Op>,
+    ) -> Option<(usize, usize)> {
+        if uncarried {
+            self.defaulted_flag(rng, before)
+        } else if broke && rng.below(2) == 0 {
+            self.unimaged_split(rng, can, before)
+        } else {
+            None
+        }
     }
 
     /// Returns a constructor of `can` whose split by its flag has no exact image under what
@@ -329,56 +388,25 @@ impl Model {
     pub(super) fn merge(&mut self, rng: &mut Rng, kind: Kind, broke: bool) -> Option<Vec<Op>> {
         let (pairs, shapes) = self.mergeable(kind);
         let mut out = Vec::new();
-        let want = broke && rng.below(2) == 0;
-        let shape = if want {
+        let nested = kind == Kind::Nest && self.want == Some(Reach::NestedDefault);
+        let want = broke && (nested || rng.below(2) == 0);
+        let shape = if want && !nested {
             rng.pick_some(&shapes).copied()
         } else {
             None
         };
         let steer = want && shape.is_none();
-        let under = !broke && kind == Kind::Merge && rng.below(2) == 0;
-        let held = if (steer || under) && kind == Kind::Merge {
+        let under = !broke
+            && kind == Kind::Merge
+            && (self.want == Some(Reach::MergeUnderCheck) || rng.below(2) == 0);
+        let held = if (steer || under) && (kind == Kind::Merge || nested) {
             Some(self.fresh("g"))
         } else {
             None
         };
         let (i, c, d) = match shape.or_else(|| rng.pick_some(&pairs).copied()) {
             Some(p) if !steer && !under => p,
-            _ => {
-                let sums = self.sums();
-                let headed: Vec<usize> = sums
-                    .iter()
-                    .copied()
-                    .filter(|&i| held.is_none() && steer && self.header_key(i).is_some())
-                    .collect();
-                let i = *rng.pick_some(if headed.is_empty() { &sums } else { &headed })?;
-                let ty = self.rel(i).ty.clone();
-                let at = self.rel(i).ctors.len();
-                let apart = self.version.is_multiple_of(2);
-                let fields: Vec<Field> = held.iter().map(|g| Field::new(g, Ty::Int)).collect();
-                let record = match fields.first() {
-                    Some(f) => format!(" {{ {}: I64 }}", f.name),
-                    None => String::new(),
-                };
-                for _ in 0..2 + usize::from(apart) {
-                    let name = self.ctor_name(i);
-                    out.push(op(
-                        Kind::AddConstructor,
-                        format!("add constructor {ty}.{name}{record}"),
-                    ));
-                    let r = &mut self.s.rels[i];
-                    r.ctors.push(Ctor {
-                        name,
-                        fields: fields.clone(),
-                    });
-                    r.states.push(Stage::Declared);
-                }
-                if self.version.is_multiple_of(3) {
-                    out.push(op(Kind::Enable, format!("enable {}", self.ctor_ref(i, at))));
-                    self.s.rels[i].states[at] = Stage::Enabled;
-                }
-                (i, at, at + 1 + usize::from(apart))
-            }
+            _ => self.fresh_pair(rng, steer, held.as_deref(), &mut out)?,
         };
         if steer {
             match (held.clone(), self.header_key(i)) {
@@ -400,10 +428,14 @@ impl Model {
         );
         let tag = self.fresh("K");
         let product = self.ctor_name(i);
+        let record = |n: &String| match (kind, &held) {
+            (Kind::Nest, Some(g)) => format!("{n} {{ {g}: I64 }}"),
+            _ => n.clone(),
+        };
         let tag_ctors = if wrong && kind == Kind::Nest {
-            vec![cn.clone(), "Zz".to_owned()]
+            vec![record(&cn), "Zz".to_owned()]
         } else {
-            vec![cn.clone(), dn.clone()]
+            vec![record(&cn), record(&dn)]
         };
         let add_type = op(
             Kind::AddType,
@@ -415,14 +447,21 @@ impl Model {
         if !(wrong && kind == Kind::Merge) {
             decl.push(format!("{field}: {tag}"));
         }
-        decl.extend(fields.iter().map(|f| self.s.field_decl(self.rel(i), f)));
+        if kind == Kind::Merge || held.is_none() {
+            decl.extend(fields.iter().map(|f| self.s.field_decl(self.rel(i), f)));
+        }
         let verb = if kind == Kind::Merge { "merge" } else { "nest" };
         let text = format!(
             "{verb} constructor {ty}.({cn} | {dn}) into {product} {{ {} }}",
             decl.join(", ")
         );
         if shape.is_some() {
-            out.extend([add_type, unimaged(kind, text)]);
+            let r = self.rel(i);
+            let defaulted = nested && r.defaults.iter().any(|x| x.0 == c || x.0 == d);
+            out.extend([
+                add_type,
+                unimaged(kind, text).reaching(defaulted.then_some(Reach::NestedDefault)),
+            ]);
             return Some(out);
         }
         if broke {
@@ -465,6 +504,52 @@ impl Model {
         let merged = op(kind, text).with(effect).reaching(reach);
         out.push(merged);
         Some(out)
+    }
+
+    /// Returns two constructors a merge or nest steers to, added to a relation of a sum with
+    /// their operators pushed to `out`: each holding integer field `held` when given, with a
+    /// third between them on even versions, the first enabled on every third version. A `steer`
+    /// with no `held` picks a relation with a header key when one has it.
+    fn fresh_pair(
+        &mut self,
+        rng: &mut Rng,
+        steer: bool,
+        held: Option<&str>,
+        out: &mut Vec<Op>,
+    ) -> Option<Pair> {
+        let sums = self.sums();
+        let headed: Vec<usize> = sums
+            .iter()
+            .copied()
+            .filter(|&i| held.is_none() && steer && self.header_key(i).is_some())
+            .collect();
+        let i = *rng.pick_some(if headed.is_empty() { &sums } else { &headed })?;
+        let ty = self.rel(i).ty.clone();
+        let at = self.rel(i).ctors.len();
+        let apart = self.version.is_multiple_of(2);
+        let fields: Vec<Field> = held.iter().map(|g| Field::new(g, Ty::Int)).collect();
+        let record = match fields.first() {
+            Some(f) => format!(" {{ {}: I64 }}", f.name),
+            None => String::new(),
+        };
+        for _ in 0..2 + usize::from(apart) {
+            let name = self.ctor_name(i);
+            out.push(op(
+                Kind::AddConstructor,
+                format!("add constructor {ty}.{name}{record}"),
+            ));
+            let r = &mut self.s.rels[i];
+            r.ctors.push(Ctor {
+                name,
+                fields: fields.clone(),
+            });
+            r.states.push(Stage::Declared);
+        }
+        if self.version.is_multiple_of(3) {
+            out.push(op(Kind::Enable, format!("enable {}", self.ctor_ref(i, at))));
+            self.s.rels[i].states[at] = Stage::Enabled;
+        }
+        Some((i, at, at + 1 + usize::from(apart)))
     }
 
     pub(super) fn unnest(&mut self, rng: &mut Rng, broke: bool) -> Option<Vec<Op>> {

@@ -191,10 +191,42 @@ pub enum Reach {
     SharedElementRenamed,
     /// A split whose routing carries each field of its constructor under a new name.
     RenamedCarry,
+    /// An `add constructor` of a field of the name of fields an earlier `add default` naming no
+    /// constructor gave a default.
+    DefaultBeforeCtor,
+    /// A `drop default` naming no constructor while a constructor holds a field of its name
+    /// with no default.
+    DroppedBesideField,
+    /// A `move field` down to several constructors of a header field with a default.
+    MovedDownDefault,
+    /// A split carrying under a new name a field of the split constructor that has a default.
+    RenamedDefault,
+    /// A nest of a constructor a field of which has a default, refused for it.
+    NestedDefault,
+    /// A `rename field` of a field whose default a migration dropped, or of a field of another
+    /// constructor of the name of a dropped field and the value of its default.
+    RenamedBesideDropped,
+    /// An `add default` naming no constructor of a field two or more constructors hold.
+    DefaultOverSeveral,
+    /// A `remove constructor` drawn with no other operator in its migration.
+    RemovedAlone,
+    /// A `drop field` of a field with a default while a field of another constructor of its name
+    /// has a default of the same value.
+    DroppedBesideDefault,
+    /// A committed revert of an earlier migration giving a field back its default while a field
+    /// of another constructor that had a default of that value is renamed since. Only that
+    /// revert counts it.
+    RevertedBesideRenamed,
+    /// A committed revert of an earlier `drop default` giving it back to a field renamed since.
+    /// Only that revert counts it.
+    RevertedRenamedFill,
+    /// A broken split whose routing does not carry whole a field of the split constructor that
+    /// has a default, refused for it.
+    UncarriedDefault,
 }
 
 impl Reach {
-    pub const ALL: [Reach; 15] = [
+    pub const ALL: [Reach; 27] = [
         Reach::MergeAcrossStages,
         Reach::MovedDownAction,
         Reach::ArmLater,
@@ -210,6 +242,18 @@ impl Reach {
         Reach::TransientLossyMerge,
         Reach::SharedElementRenamed,
         Reach::RenamedCarry,
+        Reach::DefaultBeforeCtor,
+        Reach::DroppedBesideField,
+        Reach::MovedDownDefault,
+        Reach::RenamedDefault,
+        Reach::NestedDefault,
+        Reach::RenamedBesideDropped,
+        Reach::DefaultOverSeveral,
+        Reach::RemovedAlone,
+        Reach::DroppedBesideDefault,
+        Reach::RevertedBesideRenamed,
+        Reach::RevertedRenamedFill,
+        Reach::UncarriedDefault,
     ];
 
     /// Returns whether the shape is an operator whose inverse refuses while it is built, on a
@@ -243,6 +287,8 @@ pub struct Op {
     empties: Option<String>,
     effect: Effect,
     reach: Option<Reach>,
+    /// A literal of the type of the field a `drop field` drops, for a revert to fill it with.
+    fill: Option<String>,
 }
 
 impl Op {
@@ -281,6 +327,11 @@ impl Op {
     /// Returns the shape the operator reaches, if any.
     pub fn reach(&self) -> Option<Reach> {
         self.reach
+    }
+
+    /// Returns a literal of the type of the field a `drop field` drops, when its type has one.
+    pub fn fill(&self) -> Option<&str> {
+        self.fill.as_deref()
     }
 }
 
@@ -362,6 +413,14 @@ impl Migration {
         self.ops
             .iter()
             .all(|o| !o.broken && (o.kind.exact() || o.reach.is_some_and(Reach::transient)))
+    }
+
+    /// Returns whether a `revert` of the migration after later ones has what it needs to commit:
+    /// each operator unbroken and exact, or a `drop field` with a fill.
+    pub fn revertible(&self) -> bool {
+        self.ops
+            .iter()
+            .all(|o| !o.broken && (o.kind.exact() || o.kind == Kind::DropField && o.fill.is_some()))
     }
 
     /// Returns the rows the migration leaves of `rows`, those of the case it was drawn over, or
@@ -575,6 +634,9 @@ pub(super) struct Extra {
     grants: Vec<(String, usize)>,
     /// The next number of a fresh name.
     next: u64,
+    /// Each field a dropped default filled, or a dropped field's default filled beside it, by
+    /// its relation's, constructor's and own name: a `rename field` draws one of them first.
+    renaming: Vec<(String, String, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -605,6 +667,8 @@ struct Model {
     version: u64,
     /// Whether the declarations do not build before the operator drawn next.
     unbuilt: bool,
+    /// The shape the operator drawn next steers toward.
+    want: Option<Reach>,
 }
 
 /// What a scope of constructors becomes when constructors are replaced: each old constructor's
@@ -628,6 +692,7 @@ fn op(kind: Kind, text: String) -> Op {
         empties: None,
         effect: Effect::None,
         reach: None,
+        fill: None,
     }
 }
 
@@ -765,18 +830,32 @@ impl Case {
     /// the schema holds nothing an operator of `kind` applies to. Each operator after it is
     /// drawn valid; an operator another needs comes before it. When not `broke` and `version` is
     /// a multiple of 3, operators adding a type and relation, acting on them and dropping them
-    /// follow.
-    pub fn migration(&self, seed: u64, kind: Kind, broke: bool, version: u64) -> Option<Migration> {
+    /// follow. The first operator steers toward shape `want` when given.
+    pub fn migration(
+        &self,
+        seed: u64,
+        (kind, broke, want): (Kind, bool, Option<Reach>),
+        version: u64,
+    ) -> Option<Migration> {
         let mut rng = Rng::new(seed);
         let mut m = Model {
             s: self.schema.clone(),
             keys: self.keys.clone(),
             version,
             unbuilt: false,
+            want,
         };
         let mut ops = m.draw(&mut rng, kind, broke)?;
+        let alone = match want {
+            Some(Reach::DroppedBesideDefault | Reach::RemovedAlone) => {
+                ops.iter().any(|o| o.reach == want)
+            }
+            Some(Reach::RevertedRenamedFill) => true,
+            _ => false,
+        };
+        m.want = None;
         let mut steps = vec![(ops.len(), m.s.clone(), m.keys.clone())];
-        let more = rng.below(4);
+        let more = if alone { 0 } else { rng.below(4) };
         for _ in 0..more {
             for _ in 0..8 {
                 let kind = *rng.pick(if broke { &ADDING } else { &Kind::ALL[..] });
@@ -791,7 +870,7 @@ impl Case {
                 }
             }
         }
-        if !broke && version.is_multiple_of(3) {
+        if !broke && !alone && version.is_multiple_of(3) {
             ops.extend(Model::transient(version, version / 3));
             steps.push((ops.len(), m.s.clone(), m.keys.clone()));
         }

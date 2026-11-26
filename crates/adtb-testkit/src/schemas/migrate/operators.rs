@@ -37,7 +37,17 @@ impl Model {
             .copied()
             .filter(|&(i, c)| kind == Kind::Deprecate && !broke && self.removable(i, c))
             .collect();
+        let retagging: Vec<(usize, usize)> = fits
+            .iter()
+            .copied()
+            .filter(|&x| st(self, x) == Stage::Enabled)
+            .collect();
+        let wanted = matches!(
+            self.want,
+            Some(Reach::DisableRetagTarget | Reach::DeprecateRetagTarget)
+        );
         let &(i, c) = match rng.pick_some(&removable) {
+            _ if wanted && !retagging.is_empty() => rng.pick(&retagging),
             Some(x) if rng.below(4) != 0 => x,
             _ => rng.pick_some(&fits)?,
         };
@@ -293,17 +303,59 @@ impl Model {
         let can: Vec<(usize, usize, Field)> = self
             .own_fields()
             .into_iter()
-            .filter(|(i, c, f)| self.field_free(*i, *c, f))
+            .filter(|(i, c, f)| {
+                !self.names_beside_defaults(*i, Some(*c), &f.name)
+                    && !self.retag_target(*i, *c)
+                    && f.action != Action::Retag
+                    && !self.s.extra.computed.iter().any(|(r, _, _)| r == i)
+            })
             .collect();
-        let (i, c, f) = rng.pick_some(&can)?.clone();
+        let peers = |(i, c, f): &(usize, usize, Field)| self.default_peers(*i, *c, &f.name);
+        let steered: Vec<(usize, usize, Field)> = match self.want {
+            Some(Reach::DroppedBesideDefault) => can
+                .iter()
+                .filter(|x| !peers(x).is_empty())
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        };
+        let from = if steered.is_empty() { &can } else { &steered };
+        let picked = rng.pick_some(from)?.clone();
+        let beside = peers(&picked);
+        let (i, c, f) = picked;
         let text = format!("drop field {}", self.field_path(i, Some(c), &f.name));
+        let r = self.rel(i);
+        let renaming = beside
+            .iter()
+            .map(|&d| (r.name.clone(), r.ctors[d].name.clone(), f.name.clone()));
+        self.s.extra.renaming.extend(renaming.collect::<Vec<_>>());
         let effect = Effect::DropField {
             rel: self.rel(i).name.clone(),
             ctor: Some(self.rel(i).ctors[c].name.clone()),
             field: f.name.clone(),
         };
-        self.s.rels[i].ctors[c].fields.retain(|g| g.name != f.name);
-        Some(vec![op(Kind::DropField, text).with(effect)])
+        let r = &mut self.s.rels[i];
+        r.ctors[c].fields.retain(|g| g.name != f.name);
+        r.defaults.retain(|(d, g, _)| *d != c || *g != f.name);
+        let reach = (!beside.is_empty()).then_some(Reach::DroppedBesideDefault);
+        Some(vec![Op {
+            fill: f.ty.literal().then(|| literal(&f.ty, false)),
+            ..op(Kind::DropField, text).with(effect).reaching(reach)
+        }])
+    }
+
+    /// Returns the other constructors of relation `i` whose field `f` has a default of the value
+    /// of the default of field `f` of constructor `c`, none when that field has no default.
+    fn default_peers(&self, i: usize, c: usize, f: &str) -> Vec<usize> {
+        let r = self.rel(i);
+        let Some((_, _, v)) = r.defaults.iter().find(|(d, g, _)| *d == c && g == f) else {
+            return Vec::new();
+        };
+        r.defaults
+            .iter()
+            .filter(|(d, g, w)| *d != c && g == f && w == v)
+            .map(|(d, _, _)| *d)
+            .collect()
     }
 
     /// Returns a broken `rename field` of one of `fields` that a unique or index names together
@@ -378,10 +430,29 @@ impl Model {
 
     pub(super) fn rename_field(&mut self, rng: &mut Rng, broke: bool) -> Option<Vec<Op>> {
         let fields = self.own_fields();
-        let (i, c, f) = rng.pick_some(&fields)?.clone();
+        let at = |(i, c, f): &(usize, usize, Field)| {
+            let r = self.rel(*i);
+            (r.name.clone(), r.ctors[*c].name.clone(), f.name.clone())
+        };
+        let latest = self
+            .s
+            .extra
+            .renaming
+            .iter()
+            .rev()
+            .find_map(|x| fields.iter().find(|g| at(g) == *x))
+            .filter(|_| !broke);
+        let steered: Vec<(usize, usize, Field)> = latest.cloned().into_iter().collect();
+        let from = if steered.is_empty() {
+            &fields
+        } else {
+            &steered
+        };
+        let (i, c, f) = rng.pick_some(from)?.clone();
+        let reach = (!steered.is_empty()).then_some(Reach::RenamedBesideDropped);
         let path = self.field_path(i, Some(c), &f.name);
         if broke
-            && self.version % 4 < 2
+            && (self.want == Some(Reach::SharedElementRenamed) || self.version % 4 < 2)
             && let Some(ops) = self.shared_rename(&fields)
         {
             return Some(ops);
@@ -458,7 +529,9 @@ impl Model {
             }
         }
         Some(vec![
-            op(Kind::RenameField, format!("rename field {path} to {to}")).with(effect),
+            op(Kind::RenameField, format!("rename field {path} to {to}"))
+                .with(effect)
+                .reaching(reach),
         ])
     }
 
@@ -544,8 +617,25 @@ impl Model {
                 }
             }
         }
-        let (i, f, all) = rng.pick_some(&can)?.clone();
-        let mut to: Vec<usize> = all.iter().copied().filter(|_| rng.below(2) == 0).collect();
+        let wanted = self.want == Some(Reach::MovedDownDefault);
+        let acting = |f: &Field| !matches!(f.action, Action::Unstated | Action::Restrict);
+        if self.want == Some(Reach::MovedDownAction) && can.iter().any(|(_, f, _)| acting(f)) {
+            can.retain(|(_, f, _)| acting(f));
+        }
+        let several: Vec<(usize, Field, Vec<usize>)> = can
+            .iter()
+            .filter(|(_, f, to)| to.len() > 1 && f.ty.literal())
+            .cloned()
+            .collect();
+        let (i, f, all) = match wanted && !several.is_empty() {
+            true => rng.pick(&several).clone(),
+            false => rng.pick_some(&can)?.clone(),
+        };
+        let mut to: Vec<usize> = if wanted || self.version.is_multiple_of(2) {
+            all.clone()
+        } else {
+            all.iter().copied().filter(|_| rng.below(2) == 0).collect()
+        };
         if to.is_empty() {
             to.push(*rng.pick(&all));
         }
@@ -562,17 +652,30 @@ impl Model {
             field: f.name.clone(),
             to: to.iter().map(|c| r.ctors[*c].name.clone()).collect(),
         };
-        let acted = !matches!(f.action, Action::Unstated | Action::Restrict);
+        let acted = acting(&f);
+        let defaulted = (wanted && to.len() > 1 && f.ty.literal()).then(|| literal(&f.ty, false));
+        let mut out = Vec::new();
         let r = &mut self.s.rels[i];
-        r.header.retain(|g| g.name != f.name);
-        for c in to {
-            r.ctors[c].fields.push(f.clone());
+        if let Some(v) = &defaulted {
+            out.push(op(
+                Kind::AddDefault,
+                format!("add default {}.{} = {v}", r.name, f.name),
+            ));
         }
-        Some(vec![
-            op(Kind::MoveFieldDown, text)
-                .with(effect)
-                .reaching(acted.then_some(Reach::MovedDownAction)),
-        ])
+        r.header.retain(|g| g.name != f.name);
+        for &c in &to {
+            r.ctors[c].fields.push(f.clone());
+            if let Some(v) = &defaulted {
+                r.defaults.push((c, f.name.clone(), v.clone()));
+            }
+        }
+        let reach = if acted {
+            Some(Reach::MovedDownAction)
+        } else {
+            defaulted.map(|_| Reach::MovedDownDefault)
+        };
+        out.push(op(Kind::MoveFieldDown, text).with(effect).reaching(reach));
+        Some(out)
     }
 
     pub(super) fn alter_field(&mut self, rng: &mut Rng, broke: bool) -> Option<Vec<Op>> {
@@ -834,7 +937,26 @@ impl Model {
     }
 
     pub(super) fn default(&mut self, rng: &mut Rng, kind: Kind, broke: bool) -> Option<Vec<Op>> {
-        let i = rng.below(self.s.rels.len() as u64) as usize;
+        if !broke
+            && kind == Kind::AddDefault
+            && self.want == Some(Reach::DefaultOverSeveral)
+            && let Some(ops) = self.default_over_several(rng)
+        {
+            return Some(ops);
+        }
+        if !broke
+            && kind == Kind::DropDefault
+            && self.want == Some(Reach::DroppedBesideField)
+            && let Some(ops) = self.dropped_by_name(rng)
+        {
+            return Some(ops);
+        }
+        let before_ctor = self.want == Some(Reach::DefaultBeforeCtor);
+        let sums = self.sums();
+        let i = match before_ctor && !sums.is_empty() {
+            true => *rng.pick(&sums),
+            false => rng.below(self.s.rels.len() as u64) as usize,
+        };
         let r = self.rel(i);
         let path = |r: &Rel, c: usize, f: &str| {
             if r.sum {
@@ -857,6 +979,8 @@ impl Model {
                 return None;
             }
             let text = format!("drop default {}", path(r, c, &f));
+            let filled = (r.name.clone(), r.ctors[c].name.clone(), f);
+            self.s.extra.renaming.push(filled);
             self.s.rels[i].defaults.remove(k);
             return Some(vec![op(kind, text)]);
         }
@@ -868,11 +992,141 @@ impl Model {
                 }
             }
         }
-        let (c, f) = rng.pick_some(&can)?.clone();
+        let ints: Vec<(usize, Field)> = can
+            .iter()
+            .filter(|(_, f)| f.ty == Ty::Int)
+            .cloned()
+            .collect();
+        let (c, f) = match before_ctor && !ints.is_empty() {
+            true => rng.pick(&ints).clone(),
+            false => rng.pick_some(&can)?.clone(),
+        };
         let v = literal(&f.ty, rng.below(2) == 0);
+        if r.sum
+            && (before_ctor || self.version.is_multiple_of(2))
+            && let Some(ops) = self.default_before_ctor(i, &f, &v)
+        {
+            return Some(ops);
+        }
+        let r = self.rel(i);
         let text = format!("add default {} = {v}", path(r, c, &f.name));
         self.s.rels[i].defaults.push((c, f.name, v));
         Some(vec![op(kind, text)])
+    }
+
+    /// Returns the constructors of sum relation `i` holding a field `f` of type `ty`, when each
+    /// has no default for it, is not the target of a retag action and holds it with that type;
+    /// else none.
+    fn undefaulted(&self, i: usize, f: &str, ty: &Ty) -> Vec<usize> {
+        let r = self.rel(i);
+        let holding: Vec<usize> = (0..r.ctors.len())
+            .filter(|&k| r.ctors[k].field(f).is_some())
+            .collect();
+        let free = holding.iter().all(|&k| {
+            !r.has_default(k, f)
+                && !self.retag_target(i, k)
+                && r.ctors[k].field(f).is_some_and(|g| g.ty == *ty)
+        });
+        if free && r.header.iter().all(|h| h.name != f) {
+            holding
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Returns an `add default` naming no constructor of integer field `f` of sum relation `i`,
+    /// then an `add constructor` of a field of that name, which the default does not fill,
+    /// adding them to the model; `None` unless each constructor holding `f` may take it.
+    fn default_before_ctor(&mut self, i: usize, f: &Field, v: &str) -> Option<Vec<Op>> {
+        if f.ty != Ty::Int {
+            return None;
+        }
+        let holding = self.undefaulted(i, &f.name, &f.ty);
+        if holding.is_empty() {
+            return None;
+        }
+        let text = format!("add default {}.{} = {v}", self.rel(i).name, f.name);
+        let ty = self.rel(i).ty.clone();
+        let name = self.ctor_name(i);
+        let added = format!("add constructor {ty}.{name} {{ {}: I64 }}", f.name);
+        let r = &mut self.s.rels[i];
+        for k in holding {
+            r.defaults.push((k, f.name.clone(), v.to_owned()));
+        }
+        r.ctors.push(super::super::Ctor {
+            name,
+            fields: vec![f.clone()],
+        });
+        r.states.push(Stage::Declared);
+        Some(vec![
+            op(Kind::AddDefault, text),
+            op(Kind::AddConstructor, added).reaching(Some(Reach::DefaultBeforeCtor)),
+        ])
+    }
+
+    /// Returns an `add default` naming no constructor of an integer or text field that two or
+    /// more constructors of a sum relation hold, adding it to the model.
+    fn default_over_several(&mut self, rng: &mut Rng) -> Option<Vec<Op>> {
+        let mut can = Vec::new();
+        for i in self.sums() {
+            let r = self.rel(i);
+            let mut seen = BTreeSet::new();
+            let fields = r.ctors.iter().flat_map(|c| &c.fields);
+            for f in fields.filter(|f| seen.insert(f.name.clone())) {
+                let holding = self.undefaulted(i, &f.name, &f.ty);
+                if matches!(f.ty, Ty::Int | Ty::Text) && holding.len() > 1 {
+                    can.push((i, f.clone(), holding));
+                }
+            }
+        }
+        let (i, f, holding) = rng.pick_some(&can)?.clone();
+        let v = literal(&f.ty, false);
+        let r = &mut self.s.rels[i];
+        let text = format!("add default {}.{} = {v}", r.name, f.name);
+        for k in holding {
+            r.defaults.push((k, f.name.clone(), v.clone()));
+        }
+        Some(vec![
+            op(Kind::AddDefault, text).reaching(Some(Reach::DefaultOverSeveral)),
+        ])
+    }
+
+    /// Returns a `drop default` naming no constructor of a field name of a sum relation that a
+    /// constructor holds with a default and another without one, dropping the default of each
+    /// field of that name from the model.
+    fn dropped_by_name(&mut self, rng: &mut Rng) -> Option<Vec<Op>> {
+        let mut can = Vec::new();
+        for i in self.sums() {
+            let r = self.rel(i);
+            for (c, g, _) in &r.defaults {
+                let bare = (0..r.ctors.len())
+                    .any(|k| r.ctors[k].field(g).is_some() && !r.has_default(k, g));
+                let held: Vec<usize> = r
+                    .defaults
+                    .iter()
+                    .filter(|(_, h, _)| h == g)
+                    .map(|(d, _, _)| *d)
+                    .collect();
+                if bare
+                    && r.ctors[*c].field(g).is_some()
+                    && !held.iter().any(|&d| self.retag_target(i, d))
+                {
+                    can.push((i, g.clone(), held));
+                }
+            }
+        }
+        let (i, f, held) = rng.pick_some(&can)?.clone();
+        let r = self.rel(i);
+        let text = format!("drop default {}.{f}", r.name);
+        let filled: Vec<(String, String, String)> = held
+            .iter()
+            .map(|&d| (r.name.clone(), r.ctors[d].name.clone(), f.clone()))
+            .collect();
+        self.s.extra.renaming.extend(filled);
+        self.s.rels[i].defaults.retain(|(_, g, _)| *g != f);
+        Some(vec![
+            op(Kind::DropDefault, text).reaching(Some(Reach::DroppedBesideField)),
+        ])
     }
 
     pub(super) fn func(&mut self, rng: &mut Rng, kind: Kind, broke: bool) -> Option<Vec<Op>> {
