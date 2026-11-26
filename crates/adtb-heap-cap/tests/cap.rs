@@ -1,10 +1,13 @@
 //! The cap as a test binary sees it: a runaway dies alone, and no test binary goes without the cap.
 
-use adtb_heap_cap::{DEFAULT_CAP, raise_cap, slots_for};
+use adtb_heap_cap::{DEFAULT_CAP, SLACK, live, raise_cap, slots_for, take_peak};
 use std::fs;
+use std::io::Write as _;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Barrier;
+use std::thread;
 
 #[path = "../../../xtask/src/listing.rs"]
 mod listing;
@@ -32,6 +35,11 @@ fn hold_small_boxes<T: Default>() -> ! {
 }
 
 fn run_mode(mode: &str) {
+    if let Some(threads) = mode.strip_prefix("slack ") {
+        let (running, exited) = threads.split_once(' ').expect("two thread counts");
+        let count = |n: &str| n.parse().expect("a thread count");
+        return hold_past_the_cap(count(running), count(exited));
+    }
     match mode {
         "megabytes" => {
             let mut held = Vec::new();
@@ -148,6 +156,145 @@ fn a_raised_cap_lets_the_test_pass_the_default() {
 fn the_environment_overrides_a_raised_cap() {
     let line = cap_line(&child("raised_past_default", Some(67_108_864)));
     assert!(line.ends_with("past the cap of 67108864"), "{line}");
+}
+
+/// A block whose malloc chunk is [`BLOCK_COST`] bytes: 4080 and the 8 byte header, rounded to 16.
+type Block = Box<[u8; 4080]>;
+
+const BLOCK_COST: usize = 4096;
+
+/// The cap the slack search runs under, in bytes.
+const SLACK_SEARCH_CAP: usize = 8 << 20;
+
+/// The threads of each slack case: running and holding, then exited after holding.
+const SLACK_CASES: [(usize, usize); 4] = [(0, 0), (8, 0), (0, 16), (8, 16)];
+
+/// The blocks each holder holds: their chunks cost just under [`SLACK`].
+const HELD_BLOCKS: usize = (SLACK - 1) / BLOCK_COST;
+
+/// The blocks the allocating thread makes at most: twice the cap.
+const CEILING: usize = 2 * SLACK_SEARCH_CAP / BLOCK_COST;
+
+/// Returns what malloc takes for a block of `size` bytes at an alignment of 16 or less.
+fn chunk(size: usize) -> usize {
+    ((size + 8 + 15) & !15).max(32)
+}
+
+fn hold() -> Vec<Block> {
+    let mut held = Vec::with_capacity(HELD_BLOCKS);
+    held.extend((0..HELD_BLOCKS).map(|_| Block::new([1; 4080])));
+    held
+}
+
+/// Returns the bytes a holder holds, its vector's chunk with its blocks.
+fn held_by_each_thread() -> usize {
+    chunk(HELD_BLOCKS * size_of::<Block>()) + HELD_BLOCKS * BLOCK_COST
+}
+
+/// Report a count on stderr as `NAME N`.
+fn report(name: &str, n: usize) {
+    writeln!(std::io::stderr(), "{name} {n}").expect("stderr takes a line");
+}
+
+/// Hold just under [`SLACK`] on `running` threads that stay and on `exited` threads that have
+/// exited, then allocate blocks on this thread, reporting each, until the cap aborts the process.
+fn hold_past_the_cap(running: usize, exited: usize) {
+    report("before", live());
+    let holding = Barrier::new(running + 1);
+    let done = Barrier::new(running + 1);
+    thread::scope(|scope| {
+        let kept: Vec<Vec<Block>> = (0..exited)
+            .map(|_| scope.spawn(hold).join().expect("a holder joins"))
+            .collect();
+        for _ in 0..running {
+            scope.spawn(|| {
+                let held = hold();
+                holding.wait();
+                done.wait();
+                drop(held);
+            });
+        }
+        holding.wait();
+        let mut blocks = Vec::with_capacity(CEILING);
+        while blocks.len() < CEILING {
+            blocks.push(Block::new([1; 4080]));
+            report("blocks", blocks.len());
+        }
+        done.wait();
+        drop((kept, blocks));
+    });
+}
+
+/// Returns the last count `name` reports on the child's stderr.
+fn reported(child: &Output, name: &str) -> usize {
+    let stderr = String::from_utf8_lossy(&child.stderr);
+    stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix(name)?.strip_prefix(' '))
+        .next_back()
+        .unwrap_or_else(|| panic!("no {name} count in {stderr}"))
+        .parse()
+        .expect("a count")
+}
+
+/// Returns the blocks the allocating thread made before the cap aborted case `(running, exited)`,
+/// after checking the bytes the child held when it aborted against the stated slack.
+fn blocks_at_the_abort(running: usize, exited: usize) -> usize {
+    let child = child(&format!("slack {running} {exited}"), Some(SLACK_SEARCH_CAP));
+    let line = cap_line(&child);
+    let case = format!("{running} running and {exited} exited holders: {line}");
+    assert!(
+        line.ends_with(&format!("past the cap of {SLACK_SEARCH_CAP}")),
+        "{case}"
+    );
+    let blocks = reported(&child, "blocks");
+    let kept = if exited == 0 {
+        0
+    } else {
+        chunk(exited * size_of::<Vec<Block>>())
+    };
+    let held = reported(&child, "before")
+        + kept
+        + (running + exited) * held_by_each_thread()
+        + chunk(CEILING * size_of::<Block>())
+        + (blocks + 1) * BLOCK_COST;
+    // The holders, this thread and the harness's main thread, whose held bytes `before` misses.
+    let threads = running + 2;
+    let most = SLACK_SEARCH_CAP + threads * SLACK + BLOCK_COST;
+    assert!(held <= most, "{case}: {held} bytes held past {most}");
+    let least = SLACK_SEARCH_CAP - (2 * threads + 1) * SLACK;
+    assert!(
+        held > least,
+        "{case}: aborted at {held} bytes, short of {least}"
+    );
+    blocks
+}
+
+#[test]
+fn a_process_aborts_within_the_slack_of_each_running_thread_of_its_cap() {
+    let alone = blocks_at_the_abort(0, 0);
+    for (running, exited) in SLACK_CASES {
+        let blocks = blocks_at_the_abort(running, exited);
+        let counted = alone - exited * HELD_BLOCKS;
+        assert!(
+            blocks.abs_diff(counted) <= HELD_BLOCKS,
+            "{running} running and {exited} exited holders: {blocks} blocks at the abort, \
+             not near the {counted} the exited holders' count leaves"
+        );
+    }
+}
+
+#[test]
+fn the_peak_of_one_thread_is_exact_across_the_slack() {
+    for n in [1, 10, 65, 100, 200] {
+        let mut blocks = Vec::with_capacity(n);
+        take_peak();
+        let before = live();
+        blocks.extend((0..n).map(|_| Block::new([1; 4080])));
+        blocks.clear();
+        assert_eq!(take_peak() - before, n * BLOCK_COST, "{n} blocks");
+        assert_eq!(live(), before, "{n} blocks freed");
+    }
 }
 
 fn set_core_limit(limit: libc::rlimit) -> std::io::Result<()> {

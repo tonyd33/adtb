@@ -3,6 +3,13 @@
 //! Each allocation is charged its malloc chunk. Freed memory malloc retains, page memory and C
 //! allocations are not counted.
 //!
+//! Each thread holds the bytes it charges and refunds, and adds them to the process's count once
+//! they reach [`SLACK`] either way, and when it exits. A single change of [`SLACK`] or more
+//! reaches the count at once, an allocation before it is made. The process aborts once its live
+//! heap passes the cap by [`SLACK`] for each running thread, and never while its live heap is
+//! short of the cap by twice [`SLACK`] for each running thread. The bound grows with the thread
+//! count; at 128 threads twice [`SLACK`] each is 1 percent of [`DEFAULT_CAP`].
+//!
 //! The cap is per process. A test that needs more calls [`raise_cap`] and declares
 //! `threads-required` in `.config/nextest.toml` of at least its cap divided by [`DEFAULT_CAP`],
 //! rounded up.
@@ -14,12 +21,16 @@
 //! dumps no core.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::ffi::CStr;
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering::Relaxed};
 
 pub const DEFAULT_CAP: usize = 3 << 29;
 
 pub const MAX_RAISED_CAP: usize = 4 * DEFAULT_CAP;
+
+/// The bytes a thread holds, charged or refunded, before it adds them to the process's count.
+pub const SLACK: usize = 64 << 10;
 
 const UNREAD: usize = 0;
 
@@ -28,7 +39,11 @@ const CHUNK_ALIGN: usize = 16;
 const MIN_CHUNK: usize = 32;
 
 #[cfg_attr(not(miri), global_allocator)]
-static HEAP: HeapCap = HeapCap::new(UNREAD);
+static HEAP: HeapCap = HeapCap::batched(UNREAD);
+
+thread_local! {
+    static PENDING: ThreadPending = const { ThreadPending(Pending::new()) };
+}
 
 /// Raise this process's cap to `bytes`. A no-op under `ADTB_TEST_HEAP_CAP`; never lowers the cap.
 ///
@@ -44,23 +59,40 @@ pub fn raise_cap(bytes: usize) {
     }
 }
 
-/// Returns the allocations this process has made: calls of `alloc`, `alloc_zeroed` and `realloc`.
+/// Returns the allocations this thread has made: calls of `alloc`, `alloc_zeroed` and `realloc`.
 /// Zero under Miri, where the allocator is not installed.
+///
+/// # Panics
+///
+/// When called from a thread-local destructor after this thread's count is gone.
 #[must_use]
 pub fn allocations() -> usize {
-    HEAP.allocations.load(Relaxed)
+    PENDING.with(|pending| pending.0.allocations.get())
 }
 
-/// Returns the bytes of heap live now.
+/// Returns the bytes of heap live now. Exact for this thread's allocations; each other running
+/// thread's may be short or over by less than [`SLACK`].
 #[must_use]
 pub fn live() -> usize {
+    flush_this_thread();
     HEAP.live()
 }
 
 /// Returns the most heap live at once since the last call, or since the process began, and
-/// starts the next span at the heap live now.
+/// starts the next span at the heap live now. Exact when no other thread allocates or frees in
+/// the span; otherwise it may be short by less than [`SLACK`] or over by less than twice
+/// [`SLACK`] for each other running thread.
 pub fn take_peak() -> usize {
+    flush_this_thread();
     HEAP.peak.swap(HEAP.live(), Relaxed)
+}
+
+/// Add what this thread holds to the process's count.
+fn flush_this_thread() {
+    // A thread past its teardown holds nothing: each change reaches the count at once.
+    PENDING
+        .try_with(|pending| pending.0.flush(&HEAP))
+        .unwrap_or_default();
 }
 
 /// Returns the nextest slots a test with a cap of `bytes` holds.
@@ -85,30 +117,94 @@ const fn layout_cost(layout: Layout) -> usize {
     chunk_cost(layout.size(), layout.align())
 }
 
+fn signed(bytes: usize) -> isize {
+    isize::try_from(bytes).unwrap_or(isize::MAX)
+}
+
+/// The bytes one thread has charged and refunded since it last added them to the process's count.
 #[derive(Debug)]
-pub struct HeapCap {
-    live: AtomicUsize,
+struct Pending {
+    bytes: Cell<isize>,
+    /// The most `bytes` has been since the last addition, and at least zero.
+    high: Cell<isize>,
+    allocations: Cell<usize>,
+}
+
+impl Pending {
+    const fn new() -> Self {
+        Self {
+            bytes: Cell::new(0),
+            high: Cell::new(0),
+            allocations: Cell::new(0),
+        }
+    }
+
+    /// Hold `bytes`, and add what this thread holds to `heap` once it or `bytes` reaches [`SLACK`]
+    /// either way.
+    fn add(&self, heap: &HeapCap, bytes: isize) {
+        let held = self.bytes.get().saturating_add(bytes);
+        let high = self.high.get().max(held);
+        if held.unsigned_abs() < SLACK && bytes.unsigned_abs() < SLACK {
+            self.bytes.set(held);
+            self.high.set(high);
+        } else {
+            self.bytes.set(0);
+            self.high.set(0);
+            heap.publish(held, high);
+        }
+    }
+
+    fn flush(&self, heap: &HeapCap) {
+        let held = self.bytes.replace(0);
+        let high = self.high.replace(0);
+        heap.publish(held, high);
+    }
+}
+
+/// A thread's [`Pending`], added to [`HEAP`] when the thread exits.
+#[derive(Debug)]
+struct ThreadPending(Pending);
+
+impl Drop for ThreadPending {
+    fn drop(&mut self) {
+        self.0.flush(&HEAP);
+    }
+}
+
+#[derive(Debug)]
+struct HeapCap {
+    live: AtomicIsize,
     peak: AtomicUsize,
     cap: AtomicUsize,
-    allocations: AtomicUsize,
+    /// Whether each thread holds its changes in [`PENDING`], which it adds to [`HEAP`]; only
+    /// [`HEAP`] may set it.
+    batched: bool,
 }
 
 impl HeapCap {
     /// Returns an allocator with `cap` bytes, or the environment's cap read at first use when
-    /// `cap` is zero.
-    #[must_use]
-    pub const fn new(cap: usize) -> Self {
+    /// `cap` is zero, that counts each change at once.
+    #[cfg(test)]
+    const fn new(cap: usize) -> Self {
         Self {
-            live: AtomicUsize::new(0),
-            peak: AtomicUsize::new(0),
-            cap: AtomicUsize::new(cap),
-            allocations: AtomicUsize::new(0),
+            batched: false,
+            ..Self::batched(cap)
         }
     }
 
-    /// Returns the bytes currently charged.
-    pub fn live(&self) -> usize {
-        self.live.load(Relaxed)
+    const fn batched(cap: usize) -> Self {
+        Self {
+            live: AtomicIsize::new(0),
+            peak: AtomicUsize::new(0),
+            cap: AtomicUsize::new(cap),
+            batched: true,
+        }
+    }
+
+    /// Returns the bytes in the count, or zero while refunds not yet matched by their charges
+    /// hold it below.
+    fn live(&self) -> usize {
+        usize::try_from(self.live.load(Relaxed)).unwrap_or(0)
     }
 
     fn cap(&self) -> usize {
@@ -132,18 +228,42 @@ impl HeapCap {
         self.cap.fetch_max(bytes, Relaxed);
     }
 
-    fn charge(&self, size: usize) {
-        self.allocations.fetch_add(1, Relaxed);
-        let live = self.live.fetch_add(size, Relaxed) + size;
-        self.peak.fetch_max(live, Relaxed);
+    /// Add `bytes` to the count; abort when the count before it plus `high` passes the cap.
+    fn publish(&self, bytes: isize, high: isize) {
+        let before = self.live.fetch_add(bytes, Relaxed);
+        let reached = usize::try_from(before.saturating_add(high)).unwrap_or(0);
+        self.peak.fetch_max(reached, Relaxed);
         let cap = self.cap();
-        if live > cap {
-            abort_over_cap(live, cap);
+        if reached > cap {
+            abort_over_cap(reached, cap);
         }
     }
 
-    fn refund(&self, size: usize) {
-        self.live.fetch_sub(size, Relaxed);
+    fn charge(&self, cost: usize) {
+        self.cap();
+        let bytes = signed(cost);
+        let held = self.batched
+            && PENDING
+                .try_with(|pending| {
+                    let pending = &pending.0;
+                    pending.allocations.set(pending.allocations.get() + 1);
+                    pending.add(self, bytes);
+                })
+                .is_ok();
+        if !held {
+            self.publish(bytes, bytes);
+        }
+    }
+
+    fn refund(&self, cost: usize) {
+        let bytes = -signed(cost);
+        let held = self.batched
+            && PENDING
+                .try_with(|pending| pending.0.add(self, bytes))
+                .is_ok();
+        if !held {
+            self.publish(bytes, 0);
+        }
     }
 }
 
