@@ -11,6 +11,10 @@ its refusals and its revert is [evolution.md](../../../../docs/spec/evolution.md
   written name as a `String`.
 - Hold an object with identity by its id inside one module's type, and change it only through
   that type's operations.
+- Resolve a name once, through the checker, and keep what it resolved to. Two clauses are one
+  only by `same::same_unique` or `same::same_index` over those trees; a comparison of their text,
+  or a second resolver, disagrees with the build at the edges. An inverse restores a clause from
+  its held ids, never from declaration text.
 - An operator resolves a type, relation or named set through `Resolving`, which ties the name's
   span to its id. Where the lookup misses it calls `Model::unheld` before refusing, so a name a
   held declaration takes refuses with the declarations' first failure.
