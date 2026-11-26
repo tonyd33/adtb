@@ -351,10 +351,10 @@ impl Model {
             Space::Constraint => self.denials.contains_key(&id),
             Space::Index => self.relations.values().any(|r| {
                 r.implied.values().any(|&x| x == id)
-                    || r.clauses.iter().any(|c| match c {
-                        ClauseM::Key { id: x, .. } | ClauseM::Index { id: x, .. } => *x == Some(id),
-                        _ => false,
-                    })
+                    || r.holds_index(id)
+                    || r.clauses
+                        .iter()
+                        .any(|c| matches!(c, ClauseM::Key { id: x, .. } if *x == Some(id)))
             }),
             Space::Computed => {
                 clauses().any(|c| matches!(c, ClauseM::Computed { id: Some(x), .. } if *x == id))

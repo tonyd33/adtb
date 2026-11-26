@@ -659,11 +659,11 @@ impl Model {
         }
         let mut gave = Vec::new();
         for (&r, rel) in &self.relations {
-            for (k, c) in rel.clauses.iter().enumerate() {
-                let ClauseM::Index { id: Some(id), .. } = c else {
+            for (k, held) in rel.indexes() {
+                let Some(id) = held.id() else {
                     continue;
                 };
-                let key = (Space::Index, *id);
+                let key = (Space::Index, id);
                 if self.unbuilt_clauses.contains(&key) && !self.gave_clauses.contains_key(&key) {
                     let given =
                         Gave::new(self.index_canonical(built, r, k), self.index_scope(r, k));

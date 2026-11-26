@@ -254,6 +254,23 @@ impl Term {
             .collect()
     }
 
+    /// Returns the object and the spelling of a term that is one name of one object alone.
+    pub(super) fn as_name(&self) -> Option<(Obj, &str)> {
+        match self.0.as_slice() {
+            [
+                Piece::Name {
+                    ids,
+                    written,
+                    pun: false,
+                },
+            ] => match ids.as_slice() {
+                [o] => Some((*o, written.as_str())),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Returns whether the term holds a name of dropped objects.
     pub(super) fn dropped(&self) -> bool {
         self.0.iter().any(|p| matches!(p, Piece::Dropped { .. }))

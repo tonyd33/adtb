@@ -2,6 +2,7 @@ mod merge;
 mod nest;
 mod split;
 
+use super::indexes::Elem;
 use super::op::{Res, refuse, refuse_at};
 use super::reselect::{Edit, reselected, sel_range};
 use super::run::{Built, Run};
@@ -51,58 +52,15 @@ impl Model {
     fn scoped(&self, built: &Built, t: u64, gone: &[u64], by: &[u64]) -> Vec<Scoped> {
         let mut out = Vec::new();
         for (r, ..) in self.rels_of(built, t) {
-            for (k, c) in self.relations[&r].clauses.iter().enumerate() {
-                let ClauseM::Index {
-                    id,
-                    kind,
-                    elems,
-                    scope,
-                    ..
-                } = c
-                else {
-                    continue;
-                };
-                let reached = scope.as_ref().map(|s| self.scope_ctors(s));
-                let rescoped = scope.as_ref().and_then(|s| {
-                    let lists = s.parts.iter().any(|p| {
-                        p.objects()
-                            .next()
-                            .is_some_and(|o| o.0 == Space::Shared && gone.contains(&o.1))
-                    });
-                    lists.then(|| {
-                        let mut parts: Vec<Term> = Vec::new();
-                        let mut seen: Vec<Obj> = Vec::new();
-                        for p in &s.parts {
-                            let objs: Vec<Obj> = match p.objects().next() {
-                                Some(o) if o.0 == Space::Shared && gone.contains(&o.1) => {
-                                    by.iter().map(|&b| (Space::Shared, b)).collect()
-                                }
-                                Some(o) => vec![o],
-                                None => Vec::new(),
-                            };
-                            for o in objs {
-                                if seen.contains(&o) {
-                                    continue;
-                                }
-                                seen.push(o);
-                                parts.push(if o.0 == Space::Shared && by.contains(&o.1) {
-                                    Term::name(o, &self.ctors[&o.1].name)
-                                } else {
-                                    p.clone()
-                                });
-                            }
-                        }
-                        parts
-                    })
-                });
+            for (k, h) in self.relations[&r].indexes() {
                 out.push(Scoped {
                     relation: r,
                     at: k,
-                    id: *id,
-                    kind: *kind,
-                    elems: elems.iter().map(|e| e.print(self)).collect(),
-                    reached,
-                    rescoped,
+                    id: h.id(),
+                    kind: h.kind(),
+                    elems: h.elems().iter().map(|e| e.print(self)).collect(),
+                    reached: h.reach(self),
+                    rescoped: h.rescoped(self, gone, by),
                 });
             }
         }
@@ -119,12 +77,11 @@ impl Model {
         fs: &[String],
         made: &[u64],
     ) -> Option<Vec<Term>> {
-        let ClauseM::Index { elems, .. } = &self.relations[&r].clauses[at] else {
-            return None;
-        };
+        let held = self.relations[&r].index_at(at)?;
         let header = self.header_names(t);
-        elems
+        held.elems()
             .iter()
+            .map(Elem::term)
             .zip(fs)
             .map(|(e, f)| {
                 let (head, rest) = element_head(f);
@@ -148,10 +105,8 @@ impl Model {
     /// or index of any relation variable with an element path through one of them.
     pub(super) fn paths_image(&self, t: u64, sources: &[u64], what: &str) -> Res<()> {
         for rel in self.relations.values() {
-            for c in &rel.clauses {
-                let ClauseM::Index { kind, elems, .. } = c else {
-                    continue;
-                };
+            for (_, h) in rel.indexes() {
+                let elems = h.elems();
                 let through = elems.iter().find_map(|e| {
                     e.objects()
                         .find(|o| o.0 == Space::Shared && sources.contains(&o.1))
@@ -160,7 +115,7 @@ impl Model {
                 if let Some((e, s)) = through {
                     return refuse(format!(
                         "{what} is refused: `{} ({})` of `{}` names `{}.{}` in its element `{}`, which has no image under it",
-                        split::kind_word(*kind),
+                        split::kind_word(h.kind()),
                         elems
                             .iter()
                             .map(|x| x.print(self))

@@ -16,6 +16,7 @@ mod ctor;
 mod decl;
 mod defaults;
 mod field;
+mod indexes;
 mod inverse;
 mod lift;
 mod moved;
@@ -239,6 +240,7 @@ struct RelM {
     name: String,
     ty: Term,
     clauses: Vec<ClauseM>,
+    indexes: indexes::Indexes,
     defaults: defaults::Defaults,
     /// The index each reference field implies, by the field.
     implied: BTreeMap<Implied, u64>,
@@ -264,14 +266,7 @@ enum ClauseM {
         generate: Option<(String, Option<u64>)>,
     },
     Volatile,
-    Index {
-        id: Option<u64>,
-        kind: IndexKind,
-        elems: Vec<Term>,
-        scope: Option<Scope>,
-        /// The ids of the clauses this one is the image of, while it has no id of its own.
-        was: Vec<u64>,
-    },
+    Index(indexes::IndexRef),
     Computed {
         id: Option<u64>,
         name: String,
@@ -285,14 +280,6 @@ enum IndexKind {
     Unique,
     Plain,
     Interval,
-}
-
-/// The `in` scope of a unique or index: constructors and named sets.
-#[derive(Clone, Debug)]
-struct Scope {
-    parts: Vec<Term>,
-    /// Whether it is written in parentheses.
-    listed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -416,29 +403,7 @@ impl Model {
             *n - 1
         };
         for rel in self.relations.values_mut() {
-            for c in &mut rel.clauses {
-                match c {
-                    ClauseM::Key { id, generate, .. } => {
-                        if id.is_none() {
-                            *id = Some(fresh(Space::Index));
-                        }
-                        if let Some((_, g @ None)) = generate {
-                            *g = Some(fresh(Space::Default));
-                        }
-                    }
-                    ClauseM::Index {
-                        id: id @ None, was, ..
-                    } => {
-                        let new = fresh(Space::Index);
-                        *id = Some(new);
-                        if !was.is_empty() {
-                            images.insert(new, std::mem::take(was));
-                        }
-                    }
-                    ClauseM::Computed { id: id @ None, .. } => *id = Some(fresh(Space::Computed)),
-                    _ => {}
-                }
-            }
+            rel.identify(&mut fresh, images);
         }
         self.next = next;
     }
@@ -447,15 +412,6 @@ impl Model {
     /// of others, with their ids.
     fn step_images(&self) -> BTreeMap<u64, Vec<u64>> {
         self.images.clone()
-    }
-
-    /// Leave the unique or index `id` names without an id, so that it takes a new one as the
-    /// image of the clause it was.
-    fn reimage(id: &mut Option<u64>, was: &mut Vec<u64>) {
-        let old = id.take();
-        if was.is_empty() {
-            was.extend(old);
-        }
     }
 
     /// Returns the next id of `space`, taking it.
@@ -578,19 +534,14 @@ impl Model {
             for c in &mut r.clauses {
                 match c {
                     ClauseM::Key { fields, .. } => fields.iter_mut().for_each(&mut *f),
-                    ClauseM::Index { elems, scope, .. } => {
-                        elems.iter_mut().for_each(&mut *f);
-                        if let Some(s) = scope {
-                            s.parts.iter_mut().for_each(&mut *f);
-                        }
-                    }
                     ClauseM::Computed { ty, expr, .. } => {
                         f(ty);
                         f(expr);
                     }
-                    ClauseM::Volatile => {}
+                    ClauseM::Index(_) | ClauseM::Volatile => {}
                 }
             }
+            r.index_terms_mut(f);
             r.defaults.each_value_mut(f);
         }
         for s in self.sets.values_mut() {

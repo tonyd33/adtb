@@ -413,11 +413,10 @@ impl Model {
     /// relation variable `relation`, or what the first build after it gave the clause when an
     /// operator removed it since.
     fn gave(&self, built: &Built, relation: u64, index: u64) -> Result<Gave, String> {
-        let held = self.relations.get(&relation).and_then(|x| {
-            x.clauses
-                .iter()
-                .position(|c| matches!(c, ClauseM::Index { id: Some(x), .. } if *x == index))
-        });
+        let held = self
+            .relations
+            .get(&relation)
+            .and_then(|x| x.index_position(index));
         match held {
             Some(at) => Ok(Gave::new(
                 self.index_canonical(built, relation, at),

@@ -184,8 +184,8 @@ impl Model {
                         out.push((Slot::Generated(rel), *g));
                     }
                 }
-                ClauseM::Index { id, .. } => {
-                    out.extend(id.map(|id| (Slot::Index(rel, ix), id)));
+                ClauseM::Index(x) => {
+                    out.extend(x.id().map(|id| (Slot::Index(rel, ix), id)));
                     ix += 1;
                 }
                 ClauseM::Computed { id, .. } => {

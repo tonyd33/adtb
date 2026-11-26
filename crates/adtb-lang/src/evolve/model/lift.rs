@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::defaults::Defaults;
+use super::indexes::Indexes;
 use super::slots::{Found, implied_key, type_slots};
 use super::*;
 use crate::ast::{self, Decl as AstDecl, RelationClause};
@@ -320,6 +321,7 @@ impl<'a> Lifting<'a> {
         let id = self.id(Slot::Relation(rel))?;
         let def = self.schema.relation(rel).elem_def;
         let mut clauses = Vec::new();
+        let mut indexes = Indexes::default();
         let mut fills = Vec::new();
         let (mut ix, mut cx) = (0, 0);
         for c in &r.clauses {
@@ -341,28 +343,23 @@ impl<'a> Lifting<'a> {
                         RelationClause::Index { interval: true, .. } => IndexKind::Interval,
                         _ => IndexKind::Plain,
                     };
-                    let clause = ClauseM::Index {
-                        was: Vec::new(),
-                        id: Some(
-                            self.schema
-                                .ids()
-                                .index_id(rel, ix)
-                                .ok_or_else(|| missing("an index"))?
-                                .raw(),
-                        ),
+                    let id = self
+                        .schema
+                        .ids()
+                        .index_id(rel, ix)
+                        .ok_or_else(|| missing("an index"))?
+                        .raw();
+                    let clause = indexes.lifted(
+                        id,
                         kind,
-                        elems: fields.iter().map(|e| self.term(e.span)).collect(),
-                        scope: scope.as_ref().map(|s| match s {
-                            ast::CtorScope::One(c) => Scope {
-                                parts: vec![self.scope_name(rel, c)],
-                                listed: false,
-                            },
-                            ast::CtorScope::Many(cs) => Scope {
-                                parts: cs.iter().map(|c| self.scope_name(rel, c)).collect(),
-                                listed: true,
-                            },
+                        fields.iter().map(|e| self.term(e.span)).collect(),
+                        scope.as_ref().map(|s| match s {
+                            ast::CtorScope::One(c) => (vec![self.scope_name(rel, c)], false),
+                            ast::CtorScope::Many(cs) => {
+                                (cs.iter().map(|c| self.scope_name(rel, c)).collect(), true)
+                            }
                         }),
-                    };
+                    );
                     ix += 1;
                     clause
                 }
@@ -415,6 +412,7 @@ impl<'a> Lifting<'a> {
                 name: r.name.name.text.clone(),
                 ty: self.term(r.ty.span),
                 clauses,
+                indexes,
                 defaults: Defaults::lifted(fills)?,
                 implied,
             },

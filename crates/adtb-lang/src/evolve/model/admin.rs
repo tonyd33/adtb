@@ -280,6 +280,7 @@ impl Model {
     /// Returns every object a name in declaration `item` resolves to.
     pub(super) fn item_objects(&self, item: Item) -> Vec<Obj> {
         let mut terms: Vec<&Term> = Vec::new();
+        let mut objects = Vec::new();
         match item {
             Item::Type(t) => {
                 if let TypeBody::New { base, domain, .. } = &self.types[&t].body {
@@ -297,17 +298,14 @@ impl Model {
                 for c in &rel.clauses {
                     match c {
                         ClauseM::Key { fields, .. } => terms.extend(fields),
-                        ClauseM::Index { elems, scope, .. } => {
-                            terms.extend(elems);
-                            terms.extend(scope.iter().flat_map(|s| &s.parts));
-                        }
                         ClauseM::Computed { ty, expr, .. } => {
                             terms.push(ty);
                             terms.push(expr);
                         }
-                        ClauseM::Volatile => {}
+                        ClauseM::Index(_) | ClauseM::Volatile => {}
                     }
                 }
+                objects.extend(rel.indexes().flat_map(|(_, h)| h.objects()));
                 terms.extend(rel.defaults.values());
             }
             Item::Set(s) => terms.extend(&self.sets[&s].members),
@@ -316,7 +314,8 @@ impl Model {
             Item::Store(v) => terms.push(&self.stores[&v].rest),
             Item::Held(..) => {}
         }
-        terms.into_iter().flat_map(Term::objects).collect()
+        objects.extend(terms.into_iter().flat_map(Term::objects));
+        objects
     }
 }
 /// Returns the name of a privilege of a log grant or revoke and the span of its target; `None`

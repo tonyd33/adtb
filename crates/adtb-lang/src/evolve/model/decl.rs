@@ -1,3 +1,4 @@
+use super::indexes::Elem;
 use super::lift::Lifting;
 use super::op::{
     Fail, Kind, Res, StateKey, broken, refuse, refuse_at, refuse_diag, refuse_each, unchecked,
@@ -360,21 +361,7 @@ impl Model {
     /// build gives it a new one.
     fn unscope(&mut self, s: u64) {
         for r in self.relations.values_mut() {
-            for c in &mut r.clauses {
-                if let ClauseM::Index {
-                    id,
-                    scope: Some(scope),
-                    was,
-                    ..
-                } = c
-                    && scope
-                        .parts
-                        .iter()
-                        .any(|p| p.objects().any(|o| o == (Space::Set, s)))
-                {
-                    Model::reimage(id, was);
-                }
-            }
+            r.reimage_where(|h| h.names_set(s));
         }
     }
 
@@ -701,26 +688,32 @@ impl Model {
                 .collect()
         };
         for rel in self.relations.values() {
-            for c in &rel.clauses {
-                let elems: Vec<Vec<u64>> = match c {
-                    ClauseM::Index { elems: ts, .. } | ClauseM::Key { fields: ts, .. } => ts
-                        .iter()
-                        .flat_map(Term::held_names)
-                        .map(|n| {
-                            n.iter()
-                                .filter(|o| o.0 == Space::Field)
-                                .map(|o| o.1)
-                                .collect()
-                        })
+            for (k, c) in rel.clauses.iter().enumerate() {
+                let ts: Vec<&Term> = match c {
+                    ClauseM::Index(_) => rel
+                        .index_at(k)
+                        .into_iter()
+                        .flat_map(|h| h.elems().iter().map(Elem::term))
                         .collect(),
+                    ClauseM::Key { fields, .. } => fields.iter().collect(),
                     ClauseM::Computed { .. } | ClauseM::Volatile => Vec::new(),
                 };
+                let elems: Vec<Vec<u64>> = ts
+                    .into_iter()
+                    .flat_map(Term::held_names)
+                    .map(|n| {
+                        n.iter()
+                            .filter(|o| o.0 == Space::Field)
+                            .map(|o| o.1)
+                            .collect()
+                    })
+                    .collect();
                 for e in elems {
                     let shared = others(&mut e.into_iter());
                     if let Some(o) = shared.first() {
                         return refuse(format!(
                             "`{}` of `{}` names `{}` of `{}` and of `{}` as one element",
-                            self.clause_text(c),
+                            self.clause_text(rel, c),
                             rel.name,
                             self.fields[&f].name,
                             self.ctors[&owner].name,

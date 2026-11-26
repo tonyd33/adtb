@@ -9,6 +9,7 @@ use crate::evolve::ctor::{Carries, arm_image, element_head, matched_fields};
 use crate::evolve::model::admin::canonical;
 use crate::evolve::model::defaults::Taken;
 use crate::evolve::model::field::Applied;
+use crate::evolve::model::indexes::{Held, NewIndex};
 use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at, refuse_first};
 use crate::evolve::model::reselect::Mode;
 use crate::evolve::model::run::{Built, Late, Run};
@@ -45,21 +46,17 @@ fn sel_text(names: &[String]) -> String {
 
 /// Returns an index clause of kind `kind` over the elements `elems` in scope `names`, as text
 /// a build resolves.
-fn index_clause(kind: IndexKind, elems: &[String], names: &[String], was: Vec<u64>) -> ClauseM {
-    ClauseM::Index {
-        id: None,
-        was,
+fn index_clause(kind: IndexKind, elems: &[String], names: &[String], was: Vec<u64>) -> NewIndex {
+    NewIndex::new(
         kind,
-        elems: elems.iter().map(|e| Term::text(e)).collect(),
-        scope: Some(Scope {
-            parts: names.iter().map(|n| Term::text(n)).collect(),
-            listed: names.len() > 1,
-        }),
-    }
+        elems.iter().map(|e| Term::text(e)).collect(),
+        Some(names.iter().map(|n| Term::text(n)).collect()),
+        was,
+    )
 }
 
 /// A clause a split adds to a relation variable: its text and the clause.
-type Added = (String, ClauseM);
+type Added = (String, NewIndex);
 
 /// How a split rewrites the unique and index clauses: by relation variable, the positions of
 /// those it removes and the clauses it appends, and the place among those appended of each
@@ -190,8 +187,11 @@ impl Model {
         edits.extend(probe.arm_writes(run, built, t, (sources, &[]), given)?.0);
         probe.edit_decls(edits)?;
         for (r, ..) in probe.rels_of(built, t) {
-            let rel = probe.relations.get_mut(&r).expect("a relation variable");
-            rel.clauses.retain(|c| !matches!(c, ClauseM::Index { .. }));
+            probe
+                .relations
+                .get_mut(&r)
+                .expect("a relation variable")
+                .drop_indexes();
         }
         let compiled = probe.checked_without_dependents(run)?;
         let schema = compiled.schema();
@@ -547,32 +547,21 @@ impl Model {
                 );
                 let was = cl.id.into_iter().collect::<Vec<u64>>();
                 match entry.1.iter_mut().find(|(x, _)| *x == text) {
-                    Some((_, ClauseM::Index { was: held, .. })) => held.extend(was),
-                    Some(_) => {}
+                    Some((_, held)) => held.also_image_of(was),
                     None => {
                         let ids: Vec<u64> = names.iter().map(&product_id).collect();
                         let Some(elems) = self.product_elems(t, (cl.relation, cl.at), &fs, &ids)
                         else {
                             return broken("a product holds each field the routing carries to it");
                         };
-                        let scope = Scope {
-                            parts: ids
-                                .iter()
-                                .zip(&names)
-                                .map(|(&p, n)| Term::name((Space::Shared, p), n))
-                                .collect(),
-                            listed: names.len() > 1,
-                        };
-                        entry.1.push((
-                            text,
-                            ClauseM::Index {
-                                id: None,
-                                was,
-                                kind: cl.kind,
-                                elems,
-                                scope: Some(scope),
-                            },
-                        ));
+                        let parts = ids
+                            .iter()
+                            .zip(&names)
+                            .map(|(&p, n)| Term::name((Space::Shared, p), n))
+                            .collect();
+                        entry
+                            .1
+                            .push((text, NewIndex::new(cl.kind, elems, Some(parts), was)));
                     }
                 }
             }
@@ -591,38 +580,24 @@ impl Model {
             .collect();
         for (r, at, carried) in rw.carried {
             let rel = self.relations.get_mut(&r).expect("a relation variable");
-            if let ClauseM::Index { elems, .. } = &mut rel.clauses[at] {
-                *elems = carried;
-            }
+            rel.carry_elems(at, carried);
         }
         for (r, at, parts) in rw.rescoped {
             let rel = self.relations.get_mut(&r).expect("a relation variable");
-            if let ClauseM::Index { id, scope, was, .. } = &mut rel.clauses[at] {
-                Model::reimage(id, was);
-                *scope = Some(Scope {
-                    listed: parts.len() > 1,
-                    parts,
-                });
-            }
+            rel.rescope(at, parts);
         }
         let mut replaced_at: Vec<usize> = Vec::new();
         for (r, (gone, added)) in rw.clauses_of {
-            let added: Vec<ClauseM> = added.into_iter().map(|(_, c)| c).collect();
             let rel = self.relations.get_mut(&r).expect("a relation variable");
-            let kept: Vec<ClauseM> = rel
-                .clauses
-                .drain(..)
-                .enumerate()
-                .filter(|(k, _)| !gone.contains(k))
-                .map(|(_, x)| x)
-                .collect();
-            rel.clauses = kept;
+            rel.remove_clauses(&gone);
             let base = rel.clauses.len();
             if Some(r) == first {
                 let at = rw.replaced_at.remove(&r).unwrap_or_default();
                 replaced_at = at.into_iter().map(|k| base + k).collect();
             }
-            rel.clauses.extend(added);
+            for (_, c) in added {
+                rel.push_index(c);
+            }
         }
         (rels, replaced_at)
     }
@@ -653,10 +628,7 @@ impl Model {
             let (Some(r), Some(at)) = (first, replaced.next()) else {
                 return broken("a split's replacement without a new index");
             };
-            let ClauseM::Index {
-                id: Some(index), ..
-            } = self.relations[&r].clauses[at]
-            else {
+            let Some(index) = self.relations[&r].index_at(at).and_then(Held::id) else {
                 return broken("a split's replacement without a new index");
             };
             out.push(Clause::Replacement {
@@ -678,10 +650,8 @@ impl Model {
         image: &Image,
         made: &[u64],
     ) -> Option<Vec<Term>> {
-        let ClauseM::Index { elems, .. } = &self.relations[&r].clauses[at] else {
-            return None;
-        };
-        let printed: Vec<String> = elems.iter().map(|e| e.print(self)).collect();
+        let held = self.relations[&r].index_at(at)?;
+        let printed: Vec<String> = held.elems().iter().map(|e| e.print(self)).collect();
         let mut images = image.products.iter().map(|p| image.image(&printed, p));
         let first = images.next()??;
         if images.any(|x| x.as_ref() != Some(&first)) {
@@ -692,12 +662,10 @@ impl Model {
 
     /// Returns the scope of clause `at` of relation variable `r` as written.
     fn scope_written(&self, r: u64, at: usize) -> Vec<String> {
-        match &self.relations[&r].clauses[at] {
-            ClauseM::Index { scope: Some(s), .. } => {
-                s.parts.iter().map(|p| p.print(self)).collect()
-            }
-            _ => Vec::new(),
-        }
+        self.relations[&r]
+            .index_at(at)
+            .map(|h| h.scope_names(self))
+            .unwrap_or_default()
     }
 
     /// Returns the canonical form of the constructors `made` of type `t` as `built` declares

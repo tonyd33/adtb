@@ -136,13 +136,18 @@ impl Model {
             Item::Relation(r) => {
                 let rel = self.relations.get_mut(&r).expect("the relation variable");
                 out.push(&mut rel.ty);
-                for c in &mut rel.clauses {
+                let RelM {
+                    clauses, indexes, ..
+                } = rel;
+                let mut of_index: Vec<(usize, &mut Term)> = Vec::new();
+                indexes.lend_terms(clauses, &mut |at, t| of_index.push((at, t)));
+                let mut of_index = of_index.into_iter().peekable();
+                for (k, c) in clauses.iter_mut().enumerate() {
                     match c {
                         ClauseM::Key { fields, .. } => out.extend(fields.iter_mut()),
-                        ClauseM::Index { elems, scope, .. } => {
-                            out.extend(elems.iter_mut());
-                            if let Some(s) = scope {
-                                out.extend(s.parts.iter_mut());
+                        ClauseM::Index(_) => {
+                            while let Some((_, t)) = of_index.next_if(|(at, _)| *at == k) {
+                                out.push(t);
                             }
                         }
                         ClauseM::Computed { ty, expr, .. } => {
@@ -246,19 +251,19 @@ impl Model {
         out.term(&rel.ty, self);
         for c in &rel.clauses {
             out.push("\n  ");
-            self.print_clause(c, out);
+            self.print_clause(rel, c, out);
         }
         self.print_defaults(r, out);
     }
 
     /// Returns clause `c` as written.
-    pub(super) fn clause_text(&self, c: &ClauseM) -> String {
+    pub(super) fn clause_text(&self, rel: &RelM, c: &ClauseM) -> String {
         let mut out = Printed::default();
-        self.print_clause(c, &mut out);
+        self.print_clause(rel, c, &mut out);
         out.text
     }
 
-    fn print_clause(&self, c: &ClauseM, out: &mut Printed) {
+    fn print_clause(&self, rel: &RelM, c: &ClauseM, out: &mut Printed) {
         match c {
             ClauseM::Key {
                 fields,
@@ -277,23 +282,7 @@ impl Model {
                 }
             }
             ClauseM::Volatile => out.push("volatile"),
-            ClauseM::Index {
-                kind, elems, scope, ..
-            } => {
-                out.push(match kind {
-                    IndexKind::Unique => "unique (",
-                    IndexKind::Plain => "index (",
-                    IndexKind::Interval => "interval index (",
-                });
-                out.list(elems, self, ", ");
-                out.push(")");
-                if let Some(s) = scope {
-                    out.push(" in ");
-                    out.push(if s.listed { "(" } else { "" });
-                    out.list(&s.parts, self, " | ");
-                    out.push(if s.listed { ")" } else { "" });
-                }
-            }
+            ClauseM::Index(x) => self.print_index(rel, x, out),
             ClauseM::Computed { name, ty, expr, .. } => {
                 out.push(&format!("computed {name}: "));
                 out.term(ty, self);

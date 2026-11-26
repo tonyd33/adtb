@@ -1,4 +1,5 @@
 use super::field::Applied;
+use super::indexes::{Held, NewIndex};
 use super::lift::Lifting;
 use super::op::{Fail, Res, broken, refuse, refuse_at, refuse_diag};
 use super::run::{Built, Decls, Late, Run};
@@ -159,19 +160,17 @@ impl Model {
             Some(ast::CtorSel::One(c)) => vec![c],
             Some(ast::CtorSel::Many(cs)) => cs.iter().collect(),
         };
-        let scope = on.sel.as_ref().map(|_| Scope {
-            parts: names.iter().map(|c| Term::text(&c.text)).collect(),
-            listed: names.len() > 1,
-        });
+        let parts = on
+            .sel
+            .as_ref()
+            .map(|_| names.iter().map(|c| Term::text(&c.text)).collect());
         let index = self.fresh(Space::Index);
-        let clause = ClauseM::Index {
-            id: Some(index),
-            was: Vec::new(),
-            kind,
-            elems: vec![elems],
-            scope,
-        };
-        let built = self.appended(run, r, clause)?;
+        let new = NewIndex::new(kind, vec![elems], parts, Vec::new()).identified(index);
+        self.relations
+            .get_mut(&r)
+            .expect("a resolved relation variable")
+            .push_index(new);
+        let built = self.rebuilt_relation(run, r)?;
         let k = self.relations[&r].clauses.len() - 1;
         let (fields, clauses) = match built {
             Some((built, _)) => {
@@ -218,17 +217,10 @@ impl Model {
     /// Returns the constructors and named sets the scope of clause `k` of relation variable `r`
     /// names.
     pub(super) fn index_scope(&self, r: u64, k: usize) -> Vec<Clause> {
-        let ClauseM::Index { scope, .. } = &self.relations[&r].clauses[k] else {
-            return Vec::new();
-        };
-        scope
-            .iter()
-            .flat_map(|s| s.parts.iter())
-            .filter_map(|p| match p.objects().next()? {
-                (Space::Set, s) => Some(Clause::Scope { set: s }),
-                (_, c) => Some(Clause::Member { ctor: c }),
-            })
-            .collect()
+        self.relations[&r]
+            .index_at(k)
+            .map(Held::scope_clauses)
+            .unwrap_or_default()
     }
 
     /// Drop the one unique or index over `fields` of the relation variable `on` names whose
@@ -255,14 +247,11 @@ impl Model {
         let defs = &schema.relation(rel).indexes;
         let mut found = Vec::new();
         let mut ix = 0;
-        for (k, c) in self.relations[&r].clauses.iter().enumerate() {
-            let ClauseM::Index { kind: held, .. } = c else {
-                continue;
-            };
+        for (k, held) in self.relations[&r].indexes() {
             let d = &defs[ix];
             ix += 1;
             let texts: Vec<&str> = (0..d.fields.len()).map(|j| d.text(j)).collect();
-            if *held == kind
+            if held.kind() == kind
                 && d.written() == want_scope.as_deref()
                 && texts.len() == tokens.len()
                 && texts.iter().zip(&tokens).all(|(a, b)| a == b)
@@ -294,14 +283,12 @@ impl Model {
             let file = FileId(i as u32);
             run.read(&built, file, &defs[at].fields, fields);
         }
-        let ClauseM::Index {
-            id: Some(index), ..
-        } = self
+        let Some(index) = self
             .relations
             .get_mut(&r)
             .expect("the relation variable")
-            .clauses
-            .remove(k)
+            .remove_clause(k)
+            .and_then(|h| h.id())
         else {
             return broken("a dropped index held no id");
         };

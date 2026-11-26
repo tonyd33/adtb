@@ -528,7 +528,7 @@ impl Model {
             At::Index { relation, index } => {
                 let (file, k) = self.clause_place(
                     relation,
-                    |c| matches!(c, ClauseM::Index { id: Some(x), .. } if *x == index),
+                    |c| matches!(c, ClauseM::Index(x) if x.id() == Some(index)),
                 )?;
                 let (RelationClause::Unique(fs, ..) | RelationClause::Index { fields: fs, .. }) =
                     Self::clause_written(built, file, k).ok()?
@@ -835,12 +835,9 @@ impl Model {
 
     /// Returns the relation variable holding unique or index `index`.
     fn index_relation(&self, index: u64) -> Option<u64> {
-        self.relations.iter().find_map(|(&r, rel)| {
-            rel.clauses
-                .iter()
-                .any(|c| matches!(c, ClauseM::Index { id: Some(x), .. } if *x == index))
-                .then_some(r)
-        })
+        self.relations
+            .iter()
+            .find_map(|(&r, rel)| rel.holds_index(index).then_some(r))
     }
 }
 

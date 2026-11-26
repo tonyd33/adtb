@@ -5,6 +5,7 @@ use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::element_head;
 use crate::evolve::model::defaults::Taken;
 use crate::evolve::model::field::Applied;
+use crate::evolve::model::indexes::Elem;
 use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::{Edit, Mode, sel_range};
 use crate::evolve::model::run::{Built, Late, Run};
@@ -108,23 +109,11 @@ impl Model {
         parts: Vec<Term>,
     ) {
         let rel = self.relations.get_mut(&r).expect("a relation variable");
-        if let ClauseM::Index {
-            id,
-            elems: e,
-            scope,
-            was,
-            ..
-        } = &mut rel.clauses[at]
-        {
-            if rescoped {
-                Model::reimage(id, was);
-            }
-            *e = elems;
-            *scope = Some(Scope {
-                listed: parts.len() > 1,
-                parts,
-            });
+        if rescoped {
+            rel.reimage(at);
         }
+        rel.carry_elems(at, elems);
+        rel.scope_to(at, parts);
     }
 
     /// Build after a structural operator, and lift the type `t` and each relation variable of
@@ -440,11 +429,10 @@ impl Model {
             let shown = format!("{} ({})", kind_word(cl.kind), cl.elems.join(", "));
             let mut fs = Vec::new();
             let mut same = true;
-            let held = &self.relations[&cl.relation].clauses[cl.at];
-            let ClauseM::Index { elems, scope, .. } = held else {
+            let Some(held) = self.relations[&cl.relation].index_at(cl.at) else {
                 return broken("a scoped clause that is no index");
             };
-            for (g, e) in cl.elems.iter().zip(elems) {
+            for (g, e) in cl.elems.iter().zip(held.elems().iter().map(Elem::term)) {
                 let head = element_head(g).0;
                 if header.iter().any(|h| h == head) {
                     fs.push(e.clone());
@@ -459,7 +447,7 @@ impl Model {
             }
             let parts = match &cl.rescoped {
                 None if same => continue,
-                None => scope.as_ref().expect("a scoped clause").parts.clone(),
+                None => held.scope_parts().expect("a scoped clause"),
                 Some(parts) => {
                     if same && inside.len() != sources.len() {
                         return refuse(format!(
@@ -572,13 +560,12 @@ impl Model {
                 continue;
             }
             let shown = format!("{} ({})", kind_word(cl.kind), cl.elems.join(", "));
-            let held = &self.relations[&cl.relation].clauses[cl.at];
-            let ClauseM::Index { elems, .. } = held else {
+            let Some(held) = self.relations[&cl.relation].index_at(cl.at) else {
                 return broken("a scoped clause that is no index");
             };
             let mut target: Option<String> = None;
             let mut fs = Vec::new();
-            for (g, e) in cl.elems.iter().zip(elems) {
+            for (g, e) in cl.elems.iter().zip(held.elems().iter().map(Elem::term)) {
                 if self.header_names(t).iter().any(|h| h == element_head(g).0) {
                     fs.push(e.clone());
                     continue;

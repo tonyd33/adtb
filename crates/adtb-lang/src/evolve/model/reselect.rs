@@ -295,18 +295,10 @@ impl Model {
             }
             if mode.clauses {
                 let rel = self.relations.get_mut(&r).expect("a relation variable");
-                let mut scoped = Vec::new();
-                for (k, c) in rel.clauses.iter().enumerate() {
-                    if let ClauseM::Index { scope: Some(s), .. } = c {
-                        let ids: Vec<Obj> =
-                            s.parts.iter().filter_map(|p| p.objects().next()).collect();
-                        if ids.len() != s.parts.len() || ids.iter().any(|o| o.0 == Space::Set) {
-                            continue;
-                        }
-                        let names: Vec<u64> = ids.iter().map(|o| o.1).collect();
-                        scoped.push((k, names));
-                    }
-                }
+                let scoped: Vec<(usize, Vec<u64>)> = rel
+                    .indexes()
+                    .filter_map(|(k, h)| Some((k, h.listed_ctors()?)))
+                    .collect();
                 let ctors = &self.ctors;
                 for (k, names) in scoped {
                     match reselected(&names, gone, by, mode.whole) {
@@ -325,20 +317,11 @@ impl Model {
                         }
                         Some(Some(out)) if out.is_empty() => {}
                         Some(Some(out)) => {
-                            if let ClauseM::Index {
-                                id,
-                                scope: Some(s),
-                                was,
-                                ..
-                            } = &mut rel.clauses[k]
-                            {
-                                Model::reimage(id, was);
-                                s.listed = out.len() > 1;
-                                s.parts = out
-                                    .iter()
-                                    .map(|&c| Term::name((Space::Shared, c), &ctors[&c].name))
-                                    .collect();
-                            }
+                            let parts = out
+                                .iter()
+                                .map(|&c| Term::name((Space::Shared, c), &ctors[&c].name))
+                                .collect();
+                            rel.rescope(k, parts);
                         }
                     }
                 }
@@ -390,27 +373,6 @@ impl Model {
                     range: r,
                     with: Term::default(),
                 });
-            }
-        }
-        out
-    }
-
-    /// Returns the constructors scope `s` names, a named set's members in its place.
-    pub(super) fn scope_ctors(&self, s: &Scope) -> Vec<u64> {
-        let mut out = Vec::new();
-        for o in s.parts.iter().filter_map(|p| p.objects().next()) {
-            let more = match o {
-                (Space::Set, set) => self.sets[&set]
-                    .members
-                    .iter()
-                    .filter_map(|m| m.objects().next().map(|o| o.1))
-                    .collect(),
-                (_, c) => vec![c],
-            };
-            for c in more {
-                if !out.contains(&c) {
-                    out.push(c);
-                }
             }
         }
         out
@@ -511,20 +473,15 @@ impl Model {
                 .relation_id(*rel)
                 .expect("a held relation")
                 .raw();
-            let only: Vec<usize> = self.relations[&r]
-                .clauses
-                .iter()
-                .enumerate()
-                .filter(|(_, cl)| match cl {
-                    ClauseM::Index { scope: Some(s), .. } => self.scope_ctors(s) == [c],
-                    _ => false,
-                })
+            let only: BTreeSet<usize> = self.relations[&r]
+                .indexes()
+                .filter(|(_, h)| h.reach(self).is_some_and(|x| x == [c]))
                 .map(|(k, _)| k)
                 .collect();
-            let held = self.relations.get_mut(&r).expect("a relation variable");
-            for k in only.into_iter().rev() {
-                held.clauses.remove(k);
-            }
+            self.relations
+                .get_mut(&r)
+                .expect("a relation variable")
+                .remove_clauses(&only);
         }
         let before = self.clone();
         self.drop_ctor(t, c);

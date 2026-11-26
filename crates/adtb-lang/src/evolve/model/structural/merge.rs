@@ -8,6 +8,7 @@ use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::{Carries, arm_image, element_head};
 use crate::evolve::model::defaults::Taken;
 use crate::evolve::model::field::Applied;
+use crate::evolve::model::indexes::NewIndex;
 use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::{Edit, Mode, sel_range};
 use crate::evolve::model::run::{Built, Late, Run};
@@ -245,7 +246,7 @@ struct Rewrite {
     /// The clauses that keep their scope and id, by position, with their elements over the
     /// merged constructor.
     carried: Vec<(usize, Vec<Term>)>,
-    added: Vec<ClauseM>,
+    added: Vec<NewIndex>,
 }
 
 /// A clause over one merged constructor alone, by its relation variable, kind and elements as
@@ -351,28 +352,15 @@ impl Model {
         for (r, w) in rewrites {
             let rel = self.relations.get_mut(&r).expect("a relation variable");
             for (at, carried) in w.carried {
-                if let ClauseM::Index { elems, .. } = &mut rel.clauses[at] {
-                    *elems = carried;
-                }
+                rel.carry_elems(at, carried);
             }
             for (at, parts) in w.rescoped {
-                if let ClauseM::Index { id, scope, was, .. } = &mut rel.clauses[at] {
-                    Model::reimage(id, was);
-                    *scope = Some(Scope {
-                        listed: parts.len() > 1,
-                        parts,
-                    });
-                }
+                rel.rescope(at, parts);
             }
-            let kept: Vec<ClauseM> = rel
-                .clauses
-                .drain(..)
-                .enumerate()
-                .filter(|(k, _)| !w.gone.contains(k))
-                .map(|(_, x)| x)
-                .collect();
-            rel.clauses = kept;
-            rel.clauses.extend(w.added);
+            rel.remove_clauses(&w.gone);
+            for new in w.added {
+                rel.push_index(new);
+            }
         }
         self.replace_ctors(t, &sources, &[c]);
         self.rebind(&before);
@@ -564,16 +552,12 @@ impl Model {
                 continue;
             }
             w.gone.insert(cl.at);
-            w.added.push(ClauseM::Index {
-                id: None,
-                was: cl.id.into_iter().collect(),
-                kind: cl.kind,
+            w.added.push(NewIndex::new(
+                cl.kind,
                 elems,
-                scope: Some(Scope {
-                    listed: parts.len() > 1,
-                    parts,
-                }),
-            });
+                Some(parts),
+                cl.id.into_iter().collect(),
+            ));
         }
         for ((r, kind, fields), held) in alone {
             let each = sources
@@ -596,16 +580,12 @@ impl Model {
             }
             let w = out.entry(r).or_default();
             w.gone.extend(held.iter().map(|(at, _, _, _)| *at));
-            w.added.push(ClauseM::Index {
-                id: None,
-                was: held.iter().filter_map(|(_, _, _, id)| *id).collect(),
+            w.added.push(NewIndex::new(
                 kind,
-                elems: fs.iter().map(|f| Term::text(f)).collect(),
-                scope: Some(Scope {
-                    listed: false,
-                    parts: vec![Term::name((Space::Shared, c), image.ctor)],
-                }),
-            });
+                fs.iter().map(|f| Term::text(f)).collect(),
+                Some(vec![Term::name((Space::Shared, c), image.ctor)]),
+                held.iter().filter_map(|(_, _, _, id)| *id).collect(),
+            ));
         }
         Ok(out)
     }

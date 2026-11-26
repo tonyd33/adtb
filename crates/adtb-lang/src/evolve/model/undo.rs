@@ -124,17 +124,7 @@ impl Model {
 
     /// Drop the unique or index of id `id`. Returns false when no relation variable holds it.
     fn drop_index_id(&mut self, id: u64) -> bool {
-        for r in self.relations.values_mut() {
-            if let Some(k) = r
-                .clauses
-                .iter()
-                .position(|c| matches!(c, ClauseM::Index { id: Some(x), .. } if *x == id))
-            {
-                r.clauses.remove(k);
-                return true;
-            }
-        }
-        false
+        self.relations.values_mut().any(|r| r.remove_index_id(id))
     }
 
     /// Remove constructor `ctor` with its arms as the inverse of adding it, then, with `record`,
