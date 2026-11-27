@@ -257,7 +257,7 @@ with a `Let` binding a variable of a narrower type than its value.
 | Kind | Invariant |
 | --- | --- |
 | `Var(x)` | `τ` is `x`'s type |
-| `Const(Int(i))` | `τ` is an integer type, or a `Param` whose argument is any numeric type, the constant then being `i` at that type; evaluating it where `i` lies outside that type's range faults with `ArithmeticOverflow` |
+| `Const(Int(i))` | `τ` is a numeric base type (`I8`, `I16`, `I32`, `I64`, `Decimal s`, `F32` or `F64`), or a `Param` whose argument is any numeric type, the constant then being `i` at that type: at `Decimal s` the value `i`, held as `i · 10^s`, and at `F32` or `F64` `i` rounded to that type; evaluating it where `i` lies outside the range of an integer or `Decimal` type faults with `ArithmeticOverflow` |
 | `Const(Decimal(d))` | `τ` is `Decimal s`; the value is `d / 10^s` |
 | `Const(Float(f))` | `τ` is `F32` or `F64`; for `F32`, `f` is already rounded to `F32` |
 | `Const(Text(t))` | `τ` is `Text`; `t` is NFC |
@@ -293,9 +293,6 @@ with a `Let` binding a variable of a narrower type than its value.
 | `At { instant, point, body }` | `ty(point)` is `Instant`, or `Position` when `instant` is false; `τ = ty(body)` |
 | `Unreachable` | a position the checker, or the consumer that built it, proves no evaluation reaches, by exhaustiveness or by a test that dominates it, at any type; reaching it is a broken invariant |
 | writes and blocks | as §4 states |
-
-A `Record` or `Ctor` evaluates its fields in the order the node lists
-them, which is name order.
 
 Fields of a record or constructor are evaluated in no stated order: which of several faulting fields is reported is a freedom of [../spec/semantics.md §5.1](../spec/semantics.md#51-scalar-forms), so a consumer may evaluate them in name order.
 
@@ -495,8 +492,8 @@ A term names declarations by id; a consumer reads them from the
   else the first declared key, unique or index of `r` that does, else
   its implied index. `Schema::implied_indexes(r)` returns exactly the
   fields whose index is the implied one, and `Schema::ids` holds the id
-  of the index each names: `keys`, `indexes` or `implied`, for every
-  relation of a user module. A consumer decides which fields of a row
+  of the index each names, the key, a unique or index, or the implied
+  index, for every relation of a user module. A consumer decides which fields of a row
   are references only by `reference_fields`.
 - `Schema::ids` holds the catalog id of each object
   ([../spec/catalog.md §1.2](../spec/catalog.md#12-identity-of-catalog-objects)):
@@ -504,12 +501,11 @@ A term names declarations by id; a consumer reads them from the
   constructors, relation variables, fields and indexes have their
   fixed ids
   ([../spec/catalog.md §4.6](../spec/catalog.md#46-constructor-ids-of-engine-defined-sums)),
-  each relation's key index in `CatalogIds::keys` and its uniques in
-  `CatalogIds::indexes`.
+  each relation's key index by the relation, and each of its uniques
+  and indexes by the relation and the clause's position among them.
   A stored view whose element type is anonymous has its row type, its
-  constructor and its fields' ids in `view_types`, `view_ctors` and
-  `view_fields`, by the view's function; a view of a declared type has
-  none there. A schema `schema::build`
+  constructor and its fields' ids, by the view's function and a
+  field's name; a view of a declared type has none. A schema `schema::build`
   returns numbers its user objects as one migration declaring its
   files' declarations in order would; one `Source::schema` returns
   carries the ids of its log ([schema-change.md §4](schema-change.md#4-the-schema-transition)).
@@ -518,7 +514,7 @@ A term names declarations by id; a consumer reads them from the
   unique in `RelationDef::indexes` of this schema. Field paths retain
   their declared spelling. Omitted and full scopes have no suffix;
   proper subsets name their constructors in code-point order. An
-  expression unique names its catalog id from `Schema::ids.indexes`,
+  expression unique names its catalog id from `Schema::ids`,
   independent of its position. Consumers obtain unique constraint names
   only through this method.
 - `Schema::stage(r, c)` is the write state of constructor `c` in

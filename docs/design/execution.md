@@ -25,16 +25,19 @@ Rulings: exec/flow/push
 
 ### 1.1 The planner's input
 
-```text
-fn plan::plan(schema: &Schema, catalog: &Catalog, terms: &Terms, root: Tm,
-              params: &[Var], options: Options) -> Result<Plan, plan::Error>
-```
+`plan::plan` plans one root. It takes the schema, the schema's normal
+program, the catalog, a `kernel::Valid` arena
+([kernel.md §7](kernel.md#7-normal-forms)), a root in that arena with
+the kind of root it is, and the options.
 
 Preconditions:
 
-- `root` is a normal form in `terms` that `adtb_lang::norm` returned
-  for `schema` ([kernel.md §7](kernel.md#7-normal-forms)), and its free
-  variables are among `params`.
+- `root` is a normal form that `adtb_lang::norm` returned for `schema`
+  as a root of its kind, or a term rewritten from one, reachable from
+  the roots the arena was validated at.
+- The normal program is `schema`'s. The planner reads from it the parts
+  of each user-defined aggregate `root` calls and the terms of each
+  expression index element it compares with a term of `root`.
 - `catalog` describes every relation variable `root` reads, as a
   `RelationDesc` per `RelId`:
   - `heaps` maps every constructor of the relation's sum to its heap id;
@@ -58,8 +61,9 @@ reach a hidden row is partial.
 
 Postconditions:
 
-- On `Ok(p)`, every outcome of evaluating `p.root` (§1.3) with
-  `p.params` bound to the parameters' values is an outcome
+- On `Ok(p)`, `p.params` are the free variables of `root`, and every
+  outcome of evaluating `p.root` (§1.3) with `p.params` bound to the
+  parameters' values is an outcome
   [../spec/semantics.md](../spec/semantics.md) allows `root`, whatever
   `options` holds.
 - `Err(UserCode(name))` when `root` calls the Wasm or host function, or
@@ -73,14 +77,13 @@ Postconditions:
   the statement with `Internal { what }` as it fails one on a fault,
   and the transaction stays open.
 
-```text
-fn plan::plan_bounded(schema: &Schema, catalog: &Catalog, terms: &Terms, root: Tm,
-                      params: &[Var]) -> Result<Plan, plan::Error>
-```
+`plan::plan_bounded` takes what `plan` takes, with a list of roots of
+one kind in place of the root and no options, and returns one result
+per root, in order. Its plans share one arena.
 
-Preconditions: those of `plan`.
+Preconditions: those of `plan`, for each root.
 
-Postconditions: those of `plan` with every rewrite on, and:
+Postconditions, per root: those of `plan` with every rewrite on, and:
 
 - On `Ok(p)`, `p` has no `Scan` source and no `Build`: it reads every
   constructor relation through an `Index` end or a `Lookup` whose key
@@ -98,8 +101,7 @@ Postconditions: those of `plan` with every rewrite on, and:
 
 | Type | Fields | Meaning |
 | --- | --- | --- |
-| `Plan` | `terms`, `params`, `root: Eval`, `ty`, `reads: Reads` | The value of `root` with `params` bound, of type `ty`: the type of the term the planner was given |
-| `Reads` | `heaps`, `indexes` | Every heap and index the plan names (§4) |
+| `Plan` | `terms`, `params`, `root: Eval` | The value of `root` with `params` bound: the value of the term the planner was given |
 | `Eval` | below | The computation of one value in an environment |
 | `Query` | `builds`, `spine`, `sink`, `total` | Pipelines that push values into one sink |
 | `Spine` | below | The choices taken once per evaluation of a query that select its pipelines |
@@ -116,7 +118,7 @@ its forms are `Var`, `Const`, `Prim`, `Record`, `Field`, `Ctor`,
 `Call` of a host function and `Placeholder`, each with the meaning and
 typing invariants of kernel.md §3. A scalar
 expression reads nothing; every read of a plan is a `Scan`, an `Index`
-end, a `Lookup` or a `Build`. `Plan.terms` holds the terms the planner
+or `Range` end, a `Lookup` or a `Build`. `Plan.terms` holds the terms the planner
 was given, so a variable of the input keeps its `Var`.
 
 An environment binds variables to values. `Plan.root` is evaluated in
@@ -134,7 +136,7 @@ parameter's value.
 | `Query(q)` | The value `q`'s sink forms (below) |
 | `Fix(f)` | As below; `f.term` is the fixpoint of `Plan.terms` it computes |
 | `GroupRows { groups, key }` | The `rows` of the record of the set `groups`, a value a `Group` sink with `rows` set formed, whose `key` equals `key`'s value; the empty set when none does |
-| `At { instant, point, pins, body, heaps }` | `body`'s, evaluated at the state `point`'s value names, a `Position`, or an `Instant` when `instant` is set, for a block typed at version `pins` or, when it is `None`, at the version of that state; `heaps` are the heaps `body` reads. Fails with `HistoryUnavailable { oldest }` or `WrongVersion { version }` as [mvcc.md §10.3](mvcc.md#103-history-heaps-and-reads-of-the-past) states |
+| `At { instant, point, pins, body }` | `body`'s, evaluated at the state `point`'s value names, a `Position`, or an `Instant` when `instant` is set, for a block typed at version `pins` or, when it is `None`, at the version of that state. Fails with `HistoryUnavailable { oldest }` or `WrongVersion { version }` as [mvcc.md §10.3](mvcc.md#103-history-heaps-and-reads-of-the-past) states |
 
 A query is evaluated in an environment:
 
@@ -237,15 +239,9 @@ Invariants of every plan:
   excepted. A `Spine::Let` the planner adds binds a value that
   evaluation computes without aborting.
 - A plan made by `plan_bounded` has no `Scan` source and no `Build`.
-- `Plan.reads` holds every heap a `Scan`, route or `Lookup` names, the
-  heap of every constructor of the relation of each route and
-  `Lookup`, which a fetch following a retag chain reads, and every
-  index an `Index` or `Range` end or `Lookup` names, including those of
-  builds and nested queries.
-- An `At`'s body names no `Index` or `Range` end and no other `At`,
-  and its `reads` holds every heap and index its body names. A query
-  holding an `At` holds no build or `Spine::Let` computed from its
-  body.
+- An `At`'s body names no `Index` or `Range` end and no other `At`. A
+  query holding an `At` holds no build or `Spine::Let` computed from
+  its body.
 
 The planner refuses a plan that breaks one of these invariants with
 an `Internal` failure naming the invariant, with these limits:
@@ -265,12 +261,28 @@ variable of `Plan::params`. The executor refuses a call that leaves one
 unbound with an `Internal` failure naming the variable, before it reads
 anything.
 
+The reads of a plan, which `Plan::reads` derives from it over the
+catalog, are every heap a `Scan`, route or `Lookup` names, the heap of
+every constructor of the relation of each route and `Lookup`, which a
+fetch following a retag chain reads, and every index an `Index` or
+`Range` end or `Lookup` names, including those of builds, nested
+queries and `At` bodies. The reads of an `At` are those of its body
+alone.
+
 Evaluation of a plan:
 
-- The executor reads only the heaps and indexes `Plan.reads` lists,
-  and in an `At`'s body only those its `reads` lists, with their
-  history heaps and history key indexes. A read of another fails with
-  an `Internal` failure naming the heap or index.
+- The executor runs a plan over the statement's store narrowed to the
+  plan's reads. Narrowing fails with an `Internal` failure naming a heap
+  or index the reads list that the store does not bind or list, before
+  the plan reads anything.
+- An `At`'s body runs over a store of the past holding the `At`'s
+  reads, with their history heaps and history key indexes. Making it
+  fails as [mvcc.md §10.3](mvcc.md#103-history-heaps-and-reads-of-the-past)
+  states, or with an `Internal` failure naming a heap or index of the
+  reads that the statement's bindings do not bind, before the body
+  reads anything.
+- A read of a heap or index outside the store's reads fails with an
+  `Internal` failure naming it.
 - The executor evaluates every row of every selected pipeline and every
   step of every chain a row reaches, with two exceptions for a query
   whose `total` is set: an `Exists` or `IsEmpty` sink may stop its
@@ -439,9 +451,9 @@ the pipelines of each pattern of the parameter: that is the
 specialisation per pattern. A partial condition is never moved past
 the conditions before it.
 
-`Plan.reads` is the postcondition above: the heaps and indexes of the
-plan's pipelines after compile-time pruning, every arm of a spine
-included.
+The reads of a plan (§1.3) are the postcondition above: the heaps and
+indexes of the plan's pipelines after compile-time pruning, every arm
+of a spine included.
 
 Rulings: exec/prune/compile, exec/prune/init
 

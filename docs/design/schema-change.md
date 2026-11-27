@@ -287,8 +287,8 @@ Registered queries are rechecked by the subsystem that registers them,
 not by `Catalog::migrate`, over these calls:
 
 ```text
-catalog.source_at(v) -> Option<Source>
-catalog.stale(&reader) -> Result<Option<ctor>, Error>
+catalog::source_at(source, v) -> Option<Source>
+catalog::stale(source, now, &reader) -> Result<Option<ctor>, Error>
 catalog.committed_rows(&pager, &txns, relation) -> [(ctor, row)]
 catalog.deploy(&pager, &txns, &[Rewrite { relation, deleted, inserted }]) -> Result<(), Error>
 ```
@@ -303,11 +303,13 @@ Preconditions:
 
 Postconditions:
 
-- `source_at(v)` returns the source of version `v` of the log, `None`
-  for version 0 and for a version past the catalog's.
-- `stale(reader)` returns a constructor, written `r.C` for a
-  constructor relation or `T.C` for a value-level sum, that is enabled
-  at the catalog's version, absent at the reader's, and that the reader
+- `source_at(source, v)` returns the source of version `v` of the log
+  `source` holds, `None` for version 0 and for a version past
+  `source`'s.
+- `stale(source, now, reader)`, with `now` the schema of `source`,
+  returns a constructor, written `r.C` for a constructor relation or
+  `T.C` for a value-level sum, whose write state in `now` is not
+  `Declared`, absent at the reader's version, and that the reader
   would read under the rules by which a live reader blocks its `enable`
   (§2.1); `None` when there is none. It refuses a reader `register`
   refuses for its version or names.
@@ -387,11 +389,6 @@ session, and settles. Only those hold a migration or a drop back; a
 bundle the open records for the first time does not. The write path
 an open binds is built from `Catalog::checking`: the version's schema
 and program with every pending-dropped object kept.
-
-`catalog::stale(source, now, reader)` and `catalog::source_at(source,
-v)` answer what `Catalog::stale` and `Catalog::source_at` answer, over
-`source`, a log, and `now`, its schema, so that a registration after
-open checks a reader against the source the open left.
 
 ### 2.2 Deployment facts
 
@@ -606,12 +603,19 @@ Postconditions of the steps of each operator `Recorded` and `record_steps` hold:
 - Each step's `RowMap`s are stated against the source after the step
   before it, the first's against the source the operators before it
   leave; the last step's source is the source the operator leaves.
-- Every object of a step's source has its catalog id: ids are
-  reconciled after each step, so the last step's ids are the result's.
+- Every object of a step's source has its catalog id, and an object
+  keeps its id through every step that keeps it. An object a step adds
+  takes the next id of its space; one the declarations hold with no
+  id, such as an index a reference field implies once no clause covers
+  it, takes it at the first build that holds it. The last step's ids
+  are the result's.
 - A step's schema may hold a `Key r` type whose `r` a later operator
-  of the migration adds. `Schema::ahead_relation(r)` names such an
-  `r`; `Schema::relations` does not hold it, `Schema::relation(r)`
-  panics on it, and no row of the step holds a value of that type.
+  of the migration adds: its relation is `RelRef::Ahead(a)`, and
+  `Schema::ahead_relation(a)` returns the module and name of `r`.
+  `Schema::relations` does not hold it, `Schema::relation_of` refuses a
+  read through it, and no row of the step holds a value of that type.
+  A committed schema holds no such type, and `Committed::declared`
+  panics on one.
 - A `Fill` or `Route` is a `RowFn`: a normal query of one parameter,
   the row, checked and normalised against its `schema`, reading only
   the row. A `Fill`'s schema is the step's source before it; a

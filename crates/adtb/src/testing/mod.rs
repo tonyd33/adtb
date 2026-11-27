@@ -1,11 +1,12 @@
 //! What tests observe of a running engine, and the controls that drive it where no public call
 //! reaches. Every answer is a value built at the call; no answer borrows from the engine.
-//! [`Plant`] lists every change a test makes to the engine's state beneath its public calls.
-//! Every observation but [`Probe::page`], [`Probe::damage_in_log`], [`Probe::logged_commits`]
-//! and [`Probe::safe_snapshots`] leaves the engine as it found it, reading memory only.
-//! [`Probe::page`] reads through the pager as any reader does. The other three read the retained
-//! log as `verify` does: they pin it, open its segments and take the simulator's fault draws.
-//! [`Probe::safe_snapshots`] writes the log first.
+//! [`Plant`], [`Testing::scribble`] and [`Testing::leak`] change the engine's state beneath its
+//! public calls. Every observation but [`Probe::page`], the calls that read an object, such as
+//! [`Testing::layout`], and [`Probe::damage_in_log`], [`Probe::logged_commits`] and
+//! [`Probe::safe_snapshots`] leaves the engine as it found it, reading memory only.
+//! [`Probe::page`] and the calls that read an object read through the pager as any reader does.
+//! The other three read the retained log as `verify` does: they pin it, open its segments and
+//! take the simulator's fault draws. [`Probe::safe_snapshots`] writes the log first.
 
 mod control;
 mod layout;
@@ -158,7 +159,6 @@ pub enum Failed {
     Unlisted(Object),
     /// No mark names the object apart from the database's.
     Shared(Object),
-    /// The database has no relation of the name given.
     /// The object is no relation's key index.
     NotKey(Object),
     /// The change found nothing to change.

@@ -14,7 +14,8 @@ use adtb_lang::types::{CtorSet, FnId, RelId, Ty, TypeId};
 
 use crate::catalog::{Read, Reader};
 
-/// The reads and writes of some normal forms over one schema.
+/// The reads and writes of some terms over one schema: the whole rows normal forms use and what
+/// they write, and what checked terms read by occurrence as written.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Reads {
     whole: BTreeSet<RelId>,

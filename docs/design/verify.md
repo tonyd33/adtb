@@ -39,7 +39,7 @@ Preconditions:
   ([indexes.md §8.1](indexes.md#81-b-link-trees)); the commit log its
   root, directory and status pages
   ([mvcc.md §4.2](mvcc.md#42-the-commit-log)).
-- No write runs while `verify_with` or `repair` runs.
+- No write runs while `verify_with` runs.
 
 When the catalog exists it builds the inventory from its own records;
 the catalog's pages are then one more structure.

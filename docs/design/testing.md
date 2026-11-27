@@ -38,7 +38,7 @@ TxnProbe::of(&Transactions<R>) -> TxnProbe<'_, R>
 
 | Entry | Observations |
 | --- | --- |
-| `Testing` | `next_xid`, `commit_log_damage`, `charged` (the vacuum pacer's steps), `rebuild_waits`, `vacuum_yields`, `tracked` (the transactions the serializer tracks), `snapshot` (the snapshot a transaction reads, `None` once it has ended), `store` (§2.1), `plan_catalog` (the planner's description of every relation the database runs, as its write path plans with it), `reindex_threads`, `scrub` (the saved cursor), `held_findings` |
+| `Testing` | `next_xid`, `commit_log_damage`, `charged` (the vacuum pacer's steps), `rebuild_waits`, `vacuum_yields`, `tracked` (the transactions the serializer tracks), `snapshot` (the snapshot a transaction reads, `None` once it has ended), `store` (§2.1), `plan_catalog` (the planner's description of every relation the database runs, as its write path plans with it), `reindex_threads`, `scrub` (the saved cursor), `held_findings`, `retired` (the pages of trees a swap replaced that no sweep has freed) |
 | `Probe` | `marks`, `marked`, `refusals`, `records`, `damage_in_log`, `logged_commits`, `safe_snapshots` (each safe snapshot marker as `(LogPosition, Snapshot)`: the commit position it covers and its snapshot), `appended`, `durable`, `checkpoint`, `dirty`, `walks`, `page`, `page_size`, `mapped_to`, `on_history` |
 | `TxnProbe` | `next_xid`, `commit_log_damage` |
 
@@ -47,8 +47,8 @@ Controls, all on `Testing`:
 | Group | Calls |
 | --- | --- |
 | Addressing | `heap`, `history`, `large`, `index`, `history_index` (an `Object` by qualified name), `objects`, `holder`, `own_mark`, `owner`, `root`, `pages`, `owned`, `reachable`, `commit_log`, `ctors`, `key_schema` |
-| Reading an object | `entries`, `all_entries`, `versions`, `read`, `headers`, `status`, `is_free`, `allocated` |
-| Changing the engine | `plant(Plant)` |
+| Reading an object | `entries`, `all_entries`, `versions`, `read`, `headers`, `status`, `layout`, `is_free`, `allocated` |
+| Changing the engine | `plant(Plant)`, `scribble`, `leak` |
 | Durability | `flush`, `flush_log`, `flush_pages`, `checkpoint`, `recycle_log` |
 | Holds and hooks | `hold_vacuum`, `hold_page`, `on_reindex_phase`, `take_xid` |
 | Checks | `verify_holding`, `verify_pages`, `check_page`, `scrub_page`, `check_indexes`, `probe_heaps`, `refuse_named`, `backup`, `archive_status` |
@@ -151,8 +151,13 @@ catalog, the heap of the catalog's rows, the counters, the marks page,
 the damage list). A test finds
 one by qualified name and holds no reference into the engine.
 
-`plant(Plant)` is the one way a test changes the engine's state beneath
-its public calls; every variant of `Plant` is one such change. The
+`plant(Plant)`, `scribble` and `leak` change the engine's state
+beneath its public calls; each variant of `Plant` is one such change.
+`scribble` applies a heap edit to a page as one logged change, and
+answers `Failed::Unchanged` when the page holds nothing the edit
+applies to. `leak` allocates a page of the kind and owner of a page it
+is given, its contents zero, that no structure names, and answers it;
+`Failed::Unchanged` when the given page holds no known page kind. The
 other controls only drive the engine (write, wait, hold, hook) or read
 it, and say below which of them record damage or set marks.
 
@@ -175,8 +180,8 @@ it, and say below which of them record damage or set marks.
   store or an engine structure answers `Failed::Shared`.
 - `owner`, `root`, `pages`, `owned`, `reachable`, `ctors`, `key_schema`,
   `commit_log`, `entries`, `all_entries`, `versions`, `read`, `headers`,
-  `status`, `is_free` and `allocated` answer what the structure holds
-  at the call, read through the pager.
+  `status`, `layout`, `is_free` and `allocated` answer what the
+  structure holds at the call, read through the pager.
 
 Not promised: the order of `owned`, or of the pages `reachable` lists;
 which pages of a structure a later write reuses.
@@ -254,7 +259,10 @@ reports.
   before it refuses the index: a page the heap does not own is refused
   and its damage recorded, and a free slot answers an orphan entry.
   They record damage they meet and set no mark; the caller decides what
-  a finding marks.
+  a finding marks. `check_indexes` answers `Failed::Absent` for an
+  object that is not an index of a relation the engine holds, and
+  `probe_heaps` answers `Failed::NotKey` for an object that is no
+  relation's key index.
 - `backup` copies the database to a target as a backup does, calling
   its visitor with each page as it is first read; it records damage it
   meets and sets no mark.

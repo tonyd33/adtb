@@ -434,7 +434,9 @@ Postconditions of a plan:
   `Fail` that comes to a `Close` panics there: a failed close would
   leave its file open.
 - A `Lose` whose match may take an op other than a write panics when
-  planned.
+  planned, and a numbered `Lose` or `Tear` that comes to an op other
+  than a write panics at that op's submission, on the submitting
+  thread.
 - A plan after `own_plan` panics, naming the owner.
 - A held op never completes. It is pending, so the deadlock rule does
   not fire; the clock skips it when choosing the next due event; a crash

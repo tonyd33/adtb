@@ -680,6 +680,11 @@ impl Catalog {
     ///
     /// A schema change that did not commit and whose pages damage hides stays on the root for the
     /// next open to free.
+    ///
+    /// When the open writes nothing past recovery, the database refused whole or its read-in gate
+    /// unarmed, it frees and lowers nothing and tags no grant: a schema change stays on the root,
+    /// and a file whose header names no catalog or whose create did not commit fails with
+    /// [`Error::Corrupt`].
     pub fn open<R: Runtime>(rt: R, pager: &Pager<R>) -> Result<(Catalog, Transactions<R>), Error> {
         let (mut catalog, txns) = Catalog::load(rt, pager)?;
         if pager.opens_unwritten() {
