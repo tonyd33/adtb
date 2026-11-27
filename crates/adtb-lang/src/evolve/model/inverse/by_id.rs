@@ -155,6 +155,7 @@ impl Inverse {
                     term(t);
                 }
             }
+            Inverse::Unfilled { owner, .. } => all(Space::Shared, owner),
             Inverse::Unadd { ctor, record, .. } => {
                 shared(ctor);
                 if let Some(fs) = record {
@@ -277,6 +278,7 @@ impl Inverse {
                 (out, of)
             }
             Inverse::Unadd { ctor, of, .. } => (vec![shared(ctor)], of),
+            Inverse::Unfilled { owner, of, .. } => (owner.iter().map(shared).collect(), of),
             Inverse::RestoreIndex { index, of, .. } => (vec![(Space::Index, *index)], of),
             Inverse::Readd {
                 ty,

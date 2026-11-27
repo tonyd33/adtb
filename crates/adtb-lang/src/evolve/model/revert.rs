@@ -470,6 +470,7 @@ impl Model {
                 self.place_ctors(ty, &order, &placed);
                 Ok(())
             }
+            Inverse::Unfilled { why, .. } => refuse(why),
             Inverse::Reorder {
                 ty, ctor, order, ..
             } => self.reorder(ty, ctor, &order),

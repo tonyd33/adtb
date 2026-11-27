@@ -74,6 +74,14 @@ pub(in crate::evolve::model) enum Inverse {
     /// Apply operators, as a text whose names are held by id, in the migration's module; `of` is
     /// the text of the operator inverted.
     Apply { text: Term, of: String },
+    /// Refuse with `why`, an inverse lacking the fill it needs, after the refusal of an object of
+    /// `owner`, each a type or constructor by id, that a later migration dropped; `of` is the text
+    /// of the operator inverted.
+    Unfilled {
+        owner: Vec<u64>,
+        why: String,
+        of: String,
+    },
     /// Remove the constructor of an id, with its arms; with `record`, then set its type, when a
     /// sum of one constructor named after it, to a record of its fields, those of `record` in
     /// that order first; `of` is the text of the operator inverted.
@@ -617,7 +625,10 @@ impl Cx<'_> {
         }
         transient.drop_named(&mut steps);
         restore::after_awaited(&mut steps);
-        if self.accepting && !self.replaying {
+        // An unfilled step refuses the revert, so a fill it left untaken is not refused first.
+        let unfilled =
+            (steps.iter().flat_map(|(s, _)| s)).any(|s| matches!(s, Inverse::Unfilled { .. }));
+        if self.accepting && !self.replaying && !unfilled {
             self.untaken(migration, &fills)?;
         }
         Ok(Inverted {

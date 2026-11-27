@@ -668,10 +668,18 @@ impl Cx<'_> {
         let c = path.ctor.as_ref().map(|c| c.text.as_str());
         let key = self.named_now(at.before, &m, t, c, &path.field.text);
         let Some(fill) = self.fill_for(at.fills, at.before, Some(f)) else {
-            return self.err(format!(
-                "the inverse of `drop field {}` needs a fill: `fill {key} = e`",
-                path_text(&path),
-            ));
+            let ty = ObjectKey::named(KeyKind::Type, Owner::Module(m.clone()), t);
+            let owner = (at.before.ids.get(&ty).copied().into_iter())
+                .chain(c.and_then(|c| at.before.ctor_key_id(&m, t, c)))
+                .collect();
+            return Ok(vec![Inverse::Unfilled {
+                owner,
+                why: format!(
+                    "the inverse of `drop field {}` needs a fill: `fill {key} = e`",
+                    path_text(&path),
+                ),
+                of: at.of(),
+            }]);
         };
         let field = &at.before_m.fields[&f];
         let mut text = Term::from("add field ");

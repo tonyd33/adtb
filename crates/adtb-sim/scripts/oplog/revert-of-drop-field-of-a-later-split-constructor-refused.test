@@ -1,0 +1,28 @@
+# A revert of a drop field is refused naming the constructor a later split replaced, though it
+# gives the fill, since the field's constructor no longer exists.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { n: Text, m: Text } | B
+  add relation ts : T key id generate sequence
+
+run
+  insert ts.A { n: "a", m: "b" }
+
+migrate
+  module ts
+  drop field T.A.n
+
+migrate
+  module ts
+  split constructor T.A into E { m: Text }
+    by match
+      | A c -> E { m: c.m }
+
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "revert 0002", detail: "the inverse of `drop field T.A.n` names a constructor a later migration dropped" } } }
+  module ts
+  revert 0002
+    fill T.A.n = "x"
