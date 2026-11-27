@@ -23,6 +23,7 @@ pub(super) struct Carry {
     discriminators: Vec<String>,
     /// The fields of the sources whose values the routing reads to choose a row's product.
     matched: BTreeSet<u64>,
+    revokes: Vec<Option<String>>,
 }
 
 /// A structural operator that carries grants.
@@ -230,6 +231,9 @@ pub(super) struct Plan {
     products: Vec<String>,
     /// The ids of the fields of the sources, by source and field name.
     fields: BTreeMap<(u64, String), u64>,
+    /// For each grant before the operator, in order, the revoke statement that removes it
+    /// there when it is dormant.
+    revokes: Vec<Option<String>>,
 }
 
 /// The relation variables over a type, by id with their names, and the sources each named set
@@ -246,8 +250,15 @@ pub(super) type Replacing = (
 
 impl Plan {
     /// Returns the plan of structural operator `what` at `span`, over the relation variables
-    /// `over`, replacing as `replacing` states.
-    pub(super) fn new(what: Structural, span: Span, over: Over, replacing: Replacing) -> Plan {
+    /// `over`, replacing as `replacing` states, with the revoke statement of each dormant grant
+    /// in `revokes`, by the grant's place among the grants before the operator.
+    pub(super) fn new(
+        what: Structural,
+        span: Span,
+        over: Over,
+        replacing: Replacing,
+        revokes: Vec<Option<String>>,
+    ) -> Plan {
         let (relations, sets) = over;
         let (sources, products, fields) = replacing;
         Plan {
@@ -258,6 +269,7 @@ impl Plan {
             sources,
             products,
             fields,
+            revokes,
         }
     }
 
@@ -270,7 +282,7 @@ impl Carry {
     /// Returns how operator `plan` carries grants, given what its routing reaches and gives by
     /// name, its discriminators and the source fields its routing matches on by name.
     pub(super) fn new(
-        plan: Plan,
+        plan: &Plan,
         (reaches, given): (&Reaches, &Given),
         discriminators: &[String],
         matched: &[String],
@@ -312,6 +324,7 @@ impl Carry {
                 .iter()
                 .flat_map(|(_, s)| matched.iter().filter_map(|f| field(s, f)))
                 .collect(),
+            revokes: plan.revokes.clone(),
         }
     }
 
@@ -539,13 +552,21 @@ impl Carry {
 
     /// Carry `grants` across the operator, whose products are `products` by name and id and
     /// whose product fields `field_id` gives by product and field name. Returns the grants it
-    /// could not carry to a product.
+    /// could not carry to a product, a dormant one naming its revoke.
+    ///
+    /// Preconditions:
+    /// - `grants` are the grants the plan's revokes were written for, in their order.
     pub(super) fn carry(
         &self,
         grants: &mut [LogGrant],
         products: &[(String, u64)],
         field_id: &dyn Fn(&str, &str) -> Option<u64>,
     ) -> Vec<Unstated> {
+        assert_eq!(
+            self.revokes.len(),
+            grants.len(),
+            "a carry takes the grants its plan was made for"
+        );
         let mut unstated: Vec<Unstated> = Vec::new();
         let held = grants.to_vec();
         let mut note = |u: Unstated| {
@@ -553,7 +574,7 @@ impl Carry {
                 unstated.push(u);
             }
         };
-        for g in grants.iter_mut() {
+        for (g, revoke) in grants.iter_mut().zip(&self.revokes) {
             let kind = Kind::of(&g.privilege);
             let role = g.role.clone();
             let mut carry = |t: &mut GrantTarget, fields: Option<&mut GrantFields>| {
@@ -572,7 +593,7 @@ impl Carry {
                     fs.ids.extend(out.fields);
                 }
                 for p in out.unstated {
-                    note(self.unstated(&role, t.relation, kind, p));
+                    note(self.unstated(&role, revoke.as_deref(), t.relation, kind, p));
                 }
             };
             match &mut g.privilege {
@@ -586,7 +607,8 @@ impl Carry {
                     *except = self.excepted(except, products);
                     if differs {
                         for (p, id) in products {
-                            note(self.unstated(&role, a.relation, kind, (*id, p.clone())));
+                            let p = (*id, p.clone());
+                            note(self.unstated(&role, revoke.as_deref(), a.relation, kind, p));
                         }
                     }
                     if divided {
@@ -606,13 +628,34 @@ impl Carry {
         unstated
     }
 
-    fn unstated(&self, role: &str, relation: u64, kind: Kind, product: (u64, String)) -> Unstated {
+    /// Returns the refusal of the `kind` grant of `role` on `relation` that cannot reach
+    /// `product`, by its id and name; for a dormant grant it names its `revoke` first.
+    fn unstated(
+        &self,
+        role: &str,
+        revoke: Option<&str>,
+        relation: u64,
+        kind: Kind,
+        product: (u64, String),
+    ) -> Unstated {
         let sources: Vec<String> = self.sources.iter().map(|(_, s)| format!("`{s}`")).collect();
         let rel = self
             .relations
             .iter()
             .find(|(r, _)| *r == relation)
             .map_or("", |(_, n)| n.as_str());
+        let k = kind.name();
+        let remedy = if let Some(revoke) = revoke {
+            format!(
+                "the grant is dormant: `{revoke}` before this operator in the same migration, or grant `{k}` on `{rel}.{}` to `{role}` there once role `{role}` exists",
+                product.1
+            )
+        } else {
+            format!(
+                "grant `{k}` on `{rel}.{}` to `{role}` in the same migration",
+                product.1
+            )
+        };
         Unstated {
             role: role.to_string(),
             relation,
@@ -620,19 +663,18 @@ impl Carry {
             product: product.0,
             span: self.span,
             message: format!(
-                "the {} of {} into `{}` cannot carry the `{k}` grant of `{role}` on `{rel}`, which does not cover each of them alike; grant `{k}` on `{rel}.{}` to `{role}` in the same migration",
+                "the {} of {} into `{}` cannot carry the `{k}` grant of `{role}` on `{rel}`, which does not cover each of them alike; {remedy}",
                 self.what.name(),
                 sources.join(", "),
                 product.1,
-                product.1,
-                k = kind.name(),
             ),
         }
     }
 }
 
 /// Returns `grants` without each id `live` refuses, each grant left naming no relation, set or
-/// function, or no constructor of a list, gone, and grants of one role and privilege joined.
+/// function, no constructor of a list, or no field of a `read` or `update` that covered some,
+/// gone, and grants of one role and privilege joined.
 pub(super) fn pruned(grants: &[LogGrant], live: &dyn Fn(IdKind, u64) -> bool) -> Vec<LogGrant> {
     let mut kept: Vec<LogGrant> = Vec::new();
     for g in grants {

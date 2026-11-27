@@ -1,0 +1,40 @@
+# A merge that cannot carry a dormant log grant of a missing role is refused naming a revoke,
+# which is admitted while the role is missing, as well as the grant once the role exists.
+use shop
+use grants-dumper
+
+role ghost
+
+migrate
+  module shop
+  grant read payments.Card to ghost
+
+as dumper run
+  dump to "out/d"
+
+restore out/d to copy.adt
+----
+dormant { id: 1, grantee: "dumper", privilege: "read", target: "shop::customers frozen (id, name)" }
+dormant { id: 2, grantee: "dumper", privilege: "read", target: "shop::payments frozen (id, customer, Card.last4, Invoice.due)" }
+dormant { id: 129, grantee: "ghost", privilege: "read", target: "shop::payments.Card frozen (id, customer, Card.last4)" }
+
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "merge constructor Payment.(Card | Invoice) into Paid { via: Via, note: Text }", detail: "the merge of `Card`, `Invoice` into `Paid` cannot carry the `read` grant of `ghost` on `payments`, which does not cover each of them alike; the grant is dormant: `revoke read payments.Card from ghost` before this operator in the same migration, or grant `read` on `payments.Paid` to `ghost` there once role `ghost` exists" } } }
+  module shop
+  add type Via = Card | Invoice
+  merge constructor Payment.(Card | Invoice) into Paid { via: Via, note: Text }
+    by match
+      | Card c -> Paid { via: Card, note: c.last4 }
+      | Invoice i -> Paid { via: Invoice, note: i.due }
+
+migrate
+  module shop
+  revoke read payments.Card from ghost
+  add type Via = Card | Invoice
+  merge constructor Payment.(Card | Invoice) into Paid { via: Via, note: Text }
+    by match
+      | Card c -> Paid { via: Card, note: c.last4 }
+      | Invoice i -> Paid { via: Invoice, note: i.due }
+
+query rowsort
+  from g in catalog::grants where g.grantee == "ghost" select g.privilege
+----

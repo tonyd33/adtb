@@ -20,40 +20,56 @@ impl Granted {
     /// A `call` is the function as `module::name`. `None` when it names an object `schema`
     /// lacks.
     pub fn target_text(&self, schema: &Schema) -> Option<String> {
+        self.text(&SchemaNames(schema), true)
+    }
+
+    /// Returns the privilege word and target of a revoke of this grant, `read t (f, C.g)`, as
+    /// [`Granted::target_text`] writes the target in the names `names` gives: the field list
+    /// only when the grant lists it, and a retag without its `except` pairs. `None` for a call
+    /// or when `names` lacks an object the grant names.
+    pub fn revoked(&self, names: &dyn GrantNames) -> Option<String> {
+        let word = match self {
+            Granted::Read(..) => "read",
+            Granted::Update(..) => "update",
+            Granted::Insert(_) => "insert",
+            Granted::Delete(_) => "delete",
+            Granted::Retag(..) => "retag",
+            Granted::CallFn(_) => return None,
+        };
+        Some(format!("{word} {}", self.text(names, false)?))
+    }
+
+    /// Returns the target text in `names`; with `whole`, a frozen field list and a retag's
+    /// `except` pairs are written too.
+    fn text(&self, names: &dyn GrantNames, whole: bool) -> Option<String> {
         Some(match self {
             Granted::Read(t, fs) | Granted::Update(t, fs) => {
+                let target = target(names, t)?;
+                if !fs.listed && !whole {
+                    return Some(target);
+                }
                 let fields = fs
                     .ids
                     .iter()
-                    .map(|&id| field_name(schema, id))
+                    .map(|&id| names.field(id))
                     .collect::<Option<Vec<_>>>()?
                     .join(", ");
                 let frozen = if fs.listed { "" } else { "frozen " };
-                format!("{} {frozen}({fields})", target(schema, t)?)
+                format!("{target} {frozen}({fields})")
             }
-            Granted::Insert(t) | Granted::Delete(t) => target(schema, t)?,
+            Granted::Insert(t) | Granted::Delete(t) => target(names, t)?,
             Granted::Retag(a, b, except) => {
-                let mut out = format!("{} -> {}", target(schema, a)?, target(schema, b)?);
-                if !except.is_empty() {
+                let mut out = format!("{} -> {}", target(names, a)?, target(names, b)?);
+                if whole && !except.is_empty() {
                     let pairs = except
                         .iter()
-                        .map(|&(x, y)| {
-                            Some(format!(
-                                "{} -> {}",
-                                ctor_name(schema, x)?,
-                                ctor_name(schema, y)?
-                            ))
-                        })
+                        .map(|&(x, y)| Some(format!("{} -> {}", names.ctor(x)?, names.ctor(y)?)))
                         .collect::<Option<Vec<_>>>()?;
                     out.push_str(&format!(" except ({})", pairs.join(", ")));
                 }
                 out
             }
-            Granted::CallFn(id) => {
-                let f = schema.ids().function_of(CatFunctionId::from_raw(*id))?;
-                let fd = schema.function(f);
-                format!("{}::{}", schema.module(fd.module).name, fd.name)
-            }
+            Granted::CallFn(id) => names.function(*id)?,
         })
     }
 
@@ -117,20 +133,66 @@ impl Granted {
     }
 }
 
-fn target(schema: &Schema, t: &GrantTarget) -> Option<String> {
-    let rel = schema.ids().relation_of(CatRelId::from_raw(t.relation))?;
-    let rd = schema.relation(rel);
-    let name = format!("{}::{}", schema.module(rd.module).name, rd.name);
+/// The names a grant's target text is written in, each by catalog id; `None` for an id it lacks.
+pub trait GrantNames {
+    /// Returns the relation variable's name as a grant writes it.
+    fn relation(&self, id: u64) -> Option<String>;
+    fn set(&self, id: u64) -> Option<String>;
+    fn ctor(&self, id: u64) -> Option<String>;
+    /// Returns the field's name, `C.f` for a field of constructor `C` of a type of several.
+    fn field(&self, id: u64) -> Option<String>;
+    /// Returns the function as `module::name`.
+    fn function(&self, id: u64) -> Option<String>;
+}
+
+/// The current names of a schema.
+struct SchemaNames<'a>(&'a Schema);
+
+impl GrantNames for SchemaNames<'_> {
+    fn relation(&self, id: u64) -> Option<String> {
+        let schema = self.0;
+        let rel = schema.ids().relation_of(CatRelId::from_raw(id))?;
+        let rd = schema.relation(rel);
+        Some(format!("{}::{}", schema.module(rd.module).name, rd.name))
+    }
+
+    fn set(&self, id: u64) -> Option<String> {
+        let (_, set) = self.0.ids().set_of(CatSetId::from_raw(id))?;
+        Some(set.to_string())
+    }
+
+    fn ctor(&self, id: u64) -> Option<String> {
+        ctor_name(self.0, id)
+    }
+
+    fn field(&self, id: u64) -> Option<String> {
+        let schema = self.0;
+        let f = schema.ids().field_of(CatFieldId::from_raw(id))?;
+        let td = schema.ty(f.def());
+        let name = &td.field_def(f).name;
+        Some(match f.ctor() {
+            Some(c) if td.ctors().len() > 1 => format!("{}.{name}", td.ctors()[c as usize].name),
+            _ => name.clone(),
+        })
+    }
+
+    fn function(&self, id: u64) -> Option<String> {
+        let schema = self.0;
+        let f = schema.ids().function_of(CatFunctionId::from_raw(id))?;
+        let fd = schema.function(f);
+        Some(format!("{}::{}", schema.module(fd.module).name, fd.name))
+    }
+}
+
+fn target(names: &dyn GrantNames, t: &GrantTarget) -> Option<String> {
+    let name = names.relation(t.relation)?;
     Some(match &t.sel {
         GrantSel::Whole => name,
-        GrantSel::Set(s) => {
-            let (_, set) = schema.ids().set_of(CatSetId::from_raw(*s))?;
-            format!("{name}.{set}")
-        }
+        GrantSel::Set(s) => format!("{name}.{}", names.set(*s)?),
         GrantSel::Ctors(cs) => {
             let names = cs
                 .iter()
-                .map(|&c| ctor_name(schema, c))
+                .map(|&c| names.ctor(c))
                 .collect::<Option<Vec<_>>>()?;
             match names.as_slice() {
                 [one] => format!("{name}.{one}"),
@@ -143,16 +205,6 @@ fn target(schema: &Schema, t: &GrantTarget) -> Option<String> {
 fn ctor_name(schema: &Schema, id: u64) -> Option<String> {
     let c = schema.ids().ctor_of(CatCtorId::from_raw(id))?;
     Some(schema.ty(c.def()).ctor_def(c).name.clone())
-}
-
-fn field_name(schema: &Schema, id: u64) -> Option<String> {
-    let f = schema.ids().field_of(CatFieldId::from_raw(id))?;
-    let td = schema.ty(f.def());
-    let name = &td.field_def(f).name;
-    Some(match f.ctor() {
-        Some(c) if td.ctors().len() > 1 => format!("{}.{name}", td.ctors()[c as usize].name),
-        _ => name.clone(),
-    })
 }
 
 fn ctor_id(schema: &Schema, rel: RelId, name: &str) -> Option<u64> {

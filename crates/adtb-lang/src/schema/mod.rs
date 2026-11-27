@@ -783,25 +783,31 @@ impl Schema {
         defs.contains(&def)
     }
 
-    /// Add to `defs` each declared type a value of `ty` can hold, through its type arguments, its
-    /// structure, the fields of the types it names or the key fields of the relations its keys
-    /// name, and to `rels` each relation a key it holds names. A key of a relation a later
-    /// operator of the migration adds reaches nothing: that relation holds no rows yet.
+    /// Add to `defs` each declared type a value of `ty` can hold or tag, through its type
+    /// arguments, its structure, the fields of the types it names or the key fields of the
+    /// relations its keys name, and to `rels` each relation a key it holds names. A tag holds no
+    /// field of its type. A key of a relation a later operator of the migration adds reaches
+    /// nothing: that relation holds no rows yet.
     pub fn reached(&self, ty: &Ty, defs: &mut BTreeSet<TypeId>, rels: &mut BTreeSet<RelId>) {
+        self.reach(ty, defs, rels, &mut BTreeSet::new());
+    }
+
+    fn reach(&self, ty: &Ty, defs: &mut Defs, rels: &mut BTreeSet<RelId>, walked: &mut Defs) {
         match ty {
             Ty::Data { def, args, .. } => {
                 for a in args {
-                    self.reached(a, defs, rels);
+                    self.reach(a, defs, rels, walked);
                 }
-                if !defs.insert(*def) {
+                defs.insert(*def);
+                if !walked.insert(*def) {
                     return;
                 }
                 match &self.ty(*def).kind {
                     TypeDefKind::Sum { header, ctors, .. } => header
                         .iter()
                         .chain(ctors.iter().flat_map(|c| &c.fields))
-                        .for_each(|f| self.reached(&f.ty, defs, rels)),
-                    TypeDefKind::Newtype { base, .. } => self.reached(base, defs, rels),
+                        .for_each(|f| self.reach(&f.ty, defs, rels, walked)),
+                    TypeDefKind::Newtype { base, .. } => self.reach(base, defs, rels, walked),
                 }
             }
             Ty::Key {
@@ -820,18 +826,25 @@ impl Schema {
                         .ty(r.elem_def)
                         .field_named(0, name)
                         .expect("a relation's key fields are fields of its row type");
-                    self.reached(&f.ty.subst(args), defs, rels);
+                    self.reach(&f.ty.subst(args), defs, rels, walked);
                 }
             }
-            Ty::Record(fs) => fs.iter().for_each(|(_, t)| self.reached(t, defs, rels)),
+            Ty::Record(fs) => fs
+                .iter()
+                .for_each(|(_, t)| self.reach(t, defs, rels, walked)),
             Ty::Sum { ctors, .. } => ctors
                 .iter()
                 .flat_map(|(_, fs)| fs)
-                .for_each(|(_, t)| self.reached(t, defs, rels)),
-            Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => self.reached(t, defs, rels),
+                .for_each(|(_, t)| self.reach(t, defs, rels, walked)),
+            Ty::Set(t) | Ty::NonEmpty(t) => self.reach(t, defs, rels, walked),
+            Ty::Tag(t) => {
+                if let Ty::Data { def, .. } = &**t {
+                    defs.insert(*def);
+                }
+            }
             Ty::Group(a, b) | Ty::Fn(a, b) => {
-                self.reached(a, defs, rels);
-                self.reached(b, defs, rels);
+                self.reach(a, defs, rels, walked);
+                self.reach(b, defs, rels, walked);
             }
             Ty::Key {
                 rel: RelRef::Ahead(_),
@@ -999,6 +1012,7 @@ impl Schema {
 }
 
 type OrderParams = BTreeSet<u32>;
+type Defs = BTreeSet<TypeId>;
 
 struct Order<'s> {
     schema: &'s Schema,

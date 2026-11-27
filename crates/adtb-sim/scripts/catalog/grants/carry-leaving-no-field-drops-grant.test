@@ -1,0 +1,37 @@
+# A read or update grant that a split leaves covering no field is dropped by that migration: a
+# routing that computes a field in every arm carries no grant on it.
+use shop
+
+role web
+
+migrate
+  module shop
+  grant update payments.Card (last4) to web
+  grant read payments.Card (last4) to web
+  grant update payments.Invoice (due) to web
+
+query rowsort
+  from g in catalog::grants where g.grantee == "web" select { privilege: g.privilege, target: g.target }
+----
+{ privilege: "read", target: Some { value: "shop::payments.Card (Card.last4)" } }
+{ privilege: "update", target: Some { value: "shop::payments.Card (Card.last4)" } }
+{ privilege: "update", target: Some { value: "shop::payments.Invoice (Invoice.due)" } }
+
+migrate
+  module shop
+  split constructor Payment.Card into Visa { last4: Text } | Other { last4: Text }
+    by match
+      | Card { last4: "0000" } -> Other { last4: "none" }
+      | Card c -> Visa { last4: c.last4 ++ "" }
+
+query rowsort
+  from g in catalog::grants where g.grantee == "web" select { privilege: g.privilege, target: g.target }
+----
+{ privilege: "update", target: Some { value: "shop::payments.Invoice (Invoice.due)" } }
+
+reopen
+
+query rowsort
+  from g in catalog::grants where g.grantee == "web" select { privilege: g.privilege, target: g.target }
+----
+{ privilege: "update", target: Some { value: "shop::payments.Invoice (Invoice.due)" } }

@@ -1055,10 +1055,7 @@ fn a_split_leaves_out_retags_between_its_products_without_update_of_the_routed_f
     );
     let s = applies(&s, SPLIT);
     assert_eq!(
-        vec![
-            "ops retag identities (Apple | Google) -> identities (Apple | EmailPass | Google)",
-            "ops update identities (Apple | Google) listed []",
-        ],
+        vec!["ops retag identities (Apple | Google) -> identities (Apple | EmailPass | Google)"],
         held(&s)
     );
 }

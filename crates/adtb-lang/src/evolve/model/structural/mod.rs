@@ -9,9 +9,9 @@ use super::run::{Built, Run};
 use super::*;
 use crate::ast::{self, CtorSel};
 use crate::check::{self, Ref};
-use crate::evolve::RowFn;
 use crate::evolve::carry::{self, Carry, Plan, Structural};
 use crate::evolve::ctor::{Carries, element_head};
+use crate::evolve::{GrantNames, RowFn};
 use crate::schema::{Schema, Stage};
 use crate::span::FileId;
 use crate::types::TypeId;
@@ -360,6 +360,15 @@ impl Model {
                 products.to_vec(),
                 fields,
             ),
+            self.grants
+                .iter()
+                .map(|g| {
+                    let revoked = g.privilege.revoked(&GrantNamesM(self));
+                    g.dormant
+                        .then(|| Some(format!("revoke {} from {}", revoked?, g.role)))
+                        .flatten()
+                })
+                .collect(),
         )
     }
 
@@ -381,7 +390,7 @@ impl Model {
             .iter()
             .filter_map(|p| Some((p.clone(), self.ctor_named(t, p)?)))
             .collect();
-        let carry = Carry::new(plan, routed, discriminators, matched);
+        let carry = Carry::new(&plan, routed, discriminators, matched);
         let field_id = |p: &str, g: &str| {
             let c = self.ctor_named(t, p)?;
             self.ctors[&c]
@@ -523,4 +532,38 @@ pub(super) fn carried(arms: &[ast::Arm]) -> Carries {
         }
     }
     carries
+}
+
+/// The names of a model, as a grant before the operator being applied writes them.
+struct GrantNamesM<'m>(&'m Model);
+
+impl GrantNames for GrantNamesM<'_> {
+    fn relation(&self, id: u64) -> Option<String> {
+        Some(self.0.relations.get(&id)?.name.clone())
+    }
+
+    fn set(&self, id: u64) -> Option<String> {
+        Some(self.0.sets.get(&id)?.name.clone())
+    }
+
+    fn ctor(&self, id: u64) -> Option<String> {
+        Some(self.0.ctors.get(&id)?.name.clone())
+    }
+
+    fn field(&self, id: u64) -> Option<String> {
+        let f = self.0.fields.get(&id)?;
+        let Some(c) = self.0.ctors.get(&f.owner) else {
+            return Some(f.name.clone());
+        };
+        let several = self.0.ctors.values().filter(|o| o.ty == c.ty).count() > 1;
+        Some(if several {
+            format!("{}.{}", c.name, f.name)
+        } else {
+            f.name.clone()
+        })
+    }
+
+    fn function(&self, _: u64) -> Option<String> {
+        None
+    }
 }

@@ -58,6 +58,7 @@ pub use grant::{
     GrantRow, GrantSel, GrantTarget, Granted, LogGrant, NoCalls, OWNER_ROLE, Stated,
     closes_option_cycle, deployment_grant, deployment_revoke, family_query, target_covers,
 };
+pub use grant_text::GrantNames;
 pub use keep::Kept;
 pub use logged::Logged;
 pub use recorded::{Migrated, OpSteps, Recorded};

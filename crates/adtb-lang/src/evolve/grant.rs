@@ -170,26 +170,32 @@ impl GrantTarget {
 }
 
 impl GrantFields {
-    fn mapped(&self, f: &mut dyn FnMut(IdKind, u64) -> Option<u64>) -> GrantFields {
-        GrantFields {
-            ids: self
-                .ids
-                .iter()
-                .filter_map(|&x| f(IdKind::Field, x))
-                .collect(),
-            listed: self.listed,
+    /// Returns the fields with each id `f` maps, without each it maps to `None`; `None` when
+    /// that leaves no field of a grant that covered some.
+    fn mapped(&self, f: &mut dyn FnMut(IdKind, u64) -> Option<u64>) -> Option<GrantFields> {
+        let ids: Ascending<u64> = self
+            .ids
+            .iter()
+            .filter_map(|&x| f(IdKind::Field, x))
+            .collect();
+        if ids.is_empty() && !self.ids.is_empty() {
+            return None;
         }
+        Some(GrantFields {
+            ids,
+            listed: self.listed,
+        })
     }
 }
 
 impl Granted {
     /// Returns the privilege with each id `f` maps, without each constructor or field it maps
     /// to `None`; `None` when it maps the relation, set or function to `None`, or leaves a
-    /// constructor list empty.
+    /// constructor list empty, or a `read` or `update` that covered a field covering none.
     pub(super) fn mapped(&self, f: &mut dyn FnMut(IdKind, u64) -> Option<u64>) -> Option<Granted> {
         Some(match self {
-            Granted::Read(t, fs) => Granted::Read(t.mapped(f)?, fs.mapped(f)),
-            Granted::Update(t, fs) => Granted::Update(t.mapped(f)?, fs.mapped(f)),
+            Granted::Read(t, fs) => Granted::Read(t.mapped(f)?, fs.mapped(f)?),
+            Granted::Update(t, fs) => Granted::Update(t.mapped(f)?, fs.mapped(f)?),
             Granted::Insert(t) => Granted::Insert(t.mapped(f)?),
             Granted::Delete(t) => Granted::Delete(t.mapped(f)?),
             Granted::Retag(a, b, except) => {

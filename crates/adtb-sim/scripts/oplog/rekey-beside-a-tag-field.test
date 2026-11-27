@@ -1,0 +1,34 @@
+# A rekey need not carry a field of a tag of a type whose fields reference the relation: a tag
+# holds no key.
+migrate
+  module app
+  add module app
+  add type T0 = { id: Key r0, h0: I64 }
+  add relation r0 : T0 key id generate sequence
+  add type T1 { id: Key r1, h0: Key r0 on delete cascade } = A | B
+  add relation r1 : T1 key id generate sequence
+
+run
+  transact
+    insert r0 { h0: 5 }
+    insert r1.B { h0: r0.key(1) }
+
+migrate
+  module app
+  add field T0.g: Tag T1 fill A
+
+migrate
+  module app
+  rekey relation r0 key (h0)
+    carry T1.h0
+  drop field T0.id
+
+query rowsort
+  from x in r0 select { h0: x.h0, g: x.g }
+----
+{ g: A, h0: 5 }
+
+query rowsort
+  from y in r1 select y.h0
+----
+r0.key(5)
