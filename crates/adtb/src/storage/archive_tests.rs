@@ -259,10 +259,10 @@ fn a_segment_missing_from_the_log_stops_the_archive_with_a_recorded_failure() {
 /// `through` stays at the last forced segment, and the next pass catches up gapless.
 #[test]
 fn a_failed_copy_holds_through_and_the_next_pass_catches_up_gapless() {
-    let (mut failures, mut files) = (Vec::new(), Files::new());
+    let (mut failures, mut files, mut created) = (Vec::new(), Files::new(), Vec::new());
     for kind in ["create", "rename", "force"] {
         let mut sim = rooted(6);
-        let (failed, caught_up) = process::run(&mut sim, |rt| {
+        let (failed, caught_up, creates) = process::run(&mut sim, |rt| {
             let pager = Pager::create(rt.clone(), &options(FILE)).unwrap();
             let archiver = Archiver::new(pager.clone(), DEST);
             fill(&pager, 2);
@@ -281,18 +281,21 @@ fn a_failed_copy_holds_through_and_the_next_pass_catches_up_gapless() {
                     Plan::new().first(renames, after)
                 }
             };
+            let creates = rt.logged(Match::kind(OpKind::CreateNew).prefixed(DEST));
             rt.plan(plan);
             fill(&pager, 4);
             archiver.archive();
             let failed = archiver.status();
+            let creates = creates.entries();
             rt.plan(Plan::new());
             archiver.archive();
             let caught_up = archiver.status();
             pager.close();
-            (failed, caught_up)
+            (failed, caught_up, creates)
         });
         assert_eq!(Some(Lsn(2 * SEGMENT)), failed.through, "{kind}");
         failures.push(failed.failure);
+        created.push(creates);
         assert_eq!(ok(4 * SEGMENT), caught_up, "{kind}");
         files = sim.files();
         assert_one(&files, &format!("{FILE}-log"), (0, 4 * SEGMENT));
@@ -305,15 +308,16 @@ fn a_failed_copy_holds_through_and_the_next_pass_catches_up_gapless() {
         what,
         error: IoError::Full,
     };
-    let Some(Some(BackupError::Io { what: partial, .. })) = failures.first() else {
-        panic!("{failures:?}");
-    };
+    let partial = created[0]
+        .first()
+        .and_then(|c| c.path())
+        .expect("the failed pass creates its partial copy");
     assert!(
         partial.starts_with(&format!("{segment}.partial-")),
         "{partial}"
     );
     let wanted = [
-        full(partial.clone()),
+        full(partial.to_owned()),
         full(format!("{segment}-{}", named(bytes))),
         full(dir),
     ];

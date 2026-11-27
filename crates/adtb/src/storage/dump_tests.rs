@@ -1118,6 +1118,26 @@ const DEFAULT_CELLS: [&str; 9] = [
     "Copy row",
 ];
 
+/// The stated cells of `DEFAULT_CELLS` each fixture of the dump edit table holds: the dump's own
+/// text parts and its `data/` texts, and of the granted dump only `ids`, some of whose keys its
+/// log does not determine.
+const FIXTURE_CELLS: [(&str, &str); 14] = [
+    ("dumped", "Drop first"),
+    ("dumped", "Drop row"),
+    ("dumped", "Duplicate row"),
+    ("dumped", "Garble row"),
+    ("dumped", "Rekey determined"),
+    ("dumped", "SwapNext row"),
+    ("granted", "Copy row"),
+    ("granted", "Drop first"),
+    ("granted", "Drop row"),
+    ("granted", "Garble row"),
+    ("granted", "Rekey data"),
+    ("granted", "Rekey determined"),
+    ("granted", "Revalue row"),
+    ("granted", "SwapNext row"),
+];
+
 /// Returns whether `got`, a restore of a dump whose text part `part` has `edit` made at line `i`
 /// of its `lines`, answers as the contract states a stated cell, or else is refused naming `part`
 /// or answers `unedited`.
@@ -1411,7 +1431,7 @@ fn every_edit_of_a_dump_text_part_is_refused_naming_it_or_restores_the_same() {
         ("dumped", &files, app_log(), None),
         ("granted", &with_grant, granted_log().to_vec(), Some("ids")),
     ];
-    let mut reached: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut reached: BTreeSet<(&str, String)> = BTreeSet::new();
     let (mut failed, mut passed_known) = (Vec::new(), Vec::new());
     let mut known_reached = BTreeSet::new();
     let keys = catalog_keys();
@@ -1478,7 +1498,7 @@ fn every_edit_of_a_dump_text_part_is_refused_naming_it_or_restores_the_same() {
                         _ => {}
                     }
                     if is_stated {
-                        reached.insert((fixture.to_string(), kind));
+                        reached.insert((*fixture, kind));
                     }
                 }
             }
@@ -1500,20 +1520,12 @@ fn every_edit_of_a_dump_text_part_is_refused_naming_it_or_restores_the_same() {
             "known failures never edited: {unreached:#?}"
         );
     }
-    for kind in [
-        "Garble row",
-        "Drop first",
-        "Drop row",
-        "SwapNext row",
-        "Rekey determined",
-    ] {
-        let cell = ("dumped".to_owned(), kind.to_owned());
-        assert!(reached.contains(&cell), "never reached: {cell:?}");
-    }
-    for kind in ["Rekey determined", "Rekey data", "Revalue row", "Copy row"] {
-        let cell = ("granted".to_owned(), kind.to_owned());
-        assert!(reached.contains(&cell), "never reached: {cell:?}");
-    }
+    let reached: Vec<_> = reached.iter().map(|(f, k)| (*f, k.as_str())).collect();
+    assert_eq!(
+        FIXTURE_CELLS.to_vec(),
+        reached,
+        "the cells each fixture reaches"
+    );
     let entry = |name: &str| {
         let (_, len) = parts(&files).into_iter().find(|(n, _)| n == name).unwrap();
         files[&format!("{DUMP}/{name}")][..len as usize].to_vec()

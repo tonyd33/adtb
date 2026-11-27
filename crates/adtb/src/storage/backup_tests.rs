@@ -1246,6 +1246,7 @@ fn a_failed_read_of_a_backup_is_a_storage_failure_and_changes_nothing() {
     process::run(&mut sim, |rt| {
         let open_op = |path: &str| Match::kind(OpKind::Open).path(path);
         let log = Log::new([APP]);
+        let before = rt.files();
         rt.plan(fail_reads_after_open(&rt, open_op("bk/manifest")));
         let got = restore(&rt);
         assert_eq!(
@@ -1255,9 +1256,11 @@ fn a_failed_read_of_a_backup_is_a_storage_failure_and_changes_nothing() {
             got
         );
         rt.plan(Plan::new());
+        assert!(before == rt.files(), "the failed manifest read wrote");
         let (manifest, _) = storage::read_manifest(&rt, TARGET).unwrap();
         prove_in(rt.clone(), &archive(), &log, &no_create()).unwrap();
         let pages = Match::kind(OpKind::Open).prefixed("bk/pages/");
+        let before = rt.files();
         rt.plan(fail_reads_after_open(&rt, pages));
         let got = prove_in(rt.clone(), &archive(), &log, &no_create());
         let pages = manifest.parts.iter().find(|p| p.name.starts_with("pages/"));
@@ -1267,7 +1270,9 @@ fn a_failed_read_of_a_backup_is_a_storage_failure_and_changes_nothing() {
         );
         assert_eq!(Err(storage_failure(&part)), got);
         rt.plan(Plan::new());
+        assert!(before == rt.files(), "the failed part read wrote");
         assert_eq!(Proof::Proven, proof_in(&rt, &archive()).unwrap());
+        let before = rt.files();
         rt.plan(fail_reads_after_open(&rt, open_op("bk/proof")));
         let got = proof_in(&rt, &archive());
         assert_eq!(
@@ -1277,8 +1282,10 @@ fn a_failed_read_of_a_backup_is_a_storage_failure_and_changes_nothing() {
             got
         );
         rt.plan(Plan::new());
+        assert!(before == rt.files(), "the failed proof read wrote");
         let db = open::open_in(&rt, FILE, &log, &no_create()).unwrap();
         let restored_log = Match::kind(OpKind::Open).prefixed("copy.adt-log");
+        let before = outside_source(&rt);
         rt.plan(fail_reads_after_open(&rt, restored_log));
         let got = restore_text(&db);
         let start = manifest.start.lsn.0;
@@ -1287,14 +1294,20 @@ fn a_failed_read_of_a_backup_is_a_storage_failure_and_changes_nothing() {
         assert_eq!(Err(storage_failure(&block)), got);
         rt.plan(Plan::new());
         insert(&db, 2..3);
-        assert!(!sim_has(&rt, COPY), "the file of the failed restore");
         assert!(
-            !sim_has(&rt, "copy.adt-log"),
-            "the log of the failed restore"
+            before == outside_source(&rt),
+            "the failed restore by the source wrote outside the source"
         );
         restore_text(&db).unwrap();
         db.close().unwrap();
     });
+}
+
+/// Returns every file but those of the source database `FILE`.
+fn outside_source(rt: &SimRuntime) -> Files {
+    let mut files = rt.files();
+    files.retain(|path, _| !path.starts_with(FILE));
+    files
 }
 
 /// Returns whether an entry named `name` is in the top directory.
@@ -1883,10 +1896,14 @@ fn assert_restore_state(base: &Files, files: &Files, crashed: bool, seed: u64, l
     );
     let mut sim = Sim::with_files(seed, Config::default(), files.clone());
     process::run(&mut sim, |rt| {
-        if has_file || has_log {
-            let got = restore(&rt);
-            let named = got == exists(COPY) || got == exists("copy.adt-log");
-            assert!(named, "{label}: the retry: {got:?}");
+        if has_file {
+            assert_eq!(exists(COPY), restore(&rt), "{label}: the retry");
+        } else if has_log {
+            assert_eq!(
+                exists(COPY),
+                restore(&rt),
+                "{label}: the retry onto the log alone"
+            );
         } else {
             assert_eq!(Ok(()), restore(&rt), "{label}: the retry");
         }

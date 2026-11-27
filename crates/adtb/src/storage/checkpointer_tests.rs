@@ -620,6 +620,7 @@ fn first_checkpoint_under_live_writers_keeps_every_acked_commit() {
     let file = "checkpointed.adt";
     for seed in adtb_testkit::profile::sweep(40..42) {
         let acked: Arc<Mutex<Vec<i64>>> = Arc::default();
+        let checkpoints: Arc<Mutex<Vec<usize>>> = Arc::default();
         let torn = Faults {
             torn_p: 0.5,
             ..Faults::none(512)
@@ -637,7 +638,7 @@ fn first_checkpoint_under_live_writers_keeps_every_acked_commit() {
                 .unwrap();
         });
         sim.crash_at(sim.now() + Duration::from_millis(300));
-        let shared = acked.clone();
+        let (shared, taken) = (acked.clone(), checkpoints.clone());
         let outcome = sim.run(move |rt| {
             let db = open::opened(&rt, file, &log(), &open::options(2));
             for w in 0..2 {
@@ -655,15 +656,24 @@ fn first_checkpoint_under_live_writers_keeps_every_acked_commit() {
                     other.testing().flush_pages(usize::MAX);
                 }
             });
+            while shared.lock().unwrap().is_empty() {
+                rt.yield_now();
+            }
             loop {
                 db.testing().flush_pages(usize::MAX);
                 db.testing().checkpoint();
+                taken.lock().unwrap().push(shared.lock().unwrap().len());
                 rt.yield_now();
             }
         });
         assert_eq!(Outcome::Crashed, outcome, "seed {seed}");
         let acked: BTreeSet<i64> = acked.lock().unwrap().iter().copied().collect();
-        assert!(!acked.is_empty(), "seed {seed}: no commit before the crash");
+        let first = checkpoints.lock().unwrap().first().copied();
+        let after = first.expect("a checkpoint completed before the crash");
+        assert!(
+            acked.len() > after,
+            "seed {seed}: no commit acknowledged after the first checkpoint"
+        );
         adtb_testkit::process::run(&mut sim, |rt| {
             let none = crate::OpenOptions {
                 create: None,
@@ -782,6 +792,7 @@ fn page_written_during_a_force_stays_dirty_through_a_checkpoint() {
     let pid = changed.unwrap();
     let recording = sim.recording();
     let images = recording.images(recording.len(), 64, 31);
+    assert_reached("a crash image", images.len(), 1);
     for (i, image) in images.into_iter().enumerate() {
         let mut after = Sim::with_files(32, Config::default(), image);
         adtb_testkit::process::run(&mut after, |rt| {
