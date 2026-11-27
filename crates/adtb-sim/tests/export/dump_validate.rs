@@ -2,6 +2,7 @@
 //! once: a dump that violates one is refused with the violation and leaves nothing at the target.
 
 use adtb_testkit::process;
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use adtb::runtime::OpKind;
@@ -339,11 +340,7 @@ fn a_violating_restore_with_any_op_failed_publishes_nothing() {
     let base = edited(&[(PINS, stray)]);
     let expected = violated("app::pins.Pin.owner", rows("app::pins", &[stray]));
     let workload = |rt: &SimRuntime| {
-        rt.arm(
-            Match::any()
-                .except(Match::kinds([OpKind::Close, OpKind::Timer]))
-                .except(Match::kind(OpKind::Rename).from_containing(".creating/")),
-        );
+        rt.arm(Match::any().except(Match::kinds([OpKind::Close, OpKind::Timer])));
         let archive = ArchiveTarget::path(EDITED).unwrap();
         let got = restore_in(
             rt.clone(),
@@ -355,9 +352,27 @@ fn a_violating_restore_with_any_op_failed_publishes_nothing() {
         rt.disarm();
         got.map(drop)
     };
+    let mut baseline = Sim::with_files(13, Config::default(), base.clone());
+    let publishes = baseline.counted(Match::kind(OpKind::Rename).from_containing(".creating/"));
+    process::run(&mut baseline, |rt| {
+        drop(workload(&rt));
+    });
+    assert!(
+        publishes.get() > 0,
+        "the restore renames out of its reserved directory"
+    );
+    let renames: Vec<u64> = (0u64..)
+        .zip(baseline.numbered().kinds())
+        .filter(|(_, k)| **k == OpKind::Rename)
+        .map(|(at, _)| at)
+        .collect();
+    let mut renames_failed = BTreeSet::new();
     let mut reached = 0;
-    search::each_fatal_failure(&base, 13, 4, &[], &workload, &mut |failed| {
+    search::each_fatal_failure(&base, 13, 4, &renames, &workload, &mut |failed| {
         let label = format!("op {} {}", failed.at, failed.struck);
+        if failed.struck.kind() == OpKind::Rename {
+            renames_failed.insert(failed.at);
+        }
         match &failed.out {
             Some(Err(Error::Rejected { reason })) => assert_eq!(&expected, reason, "{label}"),
             Some(Err(Error::Fatal {
@@ -369,6 +384,7 @@ fn a_violating_restore_with_any_op_failed_publishes_nothing() {
         assert!(!failed.files.contains_key(COPY), "{label}: published");
     });
     assert!(reached > 0, "no failure reached the restore");
+    assert_eq!(BTreeSet::from_iter(renames), renames_failed);
 }
 
 #[test]

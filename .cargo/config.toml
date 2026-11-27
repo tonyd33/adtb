@@ -1,3 +1,3 @@
 [alias]
-xtask = "run -q -p xtask --"
-conformance = "run --quiet --profile test -p adtb-conformance --features test-heap-cap,scripts --"
+xtask = "run -q --locked -p xtask --"
+conformance = "run --quiet --locked --profile test -p adtb-conformance --features test-heap-cap,scripts --"

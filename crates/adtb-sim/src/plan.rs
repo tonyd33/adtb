@@ -230,10 +230,17 @@ pub enum Action {
     /// Never complete the op.
     Hold,
     /// Run the closure on the submitting thread, then complete the write as written; a crash
-    /// before a force of it lands only the atomic units whose flag in the mask is set.
+    /// before a force of it lands only the atomic units whose flag in the mask is set, the mask's
+    /// first flag for the write's first unit. A unit past the mask's end does not land.
+    ///
+    /// Preconditions:
+    /// - The mask has no more flags than the write has atomic units; submission panics otherwise.
     Tear(Vec<bool>, Box<dyn FnOnce() + Send>),
     /// Complete a write with the byte at the index into its buffer inverted on the device,
     /// leaving the submitter's buffer as it was.
+    ///
+    /// Preconditions:
+    /// - The index is inside the write; submission panics otherwise.
     Flip(usize),
 }
 
@@ -327,8 +334,9 @@ impl Plan {
             "a failed close leaves its file open: except Close from {ops:?}"
         );
         assert!(
-            !matches!(action, Action::Lose | Action::Tear(..)) || ops.only_writes(),
-            "only a write can be lost or torn: limit {ops:?} to writes"
+            !matches!(action, Action::Lose | Action::Tear(..) | Action::Flip(_))
+                || ops.only_writes(),
+            "only a write can be lost, torn or flipped: limit {ops:?} to writes"
         );
         self.rules.push(Rule {
             ops,

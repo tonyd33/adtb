@@ -325,3 +325,37 @@ fn a_lasting_rule_acts_after_a_restart() {
 fn a_loss_planned_for_any_op_is_refused() {
     drop(Plan::new().rule(Match::any(), Action::Lose));
 }
+
+#[test]
+#[should_panic(expected = "only a write can be lost, torn or flipped")]
+fn a_flip_planned_for_any_op_is_refused() {
+    drop(Plan::new().rule(Match::any(), Action::Flip(0)));
+}
+
+#[test]
+#[should_panic(
+    expected = "a tear's mask has a flag per atomic unit of its write: 2 flags for a write of 512 \
+                bytes in 1 units of 512"
+)]
+fn a_tear_with_flags_past_its_write_is_refused() {
+    let mut sim = Sim::new(11, Config::default());
+    sim.run(|rt| {
+        let mut io = rt.io();
+        let (file, _) = open(&rt, &mut io, "f", true).unwrap();
+        let torn = Action::Tear(vec![true, true], Box::new(|| {}));
+        rt.plan(Plan::new().first(Match::kind(OpKind::Write), torn));
+        write(&rt, &mut io, file, 0, &sector(1)).unwrap();
+    });
+}
+
+#[test]
+#[should_panic(expected = "a flip inverts a byte of its write: byte 512 of a write of 512 bytes")]
+fn a_flip_past_its_write_is_refused() {
+    let mut sim = Sim::new(12, Config::default());
+    sim.run(|rt| {
+        let mut io = rt.io();
+        let (file, _) = open(&rt, &mut io, "f", true).unwrap();
+        rt.plan(Plan::new().first(Match::kind(OpKind::Write), Action::Flip(512)));
+        write(&rt, &mut io, file, 0, &sector(1)).unwrap();
+    });
+}

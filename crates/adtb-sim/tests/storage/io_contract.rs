@@ -325,6 +325,8 @@ fn renames_refuse_an_occupied_name<R: Runtime>(rt: &R) {
     refused("d/file", "d/other", IoError::Exists);
     refused("d/file", "d/empty", IoError::Exists);
     refused("d/file/a", "d/file/b", IoError::NotADirectory);
+    refused("d/file", "d/missing/file", IoError::NotFound);
+    refused("d/src", "d/src/inner/src", IoError::Failed);
     assert_eq!(
         Ok(Done::Renamed),
         rename(rt, &mut io, "d/src", "d/empty", false),

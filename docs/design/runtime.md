@@ -262,12 +262,13 @@ Postconditions every backend must meet:
 - `Close` forces nothing; the file's data and name stay as they were.
 
 - `Rename` moves a file or a directory, with all under it, atomically,
-  within one directory or from a directory into that directory's
-  parent, on one filesystem. It completes with `Exists` when
-  `to` is taken, except that a directory replaces an empty directory
-  and, with `replace`, a file replaces a file. It completes with
-  `NotFound` when `from` is absent and `NotADirectory` when a directory
-  above them is a file. A `FileId` stays valid across it.
+  from one directory to the same or another, on one filesystem. It
+  completes with `Exists` when `to` is taken, except that a directory
+  replaces an empty directory and, with `replace`, a file replaces a
+  file. It completes with `NotFound` when `from` or the directory of
+  `to` is absent, `NotADirectory` when a directory above them is a
+  file, and `Failed` when `to` is under the directory `from`. A
+  `FileId` stays valid across it.
 - A `Rename` is forced once `SyncDir` has completed after it on the
   directory of `from` and on the directory of `to`. Until then a crash
   keeps it whole or loses it whole, so the entry is at exactly one of
@@ -423,7 +424,7 @@ Match::any() | Match::kind(k) | Match::kinds(ks) | Match::any_of(ms)
   .creating()                    // an open that creates
   .except(m)
 Action::Fail(IoError) | Action::Lose | Action::Run(closure) | Action::Hold
-  | Action::Tear(mask, closure)
+  | Action::Tear(mask, closure) | Action::Flip(index)
 rt.arm(ops: Match); rt.disarm() -> u64
 sim.numbered(), rt.numbered() -> Numbered { kinds, struck, armed_at }
 sim.counted(ops), rt.counted(ops: Match) -> Count  // count.get()
@@ -460,16 +461,23 @@ Postconditions of a plan:
   `first` or `at`; a `rule` of one panics.
 - `Tear(mask, closure)` runs its closure as `Run` does, then runs the
   write as any other; a crash before a force of the write lands only the
-  atomic units whose flag in `mask` is set, the rest as the device held
-  it. It is planned as `Run` is,
+  atomic units whose flag in `mask` is set, the first flag for the
+  write's first unit, the rest as the device held it. A unit past the
+  mask's end does not land, and a mask with more flags than the write
+  has units panics at submission. A write a misdirect moved is not
+  torn and lands whole. It is planned as `Run` is,
   and only for writes, as `Lose` is.
+- `Flip(index)` completes a write with the byte at `index` into its
+  buffer inverted on the device, the submitter's buffer unchanged. It
+  is planned only for writes, as `Lose` is, and an index past the
+  write panics at submission.
 - A `Fail` that may match a `Close` panics when planned, and a numbered
   `Fail` that comes to a `Close` panics there: a failed close would
   leave its file open.
-- A `Lose` whose match may take an op other than a write panics when
-  planned, and a numbered `Lose` or `Tear` that comes to an op other
-  than a write panics at that op's submission, on the submitting
-  thread.
+- A `Lose`, `Tear` or `Flip` whose match may take an op other than a
+  write panics when planned, and a numbered `Lose`, `Tear` or `Flip`
+  that comes to an op other than a write panics at that op's
+  submission, on the submitting thread.
 - A plan after `own_plan` panics, naming the owner.
 - A held op never completes. It is pending, so the deadlock rule does
   not fire; the clock skips it when choosing the next due event; a crash

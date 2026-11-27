@@ -260,7 +260,7 @@ pub fn stage(
                 .collect();
             step::run(name, &mut clippy(&shipped))
         }
-        Stage::Fmt => step::run(name, workspace.cargo(&["fmt"]).args(["--all", "--check"])),
+        Stage::Fmt => step::run(name, workspace.fmt().args(["--all", "--check"])),
         Stage::Lint => lint::run(&workspace.root, base, false),
         Stage::Build => test::build(workspace).and_then(|output| {
             std::io::stderr()
@@ -528,10 +528,8 @@ fn miri(workspace: &Workspace, name: &str) -> Result<(), String> {
         std::env::join_paths(std::iter::once(nightly.clone()).chain(std::env::split_paths(&path)))
             .map_err(|e| format!("{name}: {NIGHTLY} cannot join PATH: {e}"))?;
     let cargo = nightly.join("cargo");
-    let mut miri = workspace.command(&cargo);
-    miri.args(["miri", "test", "--manifest-path"])
-        .arg(workspace.manifest())
-        .args(["-p", "adtb-sys", "--lib"])
+    let mut miri = workspace.cargo_of(&cargo, &["miri", "test"]);
+    miri.args(["-p", "adtb-sys", "--lib"])
         .env("PATH", path)
         .env("CARGO", &cargo);
     step::run(name, &mut miri)

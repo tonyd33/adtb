@@ -124,6 +124,29 @@ enum Injected {
     Flip(usize),
 }
 
+impl Injected {
+    /// Panic unless a tear's mask has no flag past the units of a write of `len` bytes in atomic
+    /// units of `unit` bytes, and a flip's index is inside the write.
+    fn fits(&self, len: usize, unit: u64) {
+        match self {
+            Injected::Tear(mask) => {
+                let units = (len as u64).div_ceil(unit);
+                assert!(
+                    mask.len() as u64 <= units,
+                    "a tear's mask has a flag per atomic unit of its write: {} flags for a write \
+                     of {len} bytes in {units} units of {unit}",
+                    mask.len()
+                );
+            }
+            Injected::Flip(at) => assert!(
+                *at < len,
+                "a flip inverts a byte of its write: byte {at} of a write of {len} bytes"
+            ),
+            Injected::Fail(_) | Injected::Lose => {}
+        }
+    }
+}
+
 struct State {
     config: Config,
     sched: Rng,
@@ -1171,6 +1194,7 @@ impl Io for SimIo {
             return Ticket::NONE;
         };
         let path = st.path_of(&op);
+        let unit = st.config.faults.atomic_unit;
         drop(st);
         let mut decision = lock(&self.rt.shared.plan).decide(&op, path.as_deref());
         let (injected, hold) = match decision.take_action() {
@@ -1207,6 +1231,9 @@ impl Io for SimIo {
                 (Some(Injected::Flip(at)), false)
             }
         };
+        if let (Some(injected), Op::Write { buf, .. }) = (&injected, &op) {
+            injected.fits(buf.len(), unit);
+        }
         let Some(mut st) = self.rt.enter() else {
             return Ticket::NONE;
         };

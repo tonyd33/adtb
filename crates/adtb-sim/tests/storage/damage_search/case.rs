@@ -444,7 +444,7 @@ fn injected(rt: &SimRuntime, injection: Injection, pid: Pid, tear: Option<Vec<bo
             Box::new(move || {
                 rt.set_faults(Faults {
                     torn_p: 1.0,
-                    ..Faults::none(512)
+                    ..Faults::none(world::UNIT as u64)
                 });
                 let forces = world::on_data(Match::kind(OpKind::Sync));
                 let failed = Action::Fail(IoError::Failed);

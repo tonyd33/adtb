@@ -381,15 +381,14 @@ impl Disk {
     }
 
     pub(crate) fn rename(&mut self, from: &str, to: &str, replace: bool) -> Result<(), IoError> {
-        assert!(
-            parent(from) == parent(to)
-                || (!parent(from).is_empty() && parent(parent(from)) == parent(to)),
-            "a rename stays in one directory or moves into its parent: {from} to {to}"
-        );
+        self.below_a_file(parent(from))?;
         self.below_a_file(parent(to))?;
         let from_is_dir = self.dirs.contains(from);
-        if !from_is_dir && !self.names.contains_key(from) {
+        if !from_is_dir && !self.names.contains_key(from) || !dir_exists(&self.dirs, parent(to)) {
             return Err(IoError::NotFound);
+        }
+        if from_is_dir && to.starts_with(&format!("{from}/")) {
+            return Err(IoError::Failed);
         }
         let to_is_file = self.names.contains_key(to);
         let to_is_dir = self.dirs.contains(to);

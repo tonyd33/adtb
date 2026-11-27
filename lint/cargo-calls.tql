@@ -1,0 +1,34 @@
+-- cargo_calls: a command of a program named or held as `cargo` made by `Command::new` or a
+-- `command` method, which bypasses the `--locked` that `Workspace::cargo` and
+-- `Workspace::cargo_of` pass. Three functions are not sites: `Workspace::fmt`, as `cargo fmt`
+-- refuses `--locked`; `Workspace::find`, which runs before a `Workspace` exists and passes it
+-- itself; and `reuse`, whose nextest run over built binaries refuses it. Not seen: a call in a
+-- function nested in a `mod` block or another function, and a program name held under another
+-- name.
+
+made_in f = do {
+  c <- pure f | descendants_of_kind :call_expression;
+  g <- pure c | #function;
+  guard $ text g ~ r"(^|::|\.)(Command::new|command)$";
+  a <- pure c | #arguments;
+  guard $ text a ~ r"\bcargo\b";
+  return c;
+};
+
+free = do {
+  f <- children_of_kind :function_item;
+  name <- pure f | #name;
+  guard $ text name != "reuse";
+  made_in f;
+};
+
+methods = do {
+  i <- descendants_of_kind :impl_item;
+  t <- pure i | #type;
+  f <- pure i | descendants_of_kind :function_item;
+  name <- pure f | #name;
+  guard $ not ((text t == "Workspace") `and` (text name ~ r"^(fmt|find)$"));
+  made_in f;
+};
+
+main = (free `alt` methods) | arr range;

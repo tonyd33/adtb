@@ -141,7 +141,7 @@
 //!   differs. Steps after the one it fires in, up to the next `migrate`, `reopen` or `probe
 //!   files`, do not run, and differ.
 //! - `probe marks`: the rows after `----` are the name of each mark set, in memory or in the
-//!   file, as `Quarantined` names it, sorted.
+//!   file, or held for this open only, as `Quarantined` names it, sorted.
 //! - `probe damage`: the rows are each damage recorded and not cleared: each page as `PAGE:
 //!   DAMAGE` by the page a fault named, `a page leaked beside PAGE` for a `leak`, `the page
 //!   entry N of PAGE names` for an index's `scribble`, or `a page no fault names: DAMAGE`,

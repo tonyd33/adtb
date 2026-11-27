@@ -13,7 +13,7 @@ pub struct Workspace {
 impl Workspace {
     pub fn find() -> Result<Self, String> {
         let mut metadata = Command::new("cargo");
-        metadata.args(["metadata", "--format-version", "1", "--no-deps"]);
+        metadata.args(["metadata", "--locked", "--format-version", "1", "--no-deps"]);
         let output = step::output("cargo metadata", &mut metadata)?;
         let value: serde_json::Value = serde_json::from_slice(&output)
             .map_err(|e| format!("cargo metadata: its output is no JSON: {e}"))?;
@@ -33,15 +33,30 @@ impl Workspace {
         self.root.join("Cargo.toml")
     }
 
-    /// Returns `cargo SUBCOMMAND --manifest-path` of this workspace, building into its target
-    /// directory.
+    /// Returns `cargo SUBCOMMAND --locked --manifest-path` of this workspace, building into its
+    /// target directory. A stale `Cargo.lock` fails the command instead of being rewritten.
     pub fn cargo(&self, subcommand: &[&str]) -> Command {
-        let mut cargo = self.command("cargo");
+        self.cargo_of("cargo", subcommand)
+    }
+
+    /// Returns `PROGRAM SUBCOMMAND --locked --manifest-path` of this workspace for the cargo at
+    /// `program`, building into its target directory.
+    pub fn cargo_of(&self, program: impl AsRef<Path>, subcommand: &[&str]) -> Command {
+        let mut cargo = self.command(program);
         cargo
             .args(subcommand)
+            .arg("--locked")
             .arg("--manifest-path")
             .arg(self.manifest());
         cargo
+    }
+
+    /// Returns `cargo fmt --manifest-path` of this workspace. It resolves no dependencies, so it
+    /// cannot write `Cargo.lock`, and it takes no `--locked`.
+    pub fn fmt(&self) -> Command {
+        let mut fmt = self.command("cargo");
+        fmt.arg("fmt").arg("--manifest-path").arg(self.manifest());
+        fmt
     }
 
     /// Returns a command of `program` that builds into this workspace's target directory.

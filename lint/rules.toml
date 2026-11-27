@@ -523,3 +523,13 @@ exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "*
 kind = "ratchet"
 why = "A wildcard arm that builds a `Broken` makes every case its match does not name an internal error, so damage, a refusal, a cancellation or a limit reaches the client as `Internal`."
 fix = "Name each case, or take the lower error's internal part with its `broken()` and lift the rest through the layer's `From`; a guard, an `e @ ..` binding or a helper that builds the `Broken` in its place does not count."
+
+[[rule]]
+query = "cargo-calls.tql"
+include = ["xtask/src/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
+
+[rule.rows.cargo_calls]
+kind = "zero"
+why = "A cargo command built without `Workspace::cargo` takes no `--locked`, so a stale `Cargo.lock` is rewritten where the check should fail."
+fix = "Build it with `Workspace::cargo`, or `Workspace::cargo_of` for another cargo; `Command::new` or `Workspace::command` of cargo under a helper of another name does not count."

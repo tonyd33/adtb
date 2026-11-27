@@ -1614,8 +1614,9 @@ fn is_aside(path: &str) -> bool {
     path.contains(".partial-")
 }
 
-/// Accept every op but a close, a timer and the renames of the restored database's create, whose
-/// undo renames a log directory into a child, which the simulator does not model.
+/// Accept every op but a close, a timer and a rename out of a `.creating/` directory. A failure
+/// of such a rename, in the restored database's create or in the restore's publish, is not
+/// searched.
 fn searched() -> Match {
     Match::any()
         .except(Match::kinds([OpKind::Close, OpKind::Timer]))
