@@ -944,7 +944,7 @@ wire's 32-bit epoch and 64-bit log position.
 | `Faulted` | the statement aborted on a fault | [queries.md](queries.md#15-faults) |
 | `Denied` | the principal lacks a privilege, or a query reads a column the role may not see | [security.md](security.md#3-grants), §1.4 |
 | `Invalid` | ad hoc text failed to parse or type-check, a command does not apply, or an argument is outside its parameter's domain | [typing.md](typing.md) |
-| `SchemaRefused` | a schema operator was refused | [evolution.md](evolution.md#32-checks-at-apply) |
+| `SchemaRefused` | a schema operator was refused; `operator` is the operator the refusal is blamed on, as the migration writes it, and is empty only when no single operator is to blame, as for a check of the migration's final state as a whole | [evolution.md](evolution.md#32-checks-at-apply) |
 | `Untranslatable` | a versioned document (interop §1.2) is read through a lossy step of translation | [interop.md](interop.md#12-versioned-documents), [evolution.md](evolution.md#71-serving-a-pinned-version) |
 | `BadInput` | a row of an external source did not convert or route, with no rejects relation | [interop.md](interop.md#45-rejects) |
 | `SchemaMismatch` | an appended Arrow batch does not have the constructor's schema, or holds a value outside its type's range | [embedding.md](embedding.md#9-bulk-append) |
