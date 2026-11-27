@@ -68,6 +68,7 @@ impl Broken {
             | Broken::ReadOnly
             | Broken::ScanPathNotText
             | Broken::RowsNotSet(_)
+            | Broken::ResultNotSet(_)
             | Broken::FailNotText
             | Broken::NoArm(_)
             | Broken::Unreachable

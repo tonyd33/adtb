@@ -132,6 +132,27 @@ struct Done {
     deleted: Counts,
 }
 
+/// Returns `done`, the outcome of an item of type `ty`, failing when a set-typed item's result is
+/// no set.
+fn shaped(ty: &adtb_lang::types::Ty, done: Done) -> Result<Done, Error> {
+    use adtb_lang::types::Ty;
+    let set_typed = matches!(ty, Ty::Set(_) | Ty::NonEmpty(_));
+    if set_typed && !matches!(*done.result, Val::Set(_) | Val::List(_)) {
+        return Err(Broken::ResultNotSet(done.result.into_inner()).into());
+    }
+    Ok(done)
+}
+
+/// Returns the elements of `v`, the result of a set-typed item, failing when it is no set.
+pub fn elements(v: Val) -> Result<Vec<Val>, Broken> {
+    let elements = match &v {
+        Val::Set(s) => Some(s.iter().cloned().collect()),
+        Val::List(l) => Some(l.to_vec()),
+        _ => None,
+    };
+    elements.ok_or(Broken::ResultNotSet(v))
+}
+
 impl Done {
     fn outcome(self) -> Outcome {
         Outcome {
@@ -865,7 +886,9 @@ impl<R: Runtime> Database<R> {
             let done = between(item, local).and_then(|()| match text.items.get(item) {
                 Some(t) => {
                     let s = self.stmt(tx, text, *t, item, (&bounds, Some(&rows)), started)?;
-                    let o = s.run(text.params, local);
+                    let o = s
+                        .run(text.params, local)
+                        .and_then(|o| shaped(text.terms.ty(*t), o));
                     ran.push(s);
                     o.map(|o| out.push(o))
                 }

@@ -13,7 +13,7 @@ use adtb_lang::textual::Form;
 use adtb_lang::types::{FnId, KeyCtors, RelRef, Ty};
 
 use crate::exec::Val;
-use crate::write::{Items, Outcome};
+use crate::write::{self, Items, Outcome};
 
 use super::cause::Broken;
 use super::command;
@@ -311,7 +311,9 @@ impl Prepared {
                 Ty::Change | Ty::Unit => {}
                 Ty::Record(fs) if fs.is_empty() => {}
                 Ty::Set(elem) | Ty::NonEmpty(elem) => {
-                    out.push(rows(schema, elem.as_ref().clone(), elements(o.result)?));
+                    let elements =
+                        write::elements(o.result).map_err(|b| Error::internal(Broken::Write(b)))?;
+                    out.push(rows(schema, elem.as_ref().clone(), elements));
                 }
                 _ => out.push(rows(schema, ty.clone(), vec![o.result])),
             }
@@ -327,14 +329,6 @@ pub(super) fn rows(schema: &Schema, ty: Ty, rows: Vec<Val>) -> DynRows {
         form: Form::of(schema, &ty),
         ty,
         rows: rows.into_iter(),
-    }
-}
-
-fn elements(v: Val) -> Result<Vec<Val>, Error> {
-    match v {
-        Val::Set(s) => Ok(s.iter().cloned().collect()),
-        Val::List(l) => Ok(l.to_vec()),
-        other => Err(Error::internal(Broken::NotASet(other))),
     }
 }
 

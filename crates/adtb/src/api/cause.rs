@@ -8,7 +8,7 @@ use adtb_lang::textual::PrintError;
 use adtb_lang::types::Ty;
 
 use crate::catalog::{self, KeptField, KeptRow};
-use crate::exec::{self, Val};
+use crate::exec;
 use crate::runtime::IoError;
 use crate::{btree, heap, mvcc, storage, write};
 
@@ -36,7 +36,6 @@ pub(super) enum Broken {
     /// The checker refuses a text for a guarantee of its own or of the normaliser that does
     /// not hold.
     Diagnosed(String),
-    NotASet(Val),
     UnresolvedGrant {
         privilege: String,
     },
@@ -90,7 +89,6 @@ impl fmt::Display for Broken {
                 e.reason()
             ),
             Broken::Diagnosed(m) => write!(f, "the checker keeps its own guarantees: {m}"),
-            Broken::NotASet(v) => write!(f, "a set-valued item evaluates to a set, not {v:?}"),
             Broken::UnresolvedGrant { privilege } => {
                 write!(f, "a resolved `{privilege}` names an object of the schema")
             }

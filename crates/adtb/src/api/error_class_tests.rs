@@ -437,6 +437,11 @@ fn term_broken_rows() -> Vec<Row> {
             c,
             "a write's rows are a set, found Int(1)",
         ),
+        broken_row(
+            B::ResultNotSet(Val::Int(1)),
+            c,
+            "a set-valued item evaluates to a set, not Int(1)",
+        ),
         broken_row(B::FailNotText, c, "`fail` takes a Text"),
         broken_row(B::NoArm(2), c, "a case has an arm for constructor 2"),
         broken_row(
@@ -603,7 +608,7 @@ fn call_broken_rows() -> Vec<Row> {
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 81;
+const SLOTS: usize = 82;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -698,6 +703,7 @@ fn slot(e: &write::Error) -> usize {
             B::NoDirectory => 75,
             B::Unencodable(_) => 76,
             B::KeptTooLarge { .. } => 77,
+            B::ResultNotSet(_) => 81,
         },
     }
 }

@@ -44,6 +44,8 @@ pub enum Broken {
     ReadOnly,
     ScanPathNotText,
     RowsNotSet(Val),
+    /// A set-typed item of a statement evaluates to another value.
+    ResultNotSet(Val),
     FailNotText,
     NoArm(u32),
     Unreachable,
@@ -227,6 +229,9 @@ impl fmt::Display for Broken {
             Broken::ReadOnly => f.write_str("a read-only transaction runs no write"),
             Broken::ScanPathNotText => f.write_str("a file scan's path is a Text"),
             Broken::RowsNotSet(v) => write!(f, "a write's rows are a set, found {v:?}"),
+            Broken::ResultNotSet(v) => {
+                write!(f, "a set-valued item evaluates to a set, not {v:?}")
+            }
             Broken::FailNotText => f.write_str("`fail` takes a Text"),
             Broken::NoArm(c) => write!(f, "a case has an arm for constructor {c}"),
             Broken::Unadmitted { len, limit } => write!(
