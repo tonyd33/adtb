@@ -94,7 +94,7 @@ pub use items::Items;
 pub use past::Retained;
 pub(crate) use past::position;
 pub use quarantine::{By, Mapped, Mapping};
-pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold};
+pub use reindex::{Failure, HoldWait, Rebuild, RebuildTurn, VacuumHold};
 pub use rot::Rot;
 pub use stream::{Produced, Production};
 pub use vacuums::Due;

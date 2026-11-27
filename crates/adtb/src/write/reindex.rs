@@ -17,7 +17,7 @@ use std::time::Duration;
 use adtb_lang::types::RelId;
 use adtb_sys::lock::HeldRank;
 
-use crate::btree::build::{BuildError, IndexLatched, LatchedTree, Merged, RunEntry, retire};
+use crate::btree::build::{BuildError, LatchedTree, Merged, RunEntry, retire};
 use crate::btree::{self, BTree};
 use crate::exec;
 use crate::heap::{Heap, Refused};
@@ -112,7 +112,24 @@ pub struct VacuumHold<'d, R: Runtime> {
     _rank: HeldRank,
 }
 
+/// A turn of the one rebuild at a time the vacuum lock admits, held while the lock is.
+#[derive(Debug)]
+pub struct RebuildTurn<'h>(std::marker::PhantomData<&'h ()>);
+
+impl RebuildTurn<'static> {
+    /// Returns a turn for a test that runs one rebuild with no database to hold the lock of.
+    #[cfg(test)]
+    pub(crate) fn alone() -> RebuildTurn<'static> {
+        RebuildTurn(std::marker::PhantomData)
+    }
+}
+
 impl<'d, R: Runtime> VacuumHold<'d, R> {
+    /// Returns the turn of the rebuild that holds the lock.
+    pub fn turn(&self) -> RebuildTurn<'_> {
+        RebuildTurn(std::marker::PhantomData)
+    }
+
     /// Returns the database whose lock this is.
     pub(super) fn db(&self) -> &'d Database<R> {
         self.db
@@ -686,12 +703,16 @@ impl<R: Runtime> Database<R> {
                 self.rebuild_stopped()?;
             }
         }
+        let past = self.mended_history(job, &scan, pages)?;
         self.began(job, Reindex::Swap);
         let held = self.latches[&job.index].lock(&self.rt);
         scan.catch_up(built, since)?;
         self.rebuild_stopped()?;
         self.admit_reindex(job.rel)?;
-        self.mend_history(&held, job, &scan, pages)?;
+        if let (Some(past), Some(latched)) = (past, held.history()) {
+            let swap = (latched, past);
+            self.swap_in(swap, None, job, &mut pages.built_past, &mut pages.old)?;
+        }
         let release = Some(Quarantine::Index(tree.owner()));
         let swap = (held.index(), built);
         self.swap_in(swap, release, job, &mut pages.built, &mut pages.old)
@@ -708,22 +729,23 @@ impl<R: Runtime> Database<R> {
         Some(retained.indexes.get(&id)?.tree())
     }
 
-    /// Rebuild the history key index of the job's index from the history heaps if that tree is
-    /// damaged, leaving any mark. Nothing writes that tree while vacuum is held off, so a walk
-    /// that fails on anything but an I/O error shows damage.
-    fn mend_history(
+    /// Returns the history key index of the job's index rebuilt from the history heaps if that
+    /// tree is damaged, leaving any mark, `None` when it is whole. Only holders of the vacuum lock
+    /// write that tree and the history heaps: vacuum, the sweep of a large-value store, a copy to
+    /// a history heap and the mend pass's finish of its splits. So while vacuum is held off a walk
+    /// that fails on anything but an I/O error shows damage, and the rebuild needs no index latch.
+    fn mended_history(
         &self,
-        held: &IndexLatched<'_>,
         job: &Rebuild<'_>,
         scan: &Scan<'_, R>,
         pages: &mut Pages,
-    ) -> Result<(), Error> {
-        let (Some(retained), Some(latched)) = (self.retained.as_deref(), held.history()) else {
-            return Ok(());
+    ) -> Result<Option<BTree>, Error> {
+        let (Some(retained), Some(tree)) = (self.retained.as_deref(), self.history_tree(job.index))
+        else {
+            return Ok(None);
         };
-        let tree = latched.tree();
         match tree.pages(&self.pager) {
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(None),
             Err(btree::Error::Page(e)) if e.damage == Damage::Unreadable => return Err(e.into()),
             Err(_) => {}
         }
@@ -736,13 +758,7 @@ impl<R: Runtime> Database<R> {
             &mut pages.built_past,
             &stop,
         )?;
-        self.swap_in(
-            (latched, built),
-            None,
-            job,
-            &mut pages.built_past,
-            &mut pages.old,
-        )
+        Ok(Some(built))
     }
 
     /// Replace the contents of `tree` with those of `built`, recording the old pages in `old`.

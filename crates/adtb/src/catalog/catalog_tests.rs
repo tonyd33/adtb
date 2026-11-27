@@ -8,6 +8,7 @@ use crate::key::Value;
 use crate::mvcc::{CommitLog, Scope, Transactions, Xid};
 use crate::storage::{Damage, HEADER_LEN, Options, Pager, Pid, Quarantine};
 use crate::verify::{self, Finding, Problem, Report};
+use crate::write::RebuildTurn;
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
@@ -808,7 +809,8 @@ fn a_rebuild_joins_only_a_change_no_running_transaction_holds() {
     finished(&mut sim, |rt| {
         let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         let (catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
-        let rebuild = |p: &Pager<SimRuntime>| catalog.begin_reindexing(p, &txns);
+        let rebuild =
+            |p: &Pager<SimRuntime>| catalog.begin_reindexing(&RebuildTurn::alone(), p, &txns);
         let change = Change::begin(&pager, &txns, Scope::Every)
             .expect("a transaction")
             .mark(catalog.root)
@@ -835,7 +837,7 @@ fn a_rebuild_joins_only_a_change_no_running_transaction_holds() {
         let first = first.expect("an unmarked root takes the rebuild's mark");
         assert!(rebuild(&pager).expect("the rebuild joins").is_none());
         catalog
-            .end_reindexing(&pager, first)
+            .end_reindexing(&RebuildTurn::alone(), &pager, first)
             .expect("the rebuild ends");
         drop(catalog);
         drop(txns);

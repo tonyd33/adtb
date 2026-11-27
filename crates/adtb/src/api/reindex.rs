@@ -140,7 +140,11 @@ impl<R: Runtime> Engine<R> {
         };
         let no_vacuum = self.db.holding_off_vacuum();
         let phase = |p: Reindex| job.phase(p.name(), p.done());
-        let marked = match self.catalog.begin_reindexing(&self.pager, self.db.txns()) {
+        let turn = no_vacuum.turn();
+        let marked = match self
+            .catalog
+            .begin_reindexing(&turn, &self.pager, self.db.txns())
+        {
             Ok(marked) => marked,
             Err(e) => {
                 let at = format!("reindex of {}: {}", work.target, catalog::detail(&e));
@@ -177,7 +181,7 @@ impl<R: Runtime> Engine<R> {
             }
         }
         if let Some(marked) = marked.filter(|_| reclaimed)
-            && let Err(e) = self.catalog.end_reindexing(&self.pager, marked)
+            && let Err(e) = self.catalog.end_reindexing(&turn, &self.pager, marked)
         {
             self.keep_outcome(
                 schema,

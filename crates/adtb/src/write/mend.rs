@@ -13,7 +13,8 @@ const STOPPED: &str = "the pass was stopped";
 
 impl<R: Runtime> Database<R> {
     /// Finish every split a crash left incomplete, each under the latch of its index as an
-    /// insert finishes one; then, holding vacuum off, lower every head counting more versions
+    /// insert finishes one, holding vacuum off while it finishes those of the indexes with a
+    /// latch, history key indexes among them; then, holding vacuum off, lower every head counting more versions
     /// than point at it and settle every directory promising less than its child holds, one
     /// large-value store and its heaps at a time. Returns what it did. Checks `stopped` and
     /// whether rebuilds are stopped before each page of a tree's walk and each store, and calls
@@ -24,6 +25,10 @@ impl<R: Runtime> Database<R> {
         let structures = self.structures();
         let inventory = structures.inventory::<R>(None);
         let mut latched = BTreeSet::new();
+        let Some(no_vacuum) = self.vacuum_held(go, pause) else {
+            mended.stop(STOPPED.into());
+            return mended;
+        };
         for latch in self.latches.values() {
             let trees: Vec<BTree> = {
                 let held = latch.lock(&self.rt);
@@ -41,6 +46,7 @@ impl<R: Runtime> Database<R> {
                 }
             }
         }
+        drop(no_vacuum);
         for &tree in inventory
             .trees
             .iter()
@@ -56,15 +62,9 @@ impl<R: Runtime> Database<R> {
             mended.stop(STOPPED.into());
             return mended;
         }
-        let _no_vacuum = loop {
-            if !go() {
-                mended.stop(STOPPED.into());
-                return mended;
-            }
-            match self.try_hold_vacuum() {
-                Ok(hold) => break hold,
-                Err(_) => pause(),
-            }
+        let Some(_no_vacuum) = self.vacuum_held(go, pause) else {
+            mended.stop(STOPPED.into());
+            return mended;
         };
         for (store, heaps) in stores(&inventory) {
             if !go() {
@@ -75,6 +75,23 @@ impl<R: Runtime> Database<R> {
             mend_store(&self.pager, store, &heaps, since, settled, &mut mended);
         }
         mended
+    }
+
+    /// Returns the vacuum lock, calling `pause` while another holds it, or `None` once `go` fails.
+    fn vacuum_held(
+        &self,
+        go: impl Fn() -> bool,
+        pause: &mut dyn FnMut(),
+    ) -> Option<super::VacuumHold<'_, R>> {
+        loop {
+            if !go() {
+                return None;
+            }
+            match self.try_hold_vacuum() {
+                Ok(hold) => return Some(hold),
+                Err(_) => pause(),
+            }
+        }
     }
 
     /// Wait until every transaction below `next` has ended, calling `pause` between looks.

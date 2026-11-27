@@ -18,6 +18,7 @@ use crate::runtime::{Runtime as _, Threads as _};
 use crate::storage::{Damage, HEADER_LEN, Pager};
 use crate::test_world::api::query as rows;
 use crate::test_world::load;
+use crate::write::RebuildTurn;
 
 use super::super::RoleAuthority;
 use super::{Capability, Error, Tables, Val};
@@ -363,18 +364,34 @@ fn a_rebuild_does_not_overwrite_another_change_of_the_catalog() {
         let options = load::options(1);
         let pager = Pager::create(rt.clone(), &options.storage("changing.adt")).unwrap();
         let (catalog, txns) = Catalog::open(rt, &pager).unwrap();
-        let rebuild = catalog.begin_reindexing(&pager, &txns).unwrap().unwrap();
+        let rebuild = catalog
+            .begin_reindexing(&RebuildTurn::alone(), &pager, &txns)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             None,
-            catalog.begin_reindexing(&pager, &txns).unwrap().map(drop)
+            catalog
+                .begin_reindexing(&RebuildTurn::alone(), &pager, &txns)
+                .unwrap()
+                .map(drop)
         );
-        catalog.end_reindexing(&pager, rebuild).unwrap();
-        let rebuild = catalog.begin_reindexing(&pager, &txns).unwrap().unwrap();
-        catalog.end_reindexing(&pager, rebuild).unwrap();
+        catalog
+            .end_reindexing(&RebuildTurn::alone(), &pager, rebuild)
+            .unwrap();
+        let rebuild = catalog
+            .begin_reindexing(&RebuildTurn::alone(), &pager, &txns)
+            .unwrap()
+            .unwrap();
+        catalog
+            .end_reindexing(&RebuildTurn::alone(), &pager, rebuild)
+            .unwrap();
         let naming = Catalog::naming_sequences(&pager, catalog.root()).unwrap();
         assert_eq!(
             None,
-            catalog.begin_reindexing(&pager, &txns).unwrap().map(drop),
+            catalog
+                .begin_reindexing(&RebuildTurn::alone(), &pager, &txns)
+                .unwrap()
+                .map(drop),
             "the change stays for the next open to free"
         );
         drop(naming);

@@ -8,6 +8,7 @@ use crate::heap::Heap;
 use crate::mvcc::{Begun, Committed, Scope, Transactions};
 use crate::runtime::Runtime;
 use crate::storage::{Lsn, Pager, Pid, Release};
+use crate::write::RebuildTurn;
 
 use super::root::{self, Changing, Root};
 use super::{Catalog, Error, Migrating, update_root};
@@ -222,6 +223,7 @@ impl Catalog {
     /// change of a transaction `txns` runs.
     pub fn begin_reindexing<R: Runtime>(
         &self,
+        _turn: &RebuildTurn<'_>,
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<Option<root::Begun>, Error> {
@@ -244,6 +246,7 @@ impl Catalog {
     /// change in progress.
     pub fn end_reindexing<R: Runtime>(
         &self,
+        _turn: &RebuildTurn<'_>,
         pager: &Pager<R>,
         began: root::Begun,
     ) -> Result<(), Error> {
