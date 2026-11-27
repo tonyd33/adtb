@@ -1701,6 +1701,7 @@ fn a_sole_access_shape_blocks_enable_only_when_it_reads_the_field() {
             "sole-upsert-old-depth",
             "unused-let-field",
             "unused-let-fn",
+            "with-built-field",
             "with-copy",
             "with-copy-then-note",
         ]),

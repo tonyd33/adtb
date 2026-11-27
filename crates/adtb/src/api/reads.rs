@@ -103,8 +103,8 @@ impl Reads {
                 }
             }
             Kind::Field(x, name) if !terms.is_transport(t) => {
-                if let Ty::Data { def, .. } = terms.ty(*x) {
-                    self.fields.insert((*def, name.clone()));
+                if let Some(read) = stored_field(terms, *x, name) {
+                    self.fields.insert(read);
                 }
             }
             Kind::Upsert {
@@ -318,6 +318,43 @@ impl Reads {
             writes,
         }
     }
+}
+
+/// Returns the field of a stored row that the access of field `name` of `base` reads, by the
+/// row's type: the field of `base`'s type, or, when `base` builds a value, the field its
+/// argument for `name` copies through `with`. Returns `None` for an argument the expression
+/// builds itself, whose reads are its own terms'.
+fn stored_field(terms: &Terms, mut base: Tm, name: &str) -> Option<(TypeId, String)> {
+    let mut name = name.to_owned();
+    while let Kind::Ctor { fields, .. } | Kind::Record(fields) = terms.kind(base) {
+        let Some(&(_, arg)) = fields.iter().find(|(f, _)| *f == name) else {
+            break;
+        };
+        if let Kind::Field(row, copied) = terms.kind(arg)
+            && terms.is_transport(arg)
+        {
+            (base, name) = (*row, copied.clone());
+        } else if copies(terms, arg) {
+            break;
+        } else {
+            return None;
+        }
+    }
+    let Ty::Data { def, .. } = terms.ty(base) else {
+        return None;
+    };
+    Some((*def, name))
+}
+
+/// Returns whether `t` holds a field `with` copies.
+fn copies(terms: &Terms, t: Tm) -> bool {
+    terms.search(t, |s| {
+        if terms.is_transport(s) {
+            Search::Found
+        } else {
+            Search::Into(terms.children(s))
+        }
+    })
 }
 
 /// Returns the relation of the upsert `t` when its conflict branch can leave the stored row in its

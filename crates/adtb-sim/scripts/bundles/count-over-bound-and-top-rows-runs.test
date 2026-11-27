@@ -1,0 +1,42 @@
+# A count over rows of one relation translates across a field added to a type they hold, when
+# the rows are bound by `let` or cut by `top`: their key keeps them apart.
+seed 75
+use auth
+bundle lets-1.0 pins 1 edition "2026-10"
+  import auth
+  txn n () -> I64 =
+    transact
+      let s = from u in users select u
+      return count(x for x in s) + count(y for y in s where y.name == "bo")
+bundle tops-1.0 pins 1 edition "2026-10"
+  import auth
+  query n () -> I64 = count(x for x in top 2 by (u.name, key u) (from u in users select u))
+reopen
+
+bundle lets-1.0 pins 1 edition "2026-10"
+  import auth
+  txn n () -> I64 =
+    transact
+      let s = from u in users select u
+      return count(x for x in s) + count(y for y in s where y.name == "bo")
+bundle tops-1.0 pins 1 edition "2026-10"
+  import auth
+  query n () -> I64 = count(x for x in top 2 by (u.name, key u) (from u in users select u))
+migrate
+  module auth
+  add field Tier.Paid.seats: I32 fill 1
+
+run
+  transact
+    insert users { name: "ann", tier: Paid { seats: 1 } }
+    insert users { name: "bo", tier: Free }
+    insert users { name: "cy", tier: Paid { seats: 5 } }
+    return 0
+
+call lets-1.0 1 committed
+----
+4
+
+call tops-1.0 1
+----
+2

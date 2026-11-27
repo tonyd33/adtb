@@ -172,12 +172,13 @@ pub(super) fn probed_rows(terms: &Terms, probed: &HashSet<Var>, t: Tm) -> Option
 }
 
 /// Returns whether `set` holds only rows read from one relation: the relation, a constructor
-/// relation of it, or a comprehension over one that yields its bound row.
+/// relation of it, a comprehension over one that yields its bound row, or a `top` of one.
 pub(super) fn rows_of(terms: &Terms, set: Tm) -> bool {
     match terms.kind(set) {
         Kind::Rel(..) | Kind::Transition(..) => true,
         Kind::Restrict(x, _) => rows_of(terms, *x),
         Kind::For(v, source, body) => rows_of(terms, *source) && yields(terms, *body, *v),
+        Kind::Top { source, .. } => rows_of(terms, *source),
         Kind::Var(..)
         | Kind::Const(..)
         | Kind::Prim(..)
@@ -203,7 +204,6 @@ pub(super) fn rows_of(terms: &Terms, set: Tm) -> bool {
         | Kind::Exists(..)
         | Kind::Agg { .. }
         | Kind::Group { .. }
-        | Kind::Top { .. }
         | Kind::Fix(..)
         | Kind::Fresh(..)
         | Kind::Placeholder { .. }

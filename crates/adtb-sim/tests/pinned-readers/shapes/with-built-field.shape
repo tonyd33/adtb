@@ -1,0 +1,3 @@
+accept
+===
+query run () -> Set I64 = from m in marks select Mark { m with tone: Ink { depth: 3 } }.tone.depth
