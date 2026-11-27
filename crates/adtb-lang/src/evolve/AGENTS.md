@@ -37,3 +37,6 @@ Tests: `cargo nextest run -p adtb-lang -E 'test(/^evolve::/)'`; the engine scrip
 and of bundles, `cargo conformance --file-name crates/adtb-sim/scripts/oplog` and
 `crates/adtb-sim/scripts/bundles/`; the generated migration search, its floors and switches, in
 `crates/adtb-testkit/src/schemas/AGENTS.md`.
+- Print a grant's target only through `Granted::text` (grant_text.rs): the catalog row and a
+  refusal's suggested revoke share it, so the text a refusal prints is text the checker admits.
+  A test of a printed statement runs that statement and expects it to apply.
