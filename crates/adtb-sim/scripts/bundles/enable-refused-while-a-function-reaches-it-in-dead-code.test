@@ -1,0 +1,38 @@
+# An enable is refused while a live bundle pinned before it imports a function that follows a
+# reference admitting the new constructor, or reads its relation whole, only in code the function's
+# normal form eliminates, or calls a function of its own that does.
+seed 51
+use states
+log
+  module auth
+  define fn dead_deref () -> I64 = if True then 0 else count(s.identity.user for s in sessions)
+  define fn dead_rel () -> I64 = if True then 0 else count(i for i in identities)
+log
+  module auth
+  add constructor Identity.Apple { sub: Text }
+    joins identities.OAuth
+bundle called-1.0 pins 2 edition "2026-10"
+  import auth
+  fn dead () -> I64 = if True then 0 else count(i for i in identities)
+  query q () -> I64 = dead()
+bundle deref-1.0 pins 2 edition "2026-10"
+  import auth
+  import fn dead_deref
+bundle rel-1.0 pins 2 edition "2026-10"
+  import auth
+  import fn dead_rel
+reopen
+
+bundle called-1.0 pins 2 edition "2026-10"
+  import auth
+  fn dead () -> I64 = if True then 0 else count(i for i in identities)
+  query q () -> I64 = dead()
+bundle deref-1.0 pins 2 edition "2026-10"
+  import auth
+  import fn dead_deref
+bundle rel-1.0 pins 2 edition "2026-10"
+  import auth
+  import fn dead_rel
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "enable identities.Apple", detail: "`enable identities.Apple` is refused: bundle called-1.0, pinned at version 2, reads identities whole; a bundle stops blocking only when it is released\n`enable identities.Apple` is refused: bundle deref-1.0, pinned at version 2, follows a reference that admits identities.Apple; a bundle stops blocking only when it is released\n`enable identities.Apple` is refused: bundle rel-1.0, pinned at version 2, reads identities whole; a bundle stops blocking only when it is released" } } }
+  module auth
+  enable identities.Apple
