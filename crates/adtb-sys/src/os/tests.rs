@@ -161,3 +161,43 @@ fn both_backends_report_a_device_with_no_space_as_full() {
     }
     assert_eq!(IoError::Failed, super::uring::failure(libc::EIO));
 }
+
+const PANIC_CHILD: &str = "ADTB_SYS_PANIC_CHILD";
+
+/// The child of `a_panic_on_a_host_thread_ends_the_process_before_its_guards_drop`; passes at
+/// once in any other process.
+#[test]
+fn panic_child() {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            eprintln!("the guard dropped");
+        }
+    }
+    if std::env::var_os(PANIC_CHILD).is_none() {
+        return;
+    }
+    let rt = runtime();
+    let id = rt.spawn("panicking", || {
+        let _guard = Guard;
+        panic!("an engine invariant");
+    });
+    rt.join(id);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri spawns no process")]
+fn a_panic_on_a_host_thread_ends_the_process_before_its_guards_drop() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let child = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", "os::tests::panic_child", "--nocapture"])
+        .env(PANIC_CHILD, "1")
+        .output()
+        .expect("the child starts");
+    let stderr = String::from_utf8_lossy(&child.stderr);
+    assert_eq!(Some(libc::SIGABRT), child.status.signal(), "{stderr}");
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert!(lines.contains(&"an engine invariant"), "{stderr}");
+    assert!(!lines.contains(&"the guard dropped"), "{stderr}");
+}

@@ -217,15 +217,18 @@ impl Entropy for OsRuntime {
     }
 }
 
-/// Run `body`, aborting the process if it panics.
+/// Run `body` as engine code, aborting the process if it panics.
 fn abort_on_panic(body: impl FnOnce()) {
+    let _inside = crate::panics::inside();
     if panic::catch_unwind(AssertUnwindSafe(body)).is_err() {
         std::process::abort();
     }
 }
 
-/// Run `body` on a new host thread named `name`, aborting the process if it panics.
+/// Run `body` on a new host thread named `name`, aborting the process if it panics, the panic
+/// hook installed first.
 fn host_thread(name: String, body: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
+    crate::panics::install();
     #[expect(
         clippy::disallowed_methods,
         reason = "goes if the real runtime stops taking its threads from std"

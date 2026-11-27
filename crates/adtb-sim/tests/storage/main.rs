@@ -6,6 +6,7 @@ mod heap_kind;
 mod interleavings;
 mod io_contract;
 mod latches;
+mod panics;
 mod recycle_interleavings;
 mod replay;
 mod truncated_open;

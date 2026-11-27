@@ -352,6 +352,28 @@ The raising point emits a best-effort diagnostic before unwinding. A
 failure to write that diagnostic does not replace the typed payload.
 Suppressing the panic hook does not suppress this direct diagnostic.
 
+A thread runs engine code while it holds an `adtb_sys::panics::Inside`
+mark and no `Outside` mark taken after it. Each thread either runtime spawns
+holds an `Inside` mark for its life, and a host function's call holds an
+`Outside` mark. The first `inside`, `end_with`, `quiet_fatal_io` or `install`
+in the process installs one panic hook over the hook in place. Either
+runtime calls `install` before it spawns a thread, and an engine's open
+calls it.
+
+- The hook runs the hook it replaced, then, for a panic raised in engine
+  code with any payload but a `FatalIo`, ends the process before anything
+  unwinds: it aborts, or runs the replacement the panicking thread holds
+  from `end_with`.
+- With a replacement held, the replacement runs while the thread's latches,
+  transactions and holds are still held, and the panic then unwinds. Only
+  the simulator holds one; it crashes the simulated process before any
+  thread takes another step.
+- A `FatalIo` payload and a panic raised outside engine code unwind as they
+  would without the hook.
+  A payload resumed with `resume_unwind` reaches no hook and unwinds.
+- After `quiet_fatal_io` the hook does not run the replaced hook for a
+  `FatalIo` payload.
+
 ## 5. Simulated storage
 
 The whole engine runs inside a simulator that supplies time, I/O,
@@ -470,6 +492,11 @@ Postconditions of the simulator:
 - A seed and a configuration determine every schedule decision,
   completion order, fault, clock value and random draw, so the same
   seed replays a run byte for byte, trace and files alike.
+- A panic the hook ends in engine code crashes the process before the next
+  step any thread takes, a frame that catches the unwind notwithstanding.
+  The run fails with the panic's payload, or, when the unwind was caught,
+  with a stand-in for it: a copy of a `&str` or `String`, else the `String`
+  of the panic's report.
 - A run fails when any thread panics, or when a live thread that is no
   daemon is blocked with no completion pending and only a daemon's timer
   left. A run whose threads return with an op held fails, whether or

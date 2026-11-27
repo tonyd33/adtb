@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adtb::batch::{self, Batch, BatchBuilder, Type};
 use adtb::key::{Scalar, Value as Stored};
+use adtb::runtime::Threads;
 use adtb::{
     CallOptions, Database, Determinism, Error, FatalReason, Fault, HostError, HostFns, Log,
     OpenError, OpenOptions, Position, RejectReason, TxnCallOptions, TxnOptions,
@@ -316,6 +317,23 @@ fn a_host_function_that_errs_panics_or_returns_another_shape_faults_its_statemen
         completed += 1;
     }
     assert_eq!(6, completed, "all six host failure categories completed");
+}
+
+#[test]
+fn a_host_function_that_panics_on_an_engine_thread_faults_only_its_statement() {
+    once(8, |rt| {
+        let db = opened(&rt, &[NOTES], failing(|_| panic_any("a provider panic")));
+        write(&db, r#"insert notes { body: "a" }"#).expect("a note");
+        let on_engine = db.clone();
+        let engine = rt.spawn("engine", move || {
+            assert_eq!(
+                vec!["Err { error: FunctionFailed }"],
+                query(&on_engine, "from n in notes select try slugify(n.body)")
+            );
+        });
+        rt.join(engine);
+        write(&db, r#"insert notes { body: "b" }"#).expect("a call after the fault");
+    });
 }
 
 fn empty() -> Batch {

@@ -92,20 +92,23 @@ impl HostCall {
         }
         let args = b.finish();
         let ran = catch_unwind(AssertUnwindSafe(|| {
-            let out = body(&args).ok()?;
-            let fits = out.len() == rows.len() && out.schema().fields() == [self.result.clone()];
-            fits.then(|| {
+            let _outside = adtb_sys::panics::outside();
+            body(&args)
+        }));
+        let out = match ran {
+            Err(payload) if payload.is::<crate::runtime::FatalIo>() => resume_unwind(payload),
+            Ok(Ok(out)) => out,
+            Ok(Err(_)) | Err(_) => return Ok(Err(Fault::FunctionFailed)),
+        };
+        let fits = out.len() == rows.len() && out.schema().fields() == [self.result.clone()];
+        let admitted = fits
+            .then(|| {
                 (0..out.len())
                     .map(|i| admit(&self.conv, out.value(0, i)))
                     .collect::<Option<Vec<_>>>()
             })
-            .flatten()
-        }));
-        let out = match ran {
-            Err(payload) if payload.is::<crate::runtime::FatalIo>() => resume_unwind(payload),
-            other => other.ok().flatten(),
-        };
-        Ok(out.ok_or(Fault::FunctionFailed))
+            .flatten();
+        Ok(admitted.ok_or(Fault::FunctionFailed))
     }
 }
 

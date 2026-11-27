@@ -9,6 +9,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
 use adtb_sys::pages;
+use adtb_sys::panics;
 use adtb_sys::runtime::{
     AlignedBuf, Clock, Completion, Done, Entropy, Faults, FileId, Instant, Io, IoError, Op, OpKind,
     Runtime, ThreadId, Threads, Ticket,
@@ -150,6 +151,10 @@ struct Shared {
     plan: Mutex<Planner>,
     turn: Condvar,
     os: Mutex<Vec<JoinHandle<()>>>,
+    /// A stand-in for the payload of the first panic raised in engine code since the run began,
+    /// set at the panic before anything unwinds. The process crashes at the next step any thread
+    /// takes. Taken after `state`, and never held across a panic.
+    panic: Mutex<Option<Box<dyn Any + Send>>>,
 }
 
 type Guard<'a> = MutexGuard<'a, State>;
@@ -239,6 +244,7 @@ impl Sim {
                 plan: Mutex::default(),
                 turn: Condvar::new(),
                 os: Mutex::new(Vec::new()),
+                panic: Mutex::new(None),
             }),
         }
     }
@@ -338,6 +344,7 @@ impl Sim {
             st.current = 0;
             st.rings.clear();
             st.handles.clear();
+            *lock(&self.shared.panic) = None;
             let (now, process) = (st.now, st.process);
             trace!(st.trace, "t={now} process {process} starts");
             process
@@ -346,10 +353,13 @@ impl Sim {
             shared: self.shared.clone(),
             process,
         };
-        let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            let _switches = rt.switch_points();
-            body(rt.clone());
-        }));
+        let result = {
+            let _ending = panics::end_with(crash_at_panic(&self.shared));
+            panic::catch_unwind(AssertUnwindSafe(|| {
+                let _switches = rt.switch_points();
+                body(rt.clone());
+            }))
+        };
         settle(&self.shared, 0, result);
         {
             let st = lock(&self.shared.state);
@@ -388,12 +398,42 @@ impl Sim {
     }
 }
 
+/// Returns what a panic in engine code on a thread of the process `shared` runs does: keep a
+/// stand-in for its payload, so the process crashes at the next step any thread takes.
+fn crash_at_panic(shared: &Arc<Shared>) -> panics::End {
+    let shared = Arc::downgrade(shared);
+    Box::new(move |info| {
+        if let Some(shared) = shared.upgrade() {
+            lock(&shared.panic).get_or_insert_with(|| panics::payload_of(info));
+        }
+    })
+}
+
+/// Crash the process at a panic raised in engine code, with its payload, if one was raised.
+/// Returns whether one was.
+fn crashed_at_panic(shared: &Shared, st: &mut State) -> bool {
+    let Some(payload) = lock(&shared.panic).take() else {
+        return false;
+    };
+    st.crash();
+    st.phase = Phase::Panicked(payload);
+    wake_all(shared, st);
+    true
+}
+
 fn settle(shared: &Shared, me: usize, result: thread::Result<()>) {
     let mut st = lock(&shared.state);
     if !matches!(st.phase, Phase::Running) {
         return;
     }
     match result {
+        Err(payload) if !payload.is::<Halt>() => {
+            lock(&shared.panic).take();
+            st.crash();
+            st.phase = Phase::Panicked(payload);
+            wake_all(shared, &st);
+        }
+        _ if crashed_at_panic(shared, &mut st) => {}
         Ok(()) => {
             st.threads[me].status = Status::Done;
             for t in &mut st.threads {
@@ -403,12 +443,7 @@ fn settle(shared: &Shared, me: usize, result: thread::Result<()>) {
             }
             drop(switch(shared, st, me));
         }
-        Err(payload) if payload.is::<Halt>() => {}
-        Err(payload) => {
-            st.crash();
-            st.phase = Phase::Panicked(payload);
-            wake_all(shared, &st);
-        }
+        Err(_) => {}
     }
 }
 
@@ -826,6 +861,10 @@ impl SimRuntime {
         if !matches!(st.phase, Phase::Running) || st.process != self.process {
             return None;
         }
+        if crashed_at_panic(&self.shared, &mut st) {
+            drop(st);
+            panic::resume_unwind(Box::new(Halt));
+        }
         let me = st.current;
         st.threads[me].waiting = false;
         Some(st)
@@ -1007,6 +1046,7 @@ impl SimRuntime {
             let _switches = rt.switch_points();
             body();
         };
+        panics::install();
         #[expect(
             clippy::disallowed_methods,
             reason = "goes if simulated threads stop running on host threads"
@@ -1084,7 +1124,7 @@ impl Threads for SimRuntime {
     }
 }
 
-fn thread_main<F: FnOnce()>(shared: &Shared, id: usize, body: F) {
+fn thread_main<F: FnOnce()>(shared: &Arc<Shared>, id: usize, body: F) {
     {
         let st = lock(&shared.state);
         let turn = Arc::clone(&st.threads[id].turn);
@@ -1097,7 +1137,11 @@ fn thread_main<F: FnOnce()>(shared: &Shared, id: usize, body: F) {
             return;
         }
     }
-    let result = panic::catch_unwind(AssertUnwindSafe(body));
+    let result = {
+        let _inside = panics::inside();
+        let _ending = panics::end_with(crash_at_panic(shared));
+        panic::catch_unwind(AssertUnwindSafe(body))
+    };
     settle(shared, id, result);
 }
 

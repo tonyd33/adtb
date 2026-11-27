@@ -818,6 +818,7 @@ impl<R: Runtime> Engine<R> {
         options: &OpenOptions,
         hold: storage::Hold<'_>,
     ) -> Result<Engine<R>, OpenError> {
+        adtb_sys::panics::install();
         let storage = options.storage(name);
         let (pager, new, opening) = match Pager::open(rt.clone(), &storage) {
             Ok((p, opening)) => (p, None, opening),

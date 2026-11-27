@@ -2,7 +2,6 @@
 
 use std::collections::BTreeSet;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::Once;
 use std::time::Duration;
 
 use adtb_sim::{
@@ -13,15 +12,7 @@ use adtb_sys::runtime::Faults;
 
 /// Keep panic-hook reports of [`FatalIo`] off stderr for the rest of the process.
 pub fn silence_fatal_panics() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let default = panic::take_hook();
-        panic::set_hook(Box::new(move |info| {
-            if !info.payload().is::<FatalIo>() {
-                default(info);
-            }
-        }));
-    });
+    adtb_sys::panics::quiet_fatal_io();
 }
 
 /// Run `body` as a process, treating a crash caused by a failed write or force as a crash.
