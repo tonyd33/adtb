@@ -13,7 +13,7 @@ use super::case::{self, Fault, Plan};
 use super::consumers::{Backup, Consumer, Copy, Dumped, Finding, Lookups, Observed, Read};
 use super::ledger::{self, Ended, Evidence, Record, SETTLED};
 use super::stated::{self, Class, Held, Holding, PHASES, Phase, Stated};
-use super::world::{self, Kind, Op, Ran, Rel, Rows, WriteOut};
+use super::world::{self, During, Kind, Op, Ran, Rel, Rows, WriteOut};
 
 /// One way a case broke the contract, at the consumer that showed it. `what` names the shape
 /// alone, the same across sequences; `detail` holds what this case saw.
@@ -305,7 +305,7 @@ fn settles(case: &Case<'_>, w: &WriteOut, fault: Fault) -> Option<bool> {
     }
     let last = plan.clog.len().checked_sub(1)?;
     let before = plan.opens.iter().rev().find(|open| open.0 <= w.op);
-    if before.is_some_and(|open| open.2 == w.during) {
+    if before.is_some_and(|open| During::Op(open.2) == w.during) {
         return None;
     }
     let (outs, op) = plan

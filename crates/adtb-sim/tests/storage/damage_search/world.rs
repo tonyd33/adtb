@@ -242,9 +242,17 @@ pub struct WriteOut {
     /// The units of [`UNIT`] bytes in which the page differs from what the last earlier
     /// write-out of it wrote, zeros before the first: bit `u` for unit `u`.
     pub changed: u16,
-    /// The index in the sequence of the operation running when it was submitted: the sequence's
-    /// length for the close that ends it, [`CREATING`] for the create.
-    pub during: usize,
+    pub during: During,
+}
+
+/// The operation running when a write-out was submitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum During {
+    /// The create of the file.
+    Creating,
+    /// The operation of this index in the sequence: the sequence's length for the close that ends
+    /// it.
+    Op(usize),
 }
 
 /// The pages of the writes a run numbered, in order.
@@ -254,9 +262,6 @@ pub struct Trace {
     /// The image each write-out of a commit log page wrote, by its index in `writes`.
     pub images: BTreeMap<usize, Vec<u8>>,
 }
-
-/// The operation index of the write-outs of the create.
-pub const CREATING: usize = usize::MAX;
 
 /// Returns the bytes the data file of `files` holds for page `pid`, zeros past its end.
 pub fn page(files: &Files, pid: Pid) -> Vec<u8> {
@@ -296,7 +301,7 @@ fn trace(writes: &OpLog, during: &[(usize, usize)]) -> Trace {
             .iter()
             .rev()
             .find(|(from, _)| *from <= number)
-            .map_or(CREATING, |(_, i)| *i);
+            .map_or(During::Creating, |(_, i)| During::Op(*i));
         let offset = write.offset().unwrap();
         for (i, page) in write.bytes().unwrap().chunks(PAGE).enumerate() {
             let pid = Pid(offset / PAGE as u64 + i as u64);

@@ -15,7 +15,7 @@ use super::generate;
 use super::ledger::LogWrite;
 use super::pool;
 use super::stated::Held;
-use super::world::{Ids, RELS, Rel, WriteOut};
+use super::world::{During, Ids, RELS, Rel, WriteOut};
 
 /// The most binaries whose plans are kept: each build of the storage binary a target directory
 /// runs at once, `-p adtb-sim` and the workspace's, and the ones before a rebuild.
@@ -171,6 +171,21 @@ impl Code for usize {
     }
     fn take(input: &mut &[u8]) -> Self {
         usize::try_from(u64::take(input)).expect("a kept count fits a usize")
+    }
+}
+
+impl Code for During {
+    fn put(&self, out: &mut Vec<u8>) {
+        match self {
+            During::Creating => u64::MAX.put(out),
+            During::Op(op) => op.put(out),
+        }
+    }
+    fn take(input: &mut &[u8]) -> Self {
+        match u64::take(input) {
+            u64::MAX => During::Creating,
+            op => During::Op(usize::try_from(op).expect("a kept operation index fits a usize")),
+        }
     }
 }
 

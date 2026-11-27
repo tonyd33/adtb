@@ -573,13 +573,11 @@ fn rerun(k: &Known) {
     let fault = k.fault;
     let plan = plans::plan(k.seed, false);
     let injection = fault.injection();
+    let cell = (plan.kind(k.at), plan.owner(k.at));
+    let fault_at = (cell == (Some(k.kind), k.owner)).then(|| plan.fault(k.at, injection));
     assert_eq!(
-        (Some(k.kind), k.owner, fault),
-        (
-            plan.kind(k.at),
-            plan.owner(k.at),
-            plan.fault(k.at, injection)
-        ),
+        (Some(k.kind), k.owner, Some(fault)),
+        (cell.0, cell.1, fault_at),
         "{fault:?} {:?}: seed {} at {} writes another cell; pin {} again",
         k.kind,
         k.seed,

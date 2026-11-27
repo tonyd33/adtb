@@ -12,7 +12,7 @@ use adtb_testkit::search::Files;
 use super::consumers;
 use super::judge::{self, Hit, Verdicts};
 use super::ledger;
-use super::world::{self, CREATING, Holdings, Ids, Kind, Op, Placed, Ran, Rel, Rows, WriteOut};
+use super::world::{self, During, Holdings, Ids, Kind, Op, Placed, Ran, Rel, Rows, WriteOut};
 
 /// How a case damages its page, or after its write-out the log or a checkpoint. A fault of the
 /// log names a write to the log of the run with no fault, by its index.
@@ -163,7 +163,7 @@ impl Plan {
     /// page of no kind the search counts.
     pub fn kind(&self, at: usize) -> Option<Kind> {
         let w = self.writes[at];
-        if w.during == CREATING {
+        if w.during == During::Creating {
             return None;
         }
         world::class(w.kind, w.owner, &self.ids)
@@ -248,7 +248,11 @@ impl Plan {
     /// operation nearest `w`'s that lists that incarnation lists it, else the one structure that
     /// holds every page of `w`'s kind; `None` when neither places it.
     pub fn placed_written(&self, w: WriteOut) -> Option<Placed> {
-        let op = w.during.min(self.held.len().checked_sub(1)?);
+        let last = self.held.len().checked_sub(1)?;
+        let op = match w.during {
+            During::Creating => last,
+            During::Op(op) => op.min(last),
+        };
         let mut ats: Vec<usize> = (0..self.held.len()).collect();
         ats.sort_by_key(|at| (at.abs_diff(op), *at));
         ats.into_iter()
@@ -280,7 +284,10 @@ impl Plan {
             .writes
             .iter()
             .rev()
-            .filter(|w| w.during == CREATING || op >= last || w.during <= op)
+            .filter(|w| match w.during {
+                During::Creating => true,
+                During::Op(during) => op >= last || during <= op,
+            })
             .find(|w| w.pid == pid)?;
         if self.lists(placed, *written) {
             Some(placed)
@@ -305,10 +312,11 @@ impl Plan {
             Injection::Flipped => Fault::Flipped,
             Injection::Lost => {
                 let w = self.writes[at];
-                let after = (w.during + 1).min(self.ops.len());
-                if self.ops[after..].contains(&Op::Recycle)
-                    || self.ops.get(w.during) == Some(&Op::Recycle)
-                {
+                let (after, running) = match w.during {
+                    During::Creating => (0, None),
+                    During::Op(op) => ((op + 1).min(self.ops.len()), self.ops.get(op)),
+                };
+                if self.ops[after..].contains(&Op::Recycle) || running == Some(&Op::Recycle) {
                     Fault::Recycled
                 } else if self.freed_after(w) {
                     Fault::LostEarlier
@@ -328,13 +336,16 @@ impl Plan {
     /// sequence frees it.
     fn freed_by(&self, w: WriteOut) -> Option<usize> {
         let held = &self.held;
-        if w.during >= held.len() {
+        let During::Op(during) = w.during else {
+            return None;
+        };
+        if during >= held.len() {
             return None;
         }
-        let before = w.during.checked_sub(1).map(|i| &held[i]);
+        let before = during.checked_sub(1).map(|i| &held[i]);
         let alive =
-            before.is_some_and(|h| h.contains_key(&w.pid)) || held[w.during].contains_key(&w.pid);
-        let freed = (w.during..held.len()).find(|&i| !held[i].contains_key(&w.pid));
+            before.is_some_and(|h| h.contains_key(&w.pid)) || held[during].contains_key(&w.pid);
+        let freed = (during..held.len()).find(|&i| !held[i].contains_key(&w.pid));
         freed.filter(|_| alive)
     }
 
@@ -346,7 +357,7 @@ impl Plan {
         };
         let mut writes = self.writes.iter().rev().copied();
         writes
-            .find(|x| x.pid == w.pid && x.during != CREATING && x.during > freed)
+            .find(|x| x.pid == w.pid && matches!(x.during, During::Op(op) if op > freed))
             .unwrap_or(w)
     }
 }
