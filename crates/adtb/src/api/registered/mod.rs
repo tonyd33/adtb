@@ -733,7 +733,6 @@ pub(super) fn catalog_error(schema: &Schema, e: catalog::Error) -> Error {
     use catalog::Error as C;
     match e {
         C::Refused(why) | C::Unaccepted(_, why) => Error::invalid(why.join("\n")),
-        C::PastLimits(_) => Error::too_large(),
         C::Quarantined(_, what) => Error::Fatal {
             reason: FatalReason::Quarantined { what },
         },
@@ -742,6 +741,7 @@ pub(super) fn catalog_error(schema: &Schema, e: catalog::Error) -> Error {
         | C::Index(_)
         | C::Txn(_)
         | C::Missing(_)
+        | C::PastLimits(_)
         | C::RefusedBy { .. }
         | C::Corrupt(_)
         | C::Internal(_)
