@@ -209,3 +209,40 @@ add constraint tall =
         format!("{got:?}")
     );
 }
+
+#[test]
+fn a_create_refused_for_a_name_that_is_not_utf8_leaves_no_file() {
+    use std::os::unix::ffi::OsStringExt;
+    let scratch = Scratch::new("open-acquisition", "not-utf8");
+    std::fs::write(scratch.path().join("unrelated"), b"keep me").unwrap();
+    let name = std::ffi::OsString::from_vec(b"notes\xff.adt".to_vec());
+    let path = scratch.path().join(name);
+    let options = OpenOptions {
+        create: Some(CreateOptions::default()),
+        workers: Some(1),
+        ..OpenOptions::default()
+    };
+    let got = Database::open(&path, &Log::new([NOTES]), &options).map(drop);
+    let Err(OpenError::Io(e)) = got else {
+        panic!("the create is refused as an I/O error, found {got:?}");
+    };
+    assert_eq!(
+        (
+            std::io::ErrorKind::InvalidInput,
+            format!("{} names no file in a directory", path.display())
+        ),
+        (e.kind(), e.to_string())
+    );
+    let mut left: Vec<_> = std::fs::read_dir(scratch.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    left.sort();
+    assert_eq!(vec![std::ffi::OsString::from("unrelated")], left);
+    assert_eq!(
+        b"keep me",
+        std::fs::read(scratch.path().join("unrelated"))
+            .unwrap()
+            .as_slice()
+    );
+}

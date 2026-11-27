@@ -87,6 +87,14 @@ fn open_file(path: &Path, create: bool) -> std::io::Result<Option<(File, bool)>>
     }
 }
 
+/// Returns the refusal of `path`, which names no file in a directory by a UTF-8 name.
+fn no_file(path: &Path) -> OpenError {
+    OpenError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!("{} names no file in a directory", path.display()),
+    ))
+}
+
 /// Returns whether `path` names the inode `file` has open.
 fn names(path: &Path, file: &File) -> std::io::Result<bool> {
     let named = match std::fs::metadata(path) {
@@ -149,6 +157,9 @@ impl Held {
         create: bool,
         opened: &mut impl FnMut(),
     ) -> Result<Option<Taken>, OpenError> {
+        if path.file_name().is_some_and(|n| n.to_str().is_none()) {
+            return Err(no_file(path));
+        }
         let Some((file, created)) = open_file(path, create).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => OpenError::NotFound,
             _ => OpenError::Io(e),
@@ -166,10 +177,7 @@ impl Held {
             canonical.parent(),
             canonical.file_name().and_then(|n| n.to_str()),
         ) else {
-            return Err(OpenError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("{} names no file in a directory", path.display()),
-            )));
+            return Err(no_file(path));
         };
         let (dir, name) = (dir.to_path_buf(), name.to_owned());
         if !OPEN
