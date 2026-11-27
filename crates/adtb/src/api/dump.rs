@@ -23,6 +23,7 @@ use crate::write::{self, Bounds, Items, Local, Text, Txn};
 use super::backup::{CATALOG_VERSION, RestorePoint, refused};
 use super::bundle::{self, EDITION, Registered};
 use super::cause::Failure;
+use super::entered::Enters;
 use super::error::{FatalReason, RejectReason};
 use super::statements::Refusal;
 use super::{
@@ -642,7 +643,7 @@ pub(super) fn restore_dump<R: Runtime>(
         .and_then(|db| {
             let secured = db
                 .engine
-                .enter()
+                .call()
                 .and_then(|e| e.replace_rows(on(&parsed.schema, e.schema(), security), &[]));
             let closed = db.close();
             secured.and(closed)
@@ -707,7 +708,7 @@ fn fill<R: Runtime>(
     parsed: Parsed,
     generators: &[(CatRelId, i64)],
 ) -> Result<Vec<Dormant>, Error> {
-    let engine = &db.engine.enter()?;
+    let engine = &db.engine.call()?;
     let e = &manifest.envelope;
     if header(&engine.envelope()?) != header(e) {
         return Err(damaged(LOG));

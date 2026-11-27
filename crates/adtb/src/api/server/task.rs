@@ -1,6 +1,8 @@
 //! The calls the server submits: each an owned task that the engine's workers run in steps, whose
 //! results the transport observes in batches under the capacity it supplies.
 
+use crate::api::entered::Handle;
+use adtb_sys::gated::Gated;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, OnceLock, Weak};
 use std::task::{Wake, Waker};
@@ -15,7 +17,7 @@ use crate::exec::{self, Grant, Refusal, Refused, Stopped, Val};
 use crate::runtime::Runtime;
 
 use super::super::admitted::Admitted;
-use super::super::{CallOptions, CancelToken, Engine, Error, Limit, RejectReason, RetryReason};
+use super::super::{CallOptions, CancelToken, Error, Limit, RejectReason, RetryReason};
 use super::RoleSession;
 use super::call::{Call, RoleCall, Work};
 use super::result::{Completion, Format, Layout, ResultBatch};
@@ -80,6 +82,7 @@ pub(super) struct State {
     /// Set while the call commits; a request then waits for the commit's outcome.
     pub(super) committing: bool,
     pub(super) committed: bool,
+    /// The transport's waker, which wakes with the waking thread unmarked.
     pub(super) observer: Option<Waker>,
     /// The call's waker while it waits for capacity or the drain acknowledgement.
     pub(super) producer: Option<Waker>,
@@ -199,6 +202,30 @@ impl<R: Runtime> Shared<R> {
     }
 }
 
+/// A waker of the embedder's, woken and dropped with the calling thread unmarked so a panic in
+/// it unwinds.
+struct Unmarked(Option<Waker>);
+
+impl Wake for Unmarked {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        let _outside = adtb_sys::panics::outside();
+        if let Some(w) = &self.0 {
+            w.wake_by_ref();
+        }
+    }
+}
+
+impl Drop for Unmarked {
+    fn drop(&mut self) {
+        let _outside = adtb_sys::panics::outside();
+        drop(self.0.take());
+    }
+}
+
 /// The waker that cancels a call once its caller's token is cancelled, only the token of the
 /// call's own statements until the call is admitted.
 struct Stopper<R: Runtime> {
@@ -215,6 +242,7 @@ impl<R: Runtime> Wake for Stopper<R> {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
+        let _inside = adtb_sys::panics::inside();
         match (self.shared.upgrade(), self.admitted.get()) {
             (Some(shared), Some(admitted)) => {
                 shared.request(admitted, Request::Cancel, &self.cancel);
@@ -227,8 +255,7 @@ impl<R: Runtime> Wake for Stopper<R> {
 /// A submitted call, owned by its submitter. Dropping it cancels a call that has not committed
 /// and abandons its output.
 pub struct Task<R: Runtime = adtb_sys::os::OsRuntime> {
-    shared: Arc<Shared<R>>,
-    admitted: exec::Admitted<R>,
+    parts: Gated<Parts<R>>,
     /// The token of the call's own statements, cancelled with the caller's.
     cancel: CancelToken,
     /// The caller's token, and the registration on it that stops the call.
@@ -236,10 +263,16 @@ pub struct Task<R: Runtime = adtb_sys::os::OsRuntime> {
     call: Option<i64>,
 }
 
+/// What a task's owner reaches of its call.
+struct Parts<R: Runtime> {
+    shared: Arc<Shared<R>>,
+    admitted: exec::Admitted<R>,
+}
+
 impl<R: Runtime> std::fmt::Debug for Task<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Task")
-            .field("admitted", &self.admitted)
+            .field("admitted", &self.parts.enter().admitted)
             .finish_non_exhaustive()
     }
 }
@@ -292,7 +325,8 @@ impl<R: Runtime> Task<R> {
     /// Returns the next layout or batch, the end of the batches, the completion, or pending
     /// with `waker` registered. Never runs a statement.
     pub fn observe(&self, waker: &Waker) -> Observation {
-        let mut s = self.shared.state.lock(&self.shared.rt);
+        let parts = self.parts.enter();
+        let mut s = parts.shared.state.lock(&parts.shared.rt);
         if let Some(o) = s.out.pop_front() {
             return match o {
                 Out::Layout(l) => Observation::Layout(l),
@@ -312,13 +346,13 @@ impl<R: Runtime> Task<R> {
         if s.produced && !s.drained {
             return Observation::End;
         }
-        s.observer = Some(waker.clone());
+        s.observer = Some(Waker::from(Arc::new(Unmarked(Some(waker.clone())))));
         Observation::Pending
     }
 
     /// Allow the call to form `bytes` more of batches.
     pub fn supply(&self, bytes: usize) {
-        self.shared.with(|s| {
+        self.parts.enter().shared.with(|s| {
             s.room = s.room.saturating_add(bytes);
             ((), [None, s.producer.take()])
         });
@@ -326,7 +360,7 @@ impl<R: Runtime> Task<R> {
 
     /// Acknowledge that the last batch's encoded bytes have been sent.
     pub fn drained(&self) {
-        self.shared.with(|s| {
+        self.parts.enter().shared.with(|s| {
             s.drained = true;
             ((), [s.observer.take(), s.producer.take()])
         });
@@ -345,22 +379,25 @@ impl<R: Runtime> Task<R> {
 
     /// Returns the bytes the call's grant has out, batches handed out included.
     pub fn held(&self) -> usize {
-        let grant = self.shared.state.lock(&self.shared.rt).grant.upgrade();
+        let parts = self.parts.enter();
+        let grant = parts.shared.state.lock(&parts.shared.rt).grant.upgrade();
         grant.map_or(0, |g| g.used())
     }
 
     fn request(&self, r: Request) {
-        self.shared.request(&self.admitted, r, &self.cancel);
+        let parts = self.parts.enter();
+        parts.shared.request(&parts.admitted, r, &self.cancel);
     }
 }
 
 impl<R: Runtime> Drop for Task<R> {
     fn drop(&mut self) {
+        let parts = self.parts.enter();
         if let Some((token, id)) = &self.caller {
             token.forget(*id);
         }
         self.request(Request::Drop);
-        let out = std::mem::take(&mut self.shared.state.lock(&self.shared.rt).out);
+        let out = std::mem::take(&mut parts.shared.state.lock(&parts.shared.rt).out);
         drop(out);
     }
 }
@@ -402,11 +439,12 @@ pub(super) fn args_hash(schema: &Schema, params: &[(&str, &Ty, &Val)]) -> Result
 }
 
 pub(super) fn submit<R: Runtime>(
-    e: &Arc<Engine<R>>,
+    handle: &Handle<R>,
     (admitted, work): (Admitted, Work),
     role_call: Option<RoleCall<R>>,
     mut opts: TaskOptions,
 ) -> Result<Task<R>, Error> {
+    let e = handle.enter();
     let sched = e.scheduler();
     let rt = &e.rt;
     let entry = admitted.entry();
@@ -427,7 +465,7 @@ pub(super) fn submit<R: Runtime>(
         let id = t.on_cancel(Waker::from(stopper.clone()));
         (t, id)
     });
-    let call = Call::new(e, shared.clone(), (admitted, work), role_call, opts);
+    let call = Call::new(handle, shared.clone(), (admitted, work), role_call, opts);
     match sched.admit(entry, Box::new(call)) {
         Ok(admitted) => {
             if stopper.admitted.set(admitted.clone()).is_err() {
@@ -437,8 +475,7 @@ pub(super) fn submit<R: Runtime>(
                 stopper.wake_by_ref();
             }
             Ok(Task {
-                shared,
-                admitted,
+                parts: Gated::new(Parts { shared, admitted }),
                 cancel,
                 caller,
                 call: call_id,
@@ -510,7 +547,7 @@ mod tests {
 
         fn wake_by_ref(self: &Arc<Self>) {
             if std::thread::current().id() != self.main.id()
-                && self.db.engine.open.try_write().is_none()
+                && self.db.tested().open.try_write().is_none()
             {
                 self.under.fetch_add(1, Ordering::AcqRel);
             }
@@ -548,7 +585,7 @@ mod tests {
     #[test]
     fn a_close_reentered_on_the_closing_thread_returns_at_once() {
         let (dir, db) = opened("task-reentry");
-        let e = &*db.engine;
+        let e = db.tested();
         *e.close.lock(&e.rt) = Some(super::super::super::Close {
             by: e.rt.current(),
             kept: Vec::new(),
@@ -616,7 +653,7 @@ mod tests {
             ..OpenOptions::default()
         };
         let db = Database::open_in(rt, "readmit.adt", &log, &options).expect("open");
-        let e = db.engine.clone();
+        let e = db.tested();
         let caller = e.principal(None).expect("principal");
         let items = Prepared::parsed("verify").expect("parses");
         let p = Prepared::of_items(&e.compiled, &e.hash, &e.explained(), &items, &[], caller)
@@ -629,7 +666,7 @@ mod tests {
             readmission: Some(Readmission::Text {
                 session: RoleSession {
                     serial: 0,
-                    engine: Weak::new(),
+                    engine: adtb_sys::gated::GatedWeak::new(),
                     id: RoleId(1),
                     name: "w".to_owned(),
                 },
@@ -647,7 +684,7 @@ mod tests {
             .admit_program(p, &queued, Authority::Owner)
             .expect("it is admitted");
         let task = submit(
-            &e,
+            &db.engine,
             (admitted, Work::Text),
             Some(call),
             TaskOptions::default(),

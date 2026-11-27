@@ -307,6 +307,7 @@ impl<R: Runtime> Wake for Wakeup<R> {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
+        let _inside = adtb_sys::panics::inside();
         if let Some(inner) = self.inner.upgrade() {
             inner.wake(&self.rt, self.id);
         }

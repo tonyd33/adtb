@@ -1,3 +1,4 @@
+use crate::api::entered::Enters;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -512,7 +513,7 @@ impl<R: Runtime> RoleAuthority<R> {
         let statement = statement(text)?;
         let grantee = role_name(&statement.to.text)?;
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
-        let e = &e.enter()?;
+        let e = &e.call()?;
         let _writer = e.deployed.write(&e.rt);
         store::run(e, true, &mut |e, tx, id, changes| {
             self.grant_in(e, tx, id, changes, (session, &statement, &grantee, text))

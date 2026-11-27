@@ -405,7 +405,7 @@ fn opening_an_empty_legacy_roles_table_preserves_a_full_counter_page() {
             .expect("native owner initialization must not reserve a generated counter");
         assert_eq!(
             before,
-            db.engine.pager.read(sequences).unwrap()[HEADER_LEN..],
+            db.tested().pager.read(sequences).unwrap()[HEADER_LEN..],
             "opening preserves every existing counter reservation"
         );
         let owner = db.role_authority().session("owner").unwrap();
@@ -492,7 +492,7 @@ fn a_nonempty_ownerless_roles_table_is_refused_and_releases_open_resources() {
 
 /// Returns the hex of the version hash of `db`'s schema.
 fn version_hash(db: &Db) -> String {
-    crate::catalog::version_hash(&db.engine.source)
+    crate::catalog::version_hash(&db.tested().source)
         .expect("the log resolves")
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -509,7 +509,7 @@ fn a_damaged_page_met_writing_a_registrations_facts_is_a_storage_failure() {
             version_hash(db)
         ))
         .expect("the bundle parses");
-        let e = &db.engine;
+        let e = db.tested();
         for pid in e.deployment.roots().pages(&e.pager).unwrap() {
             e.pager.plant_damage(pid, Damage::Unreadable);
         }
@@ -698,7 +698,7 @@ fn a_role_dropped_in_the_admit_window_refuses_with_its_audit_row() {
             let w = authority.session("w").unwrap();
             authority.drop_role("w").unwrap();
             let denied_rows = "from a in catalog::audit.Denied select a.seq";
-            let service = super::service(db.engine.schema(), "w");
+            let service = super::service(db.tested().schema(), "w");
             assert_eq!(0, rows(db, denied_rows).len());
             denied(
                 authority.admit_principal(
@@ -729,6 +729,7 @@ fn family_grant_over_forged_mark(seed: u64, forge: impl Fn(&mut Stored, i64)) ->
             .register(&owner, &Registration::bundle(bundle).unwrap())
             .unwrap();
         let e = authority.engine.upgrade().unwrap();
+        let e = e.enter();
         e.registered.lock(&e.rt).clear();
         e.bundle_writer().change(|stored| {
             let id = stored.bundles["web-1.0"].id;
@@ -784,7 +785,7 @@ fn bundle_of_ann<T>(seed: u64, body: impl FnOnce(&Db) -> T) -> T {
 }
 
 fn forge(db: &Db, change: impl Fn(&mut Stored, i64)) {
-    let e = &db.engine;
+    let e = db.tested();
     e.bundle_writer().change(|stored| {
         let id = stored.bundles["cat-1.0"].id;
         change(stored, id);
@@ -796,7 +797,7 @@ fn only_a_revoke_of_what_a_bundle_counts_looks_at_a_lacking_owner() {
     bundle_of_ann(418, |db| {
         let authority = db.role_authority();
         let owner = authority.session("owner").unwrap();
-        let renewed = db.engine.deployed.read(&db.engine.rt).bundles["cat-1.0"].renewed;
+        let renewed = db.tested().deployed.read(&db.tested().rt).bundles["cat-1.0"].renewed;
         forge(db, |s, _| {
             s.bundles.get_mut("cat-1.0").unwrap().renewed = i64::MIN / 2;
         });
@@ -820,6 +821,7 @@ fn a_bundle_of_the_grantee_that_cannot_be_read_refuses_a_counted_revoke() {
         let authority = db.role_authority();
         let owner = authority.session("owner").unwrap();
         let e = authority.engine.upgrade().unwrap();
+        let e = e.enter();
         e.registered.lock(&e.rt).clear();
         forge(db, |s, id| {
             s.deployed.registered.get_mut(&id).unwrap().text = "garbled".into();
@@ -840,6 +842,7 @@ fn a_bundle_with_no_text_cannot_be_read_until_it_is_presented_or_retired() {
     bundle_of_ann(420, |db| {
         let authority = db.role_authority();
         let e = authority.engine.upgrade().unwrap();
+        let e = e.enter();
         e.registered.lock(&e.rt).clear();
         forge(db, |s, id| {
             s.deployed.registered.remove(&id);

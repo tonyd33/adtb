@@ -35,11 +35,11 @@ fn failing_write(
     run(&mut sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &options(2));
         before(&db);
-        let unrecorded = db.engine.db.txns().unrecorded_aborts();
+        let unrecorded = db.tested().db.txns().unrecorded_aborts();
         let got = db
             .query_text(FAILING, &[], &CallOptions::default())
             .map(drop);
-        let counted = db.engine.db.txns().unrecorded_aborts() - unrecorded;
+        let counted = db.tested().db.txns().unrecorded_aborts() - unrecorded;
         db.close().expect("the database closes");
         (got, counted)
     })
@@ -96,10 +96,10 @@ fn a_transaction_ended_by_a_failure_its_abort_cannot_record_answers_later_calls_
             page.0
         ));
         let cause = storage(format!("page {} is unreadable", page.0));
-        let unrecorded = db.engine.db.txns().unrecorded_aborts();
+        let unrecorded = db.tested().db.txns().unrecorded_aborts();
         let failing = txn.query_text(RENAME, &[], &opts).map(drop);
         assert_eq!(Err(record), failing, "the failing call");
-        assert_eq!(1, db.engine.db.txns().unrecorded_aborts() - unrecorded);
+        assert_eq!(1, db.tested().db.txns().unrecorded_aborts() - unrecorded);
         let later = txn.query_text("1", &[], &opts).map(drop);
         assert_eq!(Err(cause.clone()), later, "a later call");
         assert_eq!(Err(cause), txn.commit(None).map(drop), "the commit");
@@ -145,7 +145,7 @@ fn damage_met_writing_a_lapsed_lease_fails_as_storage_and_marks_nothing() {
             };
             db.testing().plant(refused).expect("planted");
         }
-        let unrecorded = db.engine.db.txns().unrecorded_aborts();
+        let unrecorded = db.tested().db.txns().unrecorded_aborts();
         let got = db
             .query_text("set setting LeaseGrace = { grace: 100h }", &[], &opts)
             .map(drop);
@@ -161,7 +161,7 @@ fn damage_met_writing_a_lapsed_lease_fails_as_storage_and_marks_nothing() {
             "{got:?} names no page of {pages:?}"
         );
         assert_eq!(BTreeSet::new(), db.testing().probe().marks());
-        assert_eq!(0, db.engine.db.txns().unrecorded_aborts() - unrecorded);
+        assert_eq!(0, db.tested().db.txns().unrecorded_aborts() - unrecorded);
         db.close().expect("the database closes");
     });
 }
@@ -205,7 +205,7 @@ fn a_call_meeting_a_closed_pager_is_rejected_as_closed() {
     let mut sim = Sim::new(19, Config::default());
     run(&mut sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &options(2));
-        db.engine.pager.close();
+        db.tested().pager.close();
         let got = db
             .query_text(
                 r#"insert users { name: "a" }"#,
@@ -219,7 +219,7 @@ fn a_call_meeting_a_closed_pager_is_rejected_as_closed() {
             }),
             got
         );
-        *db.engine.open.write(&rt) = false;
+        *db.tested().open.write(&rt) = false;
     });
 }
 
@@ -233,8 +233,8 @@ fn a_closed_pager_is_rejected_as_closed_once_the_database_is_marked() {
             .expect("the database is marked");
         let schema = crate::catalog::engine_schema();
         let reply = |e| {
-            let mapped = db.engine.db.mapping().fail(write::Error::Transactions(e));
-            Error::of_write(&db.engine.db, &schema, super::TxnId(7), mapped)
+            let mapped = db.tested().db.mapping().fail(write::Error::Transactions(e));
+            Error::of_write(&db.tested().db, &schema, super::TxnId(7), mapped)
         };
         assert_eq!(
             Error::Rejected {

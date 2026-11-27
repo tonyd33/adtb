@@ -100,3 +100,45 @@ fn the_engines_hook_runs_the_hook_it_replaced_and_ends_only_a_panic_on_an_engine
         *reports.lock().unwrap()
     );
 }
+
+#[test]
+fn a_panic_in_an_engine_call_on_the_callers_thread_ends_the_run_though_the_caller_catches_it() {
+    let mut sim = Sim::new(5, Config::default());
+    let after = Arc::new(AtomicBool::new(false));
+    let seen = after.clone();
+    let run = catch_unwind(AssertUnwindSafe(|| {
+        sim.run(move |rt| {
+            let db = open::opened(&rt, open::FILE, &Log::new([APP]), &open::options(1));
+            let (caller, hook_rt) = (rt.current(), rt);
+            let fired = AtomicBool::new(false);
+            db.testing().on_step(move |_| {
+                if hook_rt.current() == caller && !fired.swap(true, Ordering::SeqCst) {
+                    panic!("an engine invariant");
+                }
+            });
+            let caught = catch_unwind(AssertUnwindSafe(|| {
+                db.query_text(
+                    "insert users { id: users.key(1) }",
+                    &[],
+                    &CallOptions::default(),
+                )
+            }));
+            drop(caught);
+            drop(db.query_text(
+                "insert users { id: users.key(2) }",
+                &[],
+                &CallOptions::default(),
+            ));
+            seen.store(true, Ordering::SeqCst);
+        })
+    }));
+    let payload = run.expect_err("the panic ends the run");
+    assert_eq!(
+        Some("an engine invariant".to_owned()),
+        adtb::testing::panic_text(&*payload)
+    );
+    assert!(
+        !after.load(Ordering::SeqCst),
+        "the caller's next write returned after the panic"
+    );
+}

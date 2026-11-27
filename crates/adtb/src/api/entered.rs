@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+use adtb_sys::gated::Gated;
+use adtb_sys::panics::Inside;
+
 use crate::catalog::{self, VersionHash};
 use crate::runtime::Runtime;
 use crate::write::{self, Bounds, Local, Txn};
@@ -20,6 +23,39 @@ pub(super) struct Entered<'e, R: Runtime> {
     engine: &'e Engine<R>,
     mapping: write::Mapping<'e, R>,
     _open: std::sync::RwLockReadGuard<'e, bool>,
+    /// Dropped last, so the mapping at the drop runs marked.
+    inside: Option<Inside>,
+}
+
+/// The engine every handle on a database shares, reached only with the calling thread marked as
+/// running engine code.
+pub(super) type Handle<R> = Gated<Engine<R>>;
+
+/// Open a call on the engine of a [`Handle`].
+pub(super) trait Enters<R: Runtime> {
+    /// Returns the engine held open for one call, the calling thread marked as running engine
+    /// code until it drops, or refuses a call of a closed database.
+    fn call(&self) -> Result<Entered<'_, R>, Error>;
+
+    /// Returns the engine held open for one call as [`Enters::call`] does, `None` when it is closed
+    /// or closing.
+    fn try_call(&self) -> Option<Entered<'_, R>>;
+}
+
+impl<R: Runtime> Enters<R> for Handle<R> {
+    fn call(&self) -> Result<Entered<'_, R>, Error> {
+        let (engine, inside) = self.enter().detach();
+        let mut entered = engine.enter()?;
+        entered.inside = Some(inside);
+        Ok(entered)
+    }
+
+    fn try_call(&self) -> Option<Entered<'_, R>> {
+        let (engine, inside) = self.enter().detach();
+        let mut entered = engine.try_enter()?;
+        entered.inside = Some(inside);
+        Some(entered)
+    }
 }
 
 impl<R: Runtime> std::ops::Deref for Entered<'_, R> {
@@ -51,6 +87,7 @@ impl<R: Runtime> Engine<R> {
                 engine: self,
                 mapping: self.db.mapping(),
                 _open: open,
+                inside: None,
             })
         } else {
             Err(Error::closed())
@@ -64,6 +101,7 @@ impl<R: Runtime> Engine<R> {
             engine: self,
             mapping: self.db.mapping(),
             _open: open,
+            inside: None,
         })
     }
 }

@@ -2,7 +2,9 @@
 //! by ordinal with arguments, each for the principal of its call.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
+
+use adtb_sys::gated::GatedWeak;
 use std::time::SystemTime;
 
 use adtb_lang::ast::{BundleItem, Import, OperatorKind};
@@ -29,6 +31,7 @@ use super::admitted::{Authority, CALL_BYTES, Queued};
 use super::arrow::{self, ArrowStream};
 use super::bundle::{self, CallRow, Callable, EDITION, Header, Passed, Stored};
 use super::cause::{Broken, internal};
+use super::entered::{Enters, Handle};
 use super::error::{Error, FatalReason, RejectReason};
 use super::pinned;
 use super::reads::Reads;
@@ -989,7 +992,7 @@ fn joined<'a>(ms: impl Iterator<Item = &'a str>) -> String {
 /// database open: once the database closes, every call through it is refused.
 #[derive(Debug)]
 pub struct Registered<R: Runtime = adtb_sys::os::OsRuntime> {
-    engine: Weak<Engine<R>>,
+    engine: GatedWeak<Engine<R>>,
     checked: Arc<Checked>,
 }
 
@@ -1009,7 +1012,7 @@ impl<R: Runtime> Database<R> {
     /// Fail with `Retired`, `BundleSuperseded` or `BundleExpired` for a bundle that is, and with
     /// `UnknownBundle` for a name no registration of this open has.
     pub fn registered(&self, name: &str) -> Result<Registered<R>, Error> {
-        let e = &self.engine.enter()?;
+        let e = &self.engine.call()?;
         e.bind(name)?;
         let found = Registered::served(&self.engine, name);
         if found.is_none() {
@@ -1052,7 +1055,7 @@ impl<R: Runtime> Registered<R> {
     /// limit. The call passes admission as [`Database::query_text`] does.
     pub fn call(&self, ordinal: u32, args: &[Val], opts: &CallOptions) -> Result<Called, Error> {
         let e = self.engine()?;
-        let e = &e.enter()?;
+        let e = &e.call()?;
         let (entry, p, due) = self.admitted(e, ordinal, args, false, || {
             e.principal(opts.assert.as_ref())
         })?;
@@ -1095,7 +1098,7 @@ impl<R: Runtime> Registered<R> {
     }
 
     /// Returns the engine, refusing a call once the database is closed.
-    fn engine(&self) -> Result<Arc<Engine<R>>, Error> {
+    fn engine(&self) -> Result<Handle<R>, Error> {
         self.engine.upgrade().ok_or_else(Error::closed)
     }
 
@@ -1155,15 +1158,16 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         args: &[Val],
         opts: &TxnCallOptions,
     ) -> Result<InTxn, Error> {
-        if !std::ptr::eq(self.engine, reg.engine.as_ptr()) {
+        if !reg.engine.is(self.engine) {
             return Err(Error::invalid(
                 "a registration calls only in a transaction of its own database",
             ));
         }
-        let (entry, p, due) = reg.admitted(self.engine, ordinal, args, self.read_only, || {
+        let engine = self.engine.enter();
+        let (entry, p, due) = reg.admitted(&engine, ordinal, args, self.read_only, || {
             Ok(self.caller.clone())
         })?;
-        let e = &self.engine.enter()?;
+        let e = &self.engine.call()?;
         let admitted = e.admit_program(
             p,
             &reg.queued(args, opts.priority, opts.deadline),
@@ -1319,13 +1323,14 @@ impl<R: Runtime> Registered<R> {
     }
 
     /// Returns the registration `name` the engine serves.
-    pub(super) fn served(e: &Arc<Engine<R>>, name: &str) -> Option<Registered<R>> {
+    pub(super) fn served(handle: &Handle<R>, name: &str) -> Option<Registered<R>> {
+        let e = handle.enter();
         e.registered
             .lock(&e.rt)
             .iter()
             .find(|c| c.name == name)
             .map(|c| Registered {
-                engine: Arc::downgrade(e),
+                engine: handle.downgrade(),
                 checked: c.clone(),
             })
     }

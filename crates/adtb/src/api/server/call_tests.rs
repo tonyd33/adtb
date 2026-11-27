@@ -39,7 +39,7 @@ fn a_call_dropped_holding_its_read_leaves_nothing_of_its_transaction() {
         ..OpenOptions::default()
     };
     let db = Database::open_in(rt, "drop.adt", &Log::new([APP]), &options).expect("open");
-    let e = db.engine.clone();
+    let e = db.tested();
     let caller = e.principal(None).expect("principal");
     let items = Prepared::parsed("from u in users select u").expect("parses");
     let p = Prepared::of_items(&e.compiled, &e.hash, &e.explained(), &items, &[], caller)
@@ -48,23 +48,22 @@ fn a_call_dropped_holding_its_read_leaves_nothing_of_its_transaction() {
         rt: e.rt.clone(),
         state: Lock::new(State::default()),
     });
-    let work = (admitted(&e, p), Work::Text);
-    let mut call = Call::new(&e, shared, work, None, TaskOptions::default());
+    let work = (admitted(e, p), Work::Text);
+    let mut call = Call::new(&db.engine, shared, work, None, TaskOptions::default());
     assert_eq!(
         Step::Wait,
         call.run(Waker::noop()),
         "the output waits for room"
     );
     let held = |e: &super::super::Engine<OsRuntime>| (e.db.tracked(), e.db.readers_held());
-    assert_eq!((1, 1), held(&e), "the call holds its read");
+    assert_eq!((1, 1), held(e), "the call holds its read");
     drop(call);
-    assert_eq!((0, 0), held(&e), "serializer, readers");
+    assert_eq!((0, 0), held(e), "serializer, readers");
     assert_eq!(
         1,
         e.db.take_ends_by_drop(),
         "the call's transaction ended by drop"
     );
-    drop(e);
     db.close().unwrap();
 }
 
@@ -106,7 +105,7 @@ fn waiting_write(then: impl FnOnce(Waiting<'_>)) -> (Left, Error) {
         other
             .query_text(RENAME, &[], &TxnCallOptions::default())
             .expect("the other rename");
-        let e = db.engine.clone();
+        let e = db.tested();
         let caller = e.principal(None).expect("principal");
         let text = format!("{RENAME}\nfail \"no\"");
         let items = Prepared::parsed(&text).expect("parses");
@@ -116,8 +115,14 @@ fn waiting_write(then: impl FnOnce(Waiting<'_>)) -> (Left, Error) {
             rt: e.rt.clone(),
             state: Lock::new(State::default()),
         });
-        let work = (admitted(&e, p), Work::Text);
-        let call = Call::new(&e, shared.clone(), work, None, TaskOptions::default());
+        let work = (admitted(e, p), Work::Text);
+        let call = Call::new(
+            &db.engine,
+            shared.clone(),
+            work,
+            None,
+            TaskOptions::default(),
+        );
         let mut call = Box::new(call);
         let waits = call.run(Waker::noop());
         assert_eq!(Step::Wait, waits, "the call waits on the other");
@@ -148,7 +153,6 @@ fn waiting_write(then: impl FnOnce(Waiting<'_>)) -> (Left, Error) {
         });
         let settled = shared.state.lock(&e.rt).settled.clone();
         let counted = e.db.txns().unrecorded_aborts() - unrecorded;
-        drop(e);
         db.close().expect("the database closes");
         ((settled, counted), failed)
     })

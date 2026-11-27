@@ -256,6 +256,15 @@ the engine. Either ends the process. Commits that were waiting on the
 failed flush were not acknowledged: their calls never returned. The
 next open recovers as step 3 of §2.1 states.
 
+A broken internal invariant ends the process before any of the engine's
+state it held is released. A panic the program raises in its own code
+outside the engine, and one a host function raises (§10.1), is left to
+the program: the engine does not end the process for it. The engine
+installs its panic hook during the program's first `open`, over the hook
+in place then, which still runs for every panic. A hook the program
+installs after that replaces the engine's unless it calls the hook it
+took over.
+
 Rulings: surface/open-applies, engine/embedded-server, ops/admin/role/capabilities, buffer/fsync-fail/panic-replay, project/arch/errors/fatal-split
 
 ## 3. Bundles

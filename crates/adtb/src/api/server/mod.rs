@@ -17,9 +17,10 @@ pub(super) use tables::AuditRow;
 pub(super) use tables::{CredentialRow, PeerRow};
 mod task;
 
+use crate::api::entered::Enters;
+use adtb_sys::gated::GatedWeak;
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Weak};
 
 use adtb_lang::ast::{AdhocItem, OperatorKind, Revoke};
 pub use adtb_lang::evolve::Capability;
@@ -49,14 +50,14 @@ pub use task::{Observation, Task, TaskOptions};
 
 #[derive(Clone, Debug)]
 pub struct RoleAuthority<R: Runtime = adtb_sys::os::OsRuntime> {
-    engine: Weak<Engine<R>>,
+    engine: GatedWeak<Engine<R>>,
 }
 
 impl<R: Runtime> Database<R> {
     /// Returns the trusted embedded owner's role administration provider.
     pub fn role_authority(&self) -> RoleAuthority<R> {
         RoleAuthority {
-            engine: Arc::downgrade(&self.engine),
+            engine: self.engine.downgrade(),
         }
     }
 }
@@ -105,6 +106,7 @@ impl<R: Runtime> RoleAuthority<R> {
     pub fn drop_role(&self, name: &str) -> Result<(), Error> {
         let name = role_name(name)?;
         let engine = self.engine.upgrade().ok_or_else(Error::closed)?;
+        let engine = engine.enter();
         let _writer = engine.deployed.write(&engine.rt);
         self.access(true, |e, tx, id, changes| {
             let t = Tables::new(e.schema(), id, None);
@@ -254,7 +256,7 @@ impl<R: Runtime> RoleAuthority<R> {
     ) -> Result<(), Error> {
         let statement = revoke_statement(text)?;
         let engine = self.engine.upgrade().ok_or_else(Error::closed)?;
-        let engine = &engine.enter()?;
+        let engine = &engine.call()?;
         let _writer = engine.deployed.write(&engine.rt);
         store::run(engine, true, &mut |e, tx, id, changes| {
             let t = Tables::new(e.schema(), id, None);
@@ -328,7 +330,7 @@ impl<R: Runtime> RoleAuthority<R> {
         ) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let engine = self.engine.upgrade().ok_or_else(Error::closed)?;
-        let engine = &engine.enter()?;
+        let engine = &engine.call()?;
         store::run(engine, write, &mut body)
     }
 
@@ -339,7 +341,7 @@ impl<R: Runtime> RoleAuthority<R> {
         e: &Entered<'_, R>,
         tx: &crate::write::Txn,
     ) -> Result<(), Error> {
-        if !Weak::ptr_eq(&self.engine, &session.engine) {
+        if !self.engine.ptr_eq(&session.engine) {
             return Err(denied("the role session belongs to another database"));
         }
         if t.role(e, tx, &session.name)?.id != session.id {

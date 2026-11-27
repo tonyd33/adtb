@@ -653,6 +653,26 @@ fn each_collection_constructor_called_or_passed_collect_to_vec_vec_and_a_kept_or
 }
 
 #[test]
+fn an_ungated_engine_handle_written_as_a_type_rename_alias_or_self_receiver_is_a_site() {
+    assert_eq!(
+        sites_of(
+            "engine-handles.tql",
+            "engine_handles",
+            "engine_handles.rs.txt"
+        ),
+        lines_of("engine_handles.rs.txt", &[1, 2, 3, 4, 5, 11])
+    );
+}
+
+#[test]
+fn a_detach_by_method_or_path_is_a_site() {
+    assert_eq!(
+        sites_of("gated-detach.tql", "gated_detach", "engine_handles.rs.txt"),
+        lines_of("engine_handles.rs.txt", &[7, 8])
+    );
+}
+
+#[test]
 fn a_raw_id_decode_by_path_qualified_path_value_macro_argument_rename_or_alias_is_a_site() {
     assert_eq!(
         sites_of("from-raw.tql", "from_raw", "fromraw.rs.txt"),

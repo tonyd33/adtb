@@ -1,3 +1,4 @@
+use crate::api::entered::Enters;
 use std::sync::Arc;
 
 use adtb_lang::evolve::{Granted, Privilege, target_covers};
@@ -144,9 +145,9 @@ impl<R: Runtime> RoleAuthority<R> {
             bundle: bundle.to_owned(),
             query: 0,
         };
-        let caller = service(e.schema(), &session.name);
+        let caller = service(e.enter().schema(), &session.name);
         let held = self.record_refusal(session, &caller, &origin, held)?;
-        let e = &e.enter()?;
+        let e = &e.call()?;
         let row = e.deployed.read(&e.rt).bundles.get(bundle).cloned();
         let header = row
             .as_ref()

@@ -1,0 +1,12 @@
+struct A { e: Arc<Engine<R>> }
+fn f(e: &std::sync::Weak<Engine<R>>) {}
+use super::Engine as Core;
+type Core<R> = Engine<R>;
+fn g() { let v: Vec<Arc<Engine<R>>> = vec![]; }
+fn h(e: Gated<Engine<R>>, w: GatedWeak<Engine<R>>, r: Arc<EngineRow<2>>) {}
+fn i() { let x = e.enter().detach(); }
+fn j() { let x = Entry::detach(e); }
+fn k() { let x = thread.detached(); }
+impl Deref for E { type Target = Engine<R>; }
+impl<R> Engine<R> { fn l(self: &Arc<Self>) {} }
+impl<R> Other<R> { fn m(self: &Arc<Self>) {} }

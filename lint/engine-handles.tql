@@ -1,0 +1,42 @@
+-- engine_handles: a handle on the engine that does not gate it, `Arc<Engine<..>>` or
+-- `Weak<Engine<..>>` written as a type, with or without a path, or in a macro's arguments; and a
+-- `type` alias, but a `Deref` impl's `Target`, or a `use .. as` rename of `Engine`, under which a
+-- type is not seen; and an `Arc<Self>` or `Weak<Self>` in an `impl` of `Engine`. Not seen: an
+-- `Arc` of an engine whose type is inferred, as from `Arc::new(engine)`.
+
+types = do {
+  t <- descendants_of_kind :generic_type;
+  guard $ text t ~ r"^((\w+::)*)(Arc|Weak)\s*<\s*((\w+::)*)Engine\s*<";
+  return t;
+};
+
+macro_args = do {
+  m <- descendants_of_kind :macro_invocation;
+  guard $ text m ~ r"\b(Arc|Weak)\s*<\s*((\w+::)*)Engine\s*<";
+  return m;
+};
+
+renames = do {
+  u <- descendants_of_kind :use_as_clause;
+  guard $ text u ~ r"(^|::)Engine\s+as\s";
+  return u;
+};
+
+aliases = do {
+  t <- descendants_of_kind :type_item;
+  guard $ not (text t ~ r"^type\s+Target\b");
+  v <- pure t | #type;
+  guard $ text v ~ r"^((\w+::)*)Engine\b";
+  return t;
+};
+
+selves = do {
+  i <- descendants_of_kind :impl_item;
+  v <- pure i | #type;
+  guard $ text v ~ r"^((\w+::)*)Engine\b";
+  t <- pure i | descendants_of_kind :generic_type;
+  guard $ text t ~ r"^((\w+::)*)(Arc|Weak)\s*<\s*Self\s*>";
+  return t;
+};
+
+main = types `alt` macro_args `alt` renames `alt` aliases `alt` selves | arr range;

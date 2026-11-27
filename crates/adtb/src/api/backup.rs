@@ -11,11 +11,15 @@ use crate::runtime::Runtime;
 use crate::storage::{self, BackupError, BackupRun, Envelope, Manifest, Passphrase, Proved};
 use crate::write::{self, Bounds, Local, Stop, Txn};
 
+use adtb_sys::panics::{Inside, inside};
+
 use super::cause::Failure;
 use super::error::{FatalReason, RejectReason};
 use super::statements::Refusal;
 use super::text::{DynRows, Prepared, rows};
-use super::{Database, Engine, Entered, Error, Log, OpenError, OpenOptions, Position, TxnId};
+use super::{
+    Database, Engine, Entered, Error, Log, OpenError, OpenOptions, Position, TxnId, entry,
+};
 
 /// The catalog version of this engine's edition.
 pub(super) const CATALOG_VERSION: u64 = 1;
@@ -122,6 +126,7 @@ fn restored<R: Runtime>(
     path: &str,
     to: RestorePoint,
     options: &OpenOptions,
+    _marked: &Inside,
 ) -> Result<Restored, Error> {
     refuse_scheme(source)?;
     refuse_scheme(path)?;
@@ -176,7 +181,7 @@ pub fn restore_in<R: Runtime>(
     to: RestorePoint,
     options: &OpenOptions,
 ) -> Result<Vec<u64>, Error> {
-    Ok(restored(&rt, (&archive.0, None), path, to, options)?.damaged)
+    entry(move |marked| Ok(restored(&rt, (&archive.0, None), path, to, options, marked)?.damaged))
 }
 
 /// Restore `archive` as [`restore_in`] does, an encrypted dump under `phrase`. Returns what the
@@ -189,7 +194,7 @@ pub fn restore_report_in<R: Runtime>(
     to: RestorePoint,
     options: &OpenOptions,
 ) -> Result<Restored, Error> {
-    restored(&rt, (&archive.0, phrase), path, to, options)
+    entry(move |marked| restored(&rt, (&archive.0, phrase), path, to, options, marked))
 }
 
 /// Restore the backup at `archive` as the new database file at `path`. A relative `archive` and
@@ -215,10 +220,12 @@ pub fn restore_decrypted(
     options: OpenOptions,
     phrase: Option<&Passphrase>,
 ) -> Result<Vec<u64>, Error> {
-    let (rt, path) = host_runtime(path.as_ref(), &options)?;
-    let source = std::path::absolute(&archive.0).map_err(|e| Error::invalid(e.to_string()))?;
-    let source = source.to_string_lossy();
-    Ok(restored(&rt, (&source, phrase), &path, to, &options)?.damaged)
+    entry(|marked| {
+        let (rt, path) = host_runtime(path.as_ref(), &options)?;
+        let source = std::path::absolute(&archive.0).map_err(|e| Error::invalid(e.to_string()))?;
+        let source = source.to_string_lossy();
+        Ok(restored(&rt, (&source, phrase), &path, to, &options, marked)?.damaged)
+    })
 }
 
 /// Returns the host's runtime, and `path` as an absolute path it can open.
@@ -243,39 +250,55 @@ pub fn prove_in<R: Runtime>(
     log: &Log,
     options: &OpenOptions,
 ) -> Result<Proof, Error> {
+    entry(move |marked| proved(&rt, archive, log, options, marked))
+}
+
+fn proved<R: Runtime>(
+    rt: &R,
+    archive: &ArchiveTarget,
+    log: &Log,
+    options: &OpenOptions,
+    _marked: &Inside,
+) -> Result<Proof, Error> {
     let source = archive.0.as_str();
-    storage::read_manifest(&rt, source).map_err(refused)?;
-    let (manifest, text) = match storage::check_backup(&rt, source) {
+    storage::read_manifest(rt, source).map_err(refused)?;
+    let (manifest, text) = match storage::check_backup(rt, source) {
         Err(e @ BackupError::Damaged { .. }) => {
-            storage::withdraw_proof(&rt, source).map_err(refused)?;
+            storage::withdraw_proof(rt, source).map_err(refused)?;
             return Err(refused(e));
         }
         checked => checked.map_err(refused)?,
     };
     let hash = storage::manifest_hash(&text);
-    let scratch = storage::make_scratch(&rt, source).map_err(refused)?;
+    let scratch = storage::make_scratch(rt, source).map_err(refused)?;
     let file = storage::scratch_file(&scratch);
-    if let Err(e) = restore_checked(&rt, source, &file, options) {
-        storage::remove_scratch(&rt, &scratch).ok();
+    if let Err(e) = restore_checked(rt, source, &file, options) {
+        storage::remove_scratch(rt, &scratch).ok();
         return Err(e);
     }
-    let proved = test_restore(&rt, &file, log, options, &manifest);
-    storage::remove_scratch(&rt, &scratch).map_err(refused)?;
+    let proved = test_restore(rt, &file, log, options, &manifest);
+    storage::remove_scratch(rt, &scratch).map_err(refused)?;
     let proved = proved?;
-    storage::write_proof(&rt, source, &hash, &proved).map_err(refused)?;
+    storage::write_proof(rt, source, &hash, &proved).map_err(refused)?;
     Ok(proof_of(proved))
 }
 
 /// Prove the backup at `archive` as [`prove_in`] does, under the host's runtime.
 #[cfg(target_os = "linux")]
 pub fn prove(archive: &ArchiveTarget, log: &Log, options: &OpenOptions) -> Result<Proof, Error> {
-    let (rt, source) = host_runtime(std::path::Path::new(&archive.0), options)?;
-    prove_in(rt, &ArchiveTarget(source), log, options)
+    entry(|_| {
+        let (rt, source) = host_runtime(std::path::Path::new(&archive.0), options)?;
+        prove_in(rt, &ArchiveTarget(source), log, options)
+    })
 }
 
 /// Returns how far the proof file beside the manifest at `archive` proves it. A proof file torn,
 /// absent or naming another manifest proves nothing.
 pub fn proof_in<R: Runtime>(rt: &R, archive: &ArchiveTarget) -> Result<Proof, Error> {
+    entry(|marked| proof(rt, archive, marked))
+}
+
+fn proof<R: Runtime>(rt: &R, archive: &ArchiveTarget, _marked: &Inside) -> Result<Proof, Error> {
     let (_, text) = storage::read_manifest(rt, &archive.0).map_err(refused)?;
     let hash = storage::manifest_hash(&text);
     let proved = storage::read_proof(rt, &archive.0, &hash).map_err(refused)?;
@@ -438,7 +461,7 @@ impl<R: Runtime> Engine<R> {
         }
         let (source, path) = (self.target(from)?, self.target(to)?);
         let options = OpenOptions::default();
-        let restored = restored(&self.rt, (&source, phrase), &path, at, &options)?;
+        let restored = restored(&self.rt, (&source, phrase), &path, at, &options, &inside())?;
         Ok(manifest_row(p.schema(), &restored.manifest))
     }
 }

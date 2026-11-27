@@ -1,0 +1,10 @@
+-- gated_detach: a call of `detach`, by method or by path, which hands out a gated value past the
+-- mark the borrow of it takes. Not seen: a call through a function of another name that wraps
+-- one.
+
+main = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"(\.|::)detach$";
+  return c;
+} | arr range;

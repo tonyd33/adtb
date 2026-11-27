@@ -8,10 +8,11 @@ use crate::runtime::Runtime;
 use crate::write::{Local, Txn, Writing};
 
 use super::admitted::{Admitted, Authority, CALL_BYTES, Queued};
+use super::entered::{Enters, Handle};
 use super::error::FatalReason;
 use super::stop::{CancelToken, Stops};
 use super::text::{DynRows, Prepared};
-use super::{Database, Durability, Engine, Entered, Error, Position, TxnId};
+use super::{Database, Durability, Entered, Error, Position, TxnId};
 
 /// The options of an interactive transaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -65,7 +66,7 @@ enum State {
 /// An interactive transaction of ad hoc text. Dropping it without a commit rolls it back.
 #[derive(Debug)]
 pub struct AdHocTransaction<'a, R: Runtime = adtb_sys::os::OsRuntime> {
-    pub(super) engine: &'a Engine<R>,
+    pub(super) engine: &'a Handle<R>,
     id: TxnId,
     pub(super) read_only: bool,
     /// The principal every call of the transaction runs for.
@@ -88,7 +89,7 @@ impl<R: Runtime> Database<R> {
         if opts.deferrable && !opts.read_only {
             return Err(Error::invalid("only a read-only transaction is deferrable"));
         }
-        let e = &self.engine.enter()?;
+        let e = &self.engine.call()?;
         let id = e.txn_id();
         e.db.admit_database()
             .map_err(|err| e.write_error(id, err))?;
@@ -189,7 +190,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         opts: &TxnCallOptions,
         load: bool,
     ) -> Result<Vec<DynRows>, Error> {
-        let e = &self.engine.enter()?;
+        let e = &self.engine.call()?;
         let compiled = self.temps.as_ref().unwrap_or(&e.compiled);
         let p = Prepared::new(
             compiled,
@@ -268,7 +269,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     ///
     /// A database without replicas commits at `local` whatever level `_durability` names.
     pub fn commit(mut self, _durability: Option<Durability>) -> Result<Position, Error> {
-        let e = &self.engine.enter()?;
+        let e = &self.engine.call()?;
         match std::mem::replace(&mut self.state, State::Closed) {
             State::Open { tx, .. } => {
                 e.db.commit(*tx)
@@ -283,7 +284,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     /// Roll the transaction back. A transaction of a closed database ended uncommitted when it
     /// closed.
     pub fn rollback(mut self) -> Result<(), Error> {
-        let Ok(e) = self.engine.enter() else {
+        let Ok(e) = self.engine.call() else {
             self.state = State::Closed;
             return Ok(());
         };
@@ -347,8 +348,9 @@ impl<R: Runtime> Drop for AdHocTransaction<'_, R> {
         reason = "permanent: a dropped transaction ends with no failure"
     )]
     fn drop(&mut self) {
+        let _inside = self.engine.enter();
         if let State::Open { tx, .. } = std::mem::replace(&mut self.state, State::Closed)
-            && let Ok(entered) = self.engine.enter()
+            && let Ok(entered) = self.engine.call()
             && let Err(e) = entered.abort(self.id, *tx)
             && !std::thread::panicking()
         {

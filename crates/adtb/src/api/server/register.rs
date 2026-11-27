@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::api::entered::Enters;
 use crate::catalog::Origin;
 use crate::runtime::Runtime;
 
@@ -32,7 +33,7 @@ impl<R: Runtime> RoleAuthority<R> {
         bundle: &Registration,
     ) -> Result<DynRows, Error> {
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
-        let e = &e.enter()?;
+        let e = &e.call()?;
         let writer = e.bundle_writer();
         let stored = e.deployed.read(&e.rt);
         let (checked, claim) = decide(e, session, bundle, &stored)?;

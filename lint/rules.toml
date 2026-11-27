@@ -200,6 +200,25 @@ why = "Catching a panic lets a thread run on with the state the panic left half 
 fix = "Let the panic crash the process; `catch_unwind` under another path or name, or a thread joined to read its panic, does not count."
 
 [[rule]]
+query = "engine-handles.tql"
+include = ["crates/adtb/src/**/*.rs"]
+
+[rule.rows.engine_handles]
+kind = "zero"
+why = "Engine code reached through a handle that does not gate it runs with the thread unmarked, so a panic there unwinds and releases the engine's state."
+fix = "Hold the engine as `Handle<R>` or `GatedWeak<Engine<R>>` and reach it through `enter` or `call`; an alias or rename of `Engine`, or an `Arc` of one whose type is inferred, does not count."
+
+[[rule]]
+query = "gated-detach.tql"
+include = ["crates/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "crates/adtb/src/api/entered.rs", "crates/adtb/src/api/testing.rs"]
+
+[rule.rows.gated_detach]
+kind = "zero"
+why = "A detached gated value outlives the mark its borrow took, so engine code reached through it runs with the thread unmarked."
+fix = "Borrow the value through `Gated::enter` for as long as it is used; a function of another name that wraps `detach` does not count."
+
+[[rule]]
 query = "map-points.tql"
 include = ["crates/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "crates/adtb/src/testing/**", "crates/adtb/src/write/quarantine.rs", "crates/adtb/src/api/entered.rs", "crates/adtb/src/api/maintenance.rs", "crates/adtb/src/api/migrate.rs", "crates/adtb/src/api/reindex.rs"]

@@ -1,6 +1,8 @@
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
+use crate::api::entered::Enters;
 use adtb_lang::types::RelId;
+use adtb_sys::gated::GatedWeak;
 
 use crate::exec::{Grant, Val};
 use crate::runtime::Runtime;
@@ -15,7 +17,7 @@ use super::{Capability, RoleAuthority, require};
 #[derive(Clone, Debug)]
 pub struct RoleSession<R: Runtime = adtb_sys::os::OsRuntime> {
     pub(super) serial: u64,
-    pub(super) engine: Weak<Engine<R>>,
+    pub(super) engine: GatedWeak<Engine<R>>,
     pub(super) id: RoleId,
     pub(super) name: String,
 }
@@ -81,7 +83,7 @@ impl<R: Runtime> RoleAuthority<R> {
             })
         ) {
             let e = self.engine.upgrade().ok_or_else(Error::closed)?;
-            let e = &e.enter()?;
+            let e = &e.call()?;
             if let Some(quarantined) = e.refusal() {
                 return Err(quarantined);
             }

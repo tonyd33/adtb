@@ -374,6 +374,17 @@ calls it.
 - After `quiet_fatal_io` the hook does not run the replaced hook for a
   `FatalIo` payload.
 
+`adtb_sys::gated::Gated<T>` shares a value reachable only through
+`enter`, whose `Entry` holds an `Inside` mark for as long as it lends the
+value; its `GatedWeak` upgrades only to a `Gated`. The last `Gated`
+dropped releases the value under a mark. `Entry::detach` hands out the
+value with its mark; the caller keeps the mark while it uses the value.
+
+`Appender::push` and the typed decoders (`rows`, `rows_in_txn` and the
+`HostValue` decodes they run) run unmarked and hold no engine state, so a
+panic there unwinds to the caller. The test-only `Database::testing`
+surface reaches the engine unmarked.
+
 ## 5. Simulated storage
 
 The whole engine runs inside a simulator that supplies time, I/O,

@@ -1,7 +1,7 @@
 //! The gate a role's call passes: the judgements of its principal, capabilities and grants, at
 //! submit and again when it leaves the queue, each refusal for privilege recorded in the audit.
 
-use std::sync::Arc;
+use crate::api::entered::{Enters, Handle};
 
 use adtb_lang::ast::{self, AdhocItem};
 use adtb_lang::check::Command;
@@ -19,7 +19,7 @@ use super::super::command::{Need, free_params, need};
 use super::super::dump::read_by_dump;
 use super::super::registered::{Callee, Registered};
 use super::super::text::{Issuer, Prepared, TextError, declared};
-use super::super::{Engine, Entered, Error, OWNER_ROLE, RejectReason};
+use super::super::{Entered, Error, OWNER_ROLE, RejectReason};
 use super::adhoc::{Holds, refused_text, schema_relations, unanalysed};
 use super::binding::{RoleBinding, Target, holds_call, owns};
 use super::call::{RoleCall, Work};
@@ -44,7 +44,7 @@ impl<R: Runtime> RoleSession<R> {
     /// a task under `opts`. Returns the admitted program, its call and the engine held open.
     pub(super) fn admit_text<'e>(
         &self,
-        e: &'e Arc<Engine<R>>,
+        e: &'e Handle<R>,
         text: &str,
         params: &[(&str, Ty, Val)],
         opts: &TaskOptions,
@@ -58,7 +58,7 @@ impl<R: Runtime> RoleSession<R> {
         let caller = authority.admit_caller(self, &hash, assertion.as_ref())?;
         let names: Vec<String> = params.iter().map(|(n, ..)| (*n).to_owned()).collect();
         let parsed = Prepared::parsed(text);
-        let entered = e.enter()?;
+        let entered = e.call()?;
         let e = &entered;
         let mut issuer = match &parsed {
             Ok(items) => authority.admit_items(self, e, items, &names, &caller, &hash)?,
@@ -185,7 +185,7 @@ impl<R: Runtime> RoleBinding<R> {
     /// admitted program, the work of its result, its call and the engine held open.
     pub(super) fn admit_registered<'e>(
         &self,
-        e: &'e Arc<Engine<R>>,
+        e: &'e Handle<R>,
         ordinal: u32,
         args: &[Val],
         opts: &TaskOptions,
@@ -204,7 +204,7 @@ impl<R: Runtime> RoleBinding<R> {
             &origin,
             assertion.as_ref(),
         )?;
-        let entered = e.enter()?;
+        let entered = e.call()?;
         let e = &entered;
         self.registered().arguments(ordinal, args)?;
         let typed: Vec<_> = callee
@@ -283,6 +283,7 @@ impl<R: Runtime> RoleAuthority<R> {
         assertion: Option<&Val>,
     ) -> Result<Val, Error> {
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
+        let e = e.enter();
         let service = service(e.schema(), &session.name);
         let origin = CallOrigin::AdHoc(*text);
         if session.name == OWNER_ROLE && assertion.is_none() && e.db.admit_database().is_err() {
@@ -515,7 +516,7 @@ impl<R: Runtime> RoleAuthority<R> {
                 reason: RejectReason::Denied { .. },
             }) => {
                 let e = self.engine.upgrade().ok_or_else(Error::closed)?;
-                service(e.schema(), &session.name)
+                service(e.enter().schema(), &session.name)
             }
             Err(err) => return Err(err),
         };

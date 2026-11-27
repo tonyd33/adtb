@@ -95,7 +95,7 @@ impl<R: Runtime> Load<'_, R> {
     ///
     /// Fail with `Invalid` when `target` names no constructor relation.
     pub fn appender<C: CtorRelation>(&mut self, target: C) -> Result<Appender<'_>, Error> {
-        let fresh = staged(self.txn.engine.schema().as_ref(), target.target())?;
+        let fresh = staged(self.txn.engine.enter().schema().as_ref(), target.target())?;
         let at = match self.staged.iter().position(|s| s.target == fresh.target) {
             Some(at) => at,
             None => {
@@ -117,7 +117,11 @@ impl<R: Runtime> Load<'_, R> {
     pub fn commit(mut self) -> Result<LoadReport, Error> {
         for s in &self.staged {
             if let Some(key) = s.shared_key() {
-                return Err(Error::key_violation(self.txn.engine.schema(), s.rel, &key));
+                return Err(Error::key_violation(
+                    self.txn.engine.enter().schema(),
+                    s.rel,
+                    &key,
+                ));
             }
         }
         let mut text = String::from("transact\n");

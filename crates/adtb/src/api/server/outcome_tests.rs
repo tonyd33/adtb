@@ -499,7 +499,7 @@ fn recorded(errors: &[Error]) -> (Vec<Val>, Form) {
         421,
         &Log::new(["module shop\nadd module shop\n"]),
         |_, db| {
-            let engine = db.engine.clone();
+            let engine = db.tested();
             let caller = engine.principal(None).expect("principal");
             let origin = CallOrigin::Function { name: text("f") };
             for error in errors {

@@ -1,7 +1,7 @@
 //! The `reindex` command: a job with its row of `sys::jobs`, on a thread of its own, that rebuilds
 //! each named index in turn.
 
-use std::sync::Weak;
+use adtb_sys::gated::GatedWeak;
 
 use adtb_lang::ids::engine_rel;
 use adtb_lang::schema::Schema;
@@ -21,7 +21,7 @@ use super::verify::{Job, Started};
 
 /// What the running rebuild jobs need of the engine.
 pub(super) struct Jobs<R: Runtime> {
-    pub(super) me: Lock<Weak<Engine<R>>>,
+    pub(super) me: Lock<GatedWeak<Engine<R>>>,
     pub(super) threads: Lock<Vec<ThreadId>>,
     /// The jobs whose threads are about to return.
     finished: Lock<Vec<ThreadId>>,
@@ -30,7 +30,7 @@ pub(super) struct Jobs<R: Runtime> {
 impl<R: Runtime> Default for Jobs<R> {
     fn default() -> Self {
         Jobs {
-            me: Lock::new(Weak::new()),
+            me: Lock::new(GatedWeak::new()),
             threads: Lock::default(),
             finished: Lock::default(),
         }
@@ -74,6 +74,7 @@ impl<R: Runtime> Engine<R> {
         };
         let thread = self.rt.spawn("reindex", move || {
             if let Some(me) = me.upgrade() {
+                let me = me.enter();
                 me.run_reindex(&work, started);
                 let thread = me.rt.current();
                 me.reindexing.finished.lock(&me.rt).push(thread);

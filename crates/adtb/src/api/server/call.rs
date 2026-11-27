@@ -1,9 +1,11 @@
 //! The call a task runs: a self-contained transaction of its own, run in steps on the engine's
 //! workers, its output formed into batches as the task's capacity allows.
 
+use crate::api::entered::{Enters, Handle};
+use adtb_sys::gated::GatedWeak;
 use std::cell::Cell;
 use std::collections::{BTreeSet, VecDeque};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::task::Waker;
 
 use adtb_lang::schema::Committed as CommittedSchema;
@@ -140,7 +142,7 @@ struct Stream<R: Runtime> {
 }
 
 pub(super) struct Call<R: Runtime> {
-    engine: Weak<Engine<R>>,
+    engine: GatedWeak<Engine<R>>,
     close: Closes,
     shared: Arc<Shared<R>>,
     admitted: Admitted,
@@ -177,15 +179,15 @@ enum Room {
 
 impl<R: Runtime> Call<R> {
     pub(super) fn new(
-        engine: &Arc<Engine<R>>,
+        engine: &Handle<R>,
         shared: Arc<Shared<R>>,
         (admitted, work): (Admitted, Work),
         role_call: Option<RoleCall<R>>,
         opts: TaskOptions,
     ) -> Call<R> {
         Call {
-            engine: Arc::downgrade(engine),
-            close: engine.close.clone(),
+            engine: engine.downgrade(),
+            close: engine.enter().close.clone(),
             shared,
             admitted,
             work,
@@ -1007,9 +1009,10 @@ impl<R: Runtime> Call<R> {
     /// Withdraw the call's waker and abort its open transaction.
     fn release(&mut self) {
         let phase = std::mem::replace(&mut self.phase, Phase::Over);
-        let Some(e) = self.engine.upgrade() else {
+        let Some(handle) = self.engine.upgrade() else {
             return;
         };
+        let e = handle.enter();
         let tx = match phase {
             Phase::Deferring(d) => {
                 if let Some((on, waker)) = &d.watched {
@@ -1033,7 +1036,7 @@ impl<R: Runtime> Call<R> {
             Phase::Drain(tx) => tx,
             Phase::Start | Phase::Over => None,
         };
-        let failed = tx.and_then(|(id, tx)| match e.try_enter() {
+        let failed = tx.and_then(|(id, tx)| match handle.try_call() {
             Some(e) => {
                 let record = |r| Some(e.write_error(id, r));
                 e.db.abandon(tx, || None, record).err().flatten()
@@ -1076,7 +1079,7 @@ impl<R: Runtime> Drop for Call<R> {
 impl<R: Runtime> Resumable for Call<R> {
     fn run(&mut self, waker: &Waker) -> Step {
         let step = match self.engine.upgrade() {
-            Some(e) => match e.enter() {
+            Some(e) => match e.call() {
                 Ok(e) => self
                     .readmit(&e)
                     .and_then(|()| self.advance(&e, waker))
@@ -1098,7 +1101,7 @@ impl<R: Runtime> Resumable for Call<R> {
     fn stop(mut self: Box<Self>, why: Stopped) {
         let mut err = stopped(why);
         if let Some(e) = self.engine.upgrade()
-            && let Some(e) = e.try_enter()
+            && let Some(e) = e.try_call()
         {
             err = self.audited(&e, err);
         }

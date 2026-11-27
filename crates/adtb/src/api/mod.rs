@@ -49,7 +49,10 @@ mod value;
 mod verify;
 
 use admitted::{Authority, CALL_BYTES, Queued};
+use adtb_sys::gated::Gated;
+use adtb_sys::panics::Inside;
 use cause::{Broken, corrupt};
+use entered::{Enters, Handle};
 use failed_open::{failed_create, finish_create, open_damage};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -332,19 +335,20 @@ impl CallOptions {
 /// handle is dropped or when any handle is closed.
 #[derive(Debug)]
 pub struct Database<R: Runtime = adtb_sys::os::OsRuntime> {
-    engine: Arc<Engine<R>>,
+    engine: Handle<R>,
     handles: Arc<LastHandle<R>>,
+    schema: Arc<CommittedSchema>,
 }
 
 /// Shut the engine when the last handle goes, whatever else holds the engine, such as a rebuild
 /// job whose thread must be stopped and joined to release the file.
 #[derive(Debug)]
-struct LastHandle<R: Runtime>(Arc<Engine<R>>);
+struct LastHandle<R: Runtime>(Handle<R>);
 
 impl<R: Runtime> Drop for LastHandle<R> {
     fn drop(&mut self) {
         if !std::thread::panicking() {
-            self.0.shut();
+            self.0.enter().shut();
         }
     }
 }
@@ -354,6 +358,7 @@ impl<R: Runtime> Clone for Database<R> {
         Database {
             engine: self.engine.clone(),
             handles: self.handles.clone(),
+            schema: self.schema.clone(),
         }
     }
 }
@@ -509,14 +514,22 @@ impl<R: Runtime> Engine<R> {
 
 impl<R: Runtime> Database<R> {
     fn of(engine: Engine<R>) -> Database<R> {
-        let engine = Arc::new(engine);
-        *engine.reindexing.me.lock(&engine.rt) = Arc::downgrade(&engine);
-        engine.background.start();
-        if let Some(a) = &engine.archiver {
-            a.start();
+        let schema = engine.schema().clone();
+        let handle = Gated::new(engine);
+        {
+            let engine = handle.enter();
+            *engine.reindexing.me.lock(&engine.rt) = handle.downgrade();
+            engine.background.start();
+            if let Some(a) = &engine.archiver {
+                a.start();
+            }
         }
-        let handles = Arc::new(LastHandle(engine.clone()));
-        Database { engine, handles }
+        let handles = Arc::new(LastHandle(handle.clone()));
+        Database {
+            engine: handle,
+            handles,
+            schema,
+        }
     }
 
     /// Open the database file `name` of runtime `rt`, recover it, and apply the migrations of
@@ -527,13 +540,15 @@ impl<R: Runtime> Database<R> {
         log: &Log,
         options: &OpenOptions,
     ) -> Result<Database<R>, OpenError> {
-        let engine = Engine::open(rt, name, log, options, &mut |_| Ok(()))?;
-        Ok(Database::of(engine))
+        entry(move |marked| {
+            let engine = Engine::open(rt, name, log, options, &mut |_| Ok(()), marked)?;
+            Ok(Database::of(engine))
+        })
     }
 
     /// Returns the schema ad hoc text is checked against.
     pub fn schema(&self) -> &CommittedSchema {
-        self.engine.schema()
+        &self.schema
     }
 
     /// Run ad hoc text as one transaction, each free name of it bound by `params` to a value of
@@ -554,7 +569,7 @@ impl<R: Runtime> Database<R> {
         params: &[(&str, Ty, Val)],
         opts: &CallOptions,
     ) -> Result<Vec<DynRows>, Error> {
-        let e = &self.engine.enter()?;
+        let e = &self.engine.call()?;
         let caller = e.principal(opts.assert.as_ref())?;
         let p = e.admit_text(Prepared::new(
             &e.compiled,
@@ -589,7 +604,7 @@ impl<R: Runtime> Database<R> {
     ///
     /// Precondition: no other call runs on this database while it runs.
     pub(crate) fn verify_holding(&self) -> Result<DynRows, Error> {
-        let e = &self.engine.enter()?;
+        let e = &self.engine.call()?;
         e.verified_holding(e.schema())
             .map_err(|w| e.write_error(TxnId(0), w))
     }
@@ -597,7 +612,7 @@ impl<R: Runtime> Database<R> {
     /// Returns each incremental check the constraint or check `name`, by qualified name, is
     /// admitted with, or an invalid error when the schema has no constraint or check `name`.
     pub fn explain_checks(&self, name: &str) -> Result<Vec<write::CheckPlan>, Error> {
-        let e = &self.engine.enter()?;
+        let e = &self.engine.call()?;
         e.db.checks(name).ok_or_else(|| {
             Error::invalid(format!("the schema has no constraint or check `{name}`"))
         })
@@ -611,7 +626,7 @@ impl<R: Runtime> Database<R> {
     /// A close on a thread that runs submitted tasks, or on the thread already closing the
     /// database, returns at once while another close runs, before the file is released.
     pub fn close(self) -> Result<(), Error> {
-        self.engine.shut();
+        self.engine.enter().shut();
         Ok(())
     }
 }
@@ -629,24 +644,31 @@ impl Database<adtb_sys::os::OsRuntime> {
         log: &Log,
         options: &OpenOptions,
     ) -> Result<Database, OpenError> {
-        let path = path.as_ref();
-        let (mut held, dir, name) = file::Held::take(path, options.create.is_some())?;
-        let rt = os_runtime(&dir, options.workers());
-        let opened = Engine::open(rt, &name, log, options, &mut |file| {
-            held.hold(&dir.join(file))
-        });
-        held.published();
-        match opened {
-            Ok(engine) => {
-                *engine.held.lock(&engine.rt) = Some(held);
-                *engine.targets.lock(&engine.rt) = backup::resolved_root(options);
-                Ok(Database::of(engine))
+        entry(|marked| {
+            let path = path.as_ref();
+            let (mut held, dir, name) = file::Held::take(path, options.create.is_some())?;
+            let rt = os_runtime(&dir, options.workers());
+            let opened = Engine::open(
+                rt,
+                &name,
+                log,
+                options,
+                &mut |file| held.hold(&dir.join(file)),
+                marked,
+            );
+            held.published();
+            match opened {
+                Ok(engine) => {
+                    *engine.held.lock(&engine.rt) = Some(held);
+                    *engine.targets.lock(&engine.rt) = backup::resolved_root(options);
+                    Ok(Database::of(engine))
+                }
+                Err(error) => {
+                    held.remove_created();
+                    Err(error)
+                }
             }
-            Err(error) => {
-                held.remove_created();
-                Err(error)
-            }
-        }
+        })
     }
 }
 
@@ -702,6 +724,12 @@ pub fn open(
     options: &OpenOptions,
 ) -> Result<Database, OpenError> {
     Database::open(path, log, options)
+}
+
+/// Run `body` as engine code, the calling thread marked until it returns.
+fn entry<T>(body: impl FnOnce(&Inside) -> T) -> T {
+    let marked = adtb_sys::panics::inside();
+    body(&marked)
 }
 
 fn unsupported(what: &str) -> Error {
@@ -817,6 +845,7 @@ impl<R: Runtime> Engine<R> {
         log: &Log,
         options: &OpenOptions,
         hold: storage::Hold<'_>,
+        _marked: &Inside,
     ) -> Result<Engine<R>, OpenError> {
         adtb_sys::panics::install();
         let storage = options.storage(name);
