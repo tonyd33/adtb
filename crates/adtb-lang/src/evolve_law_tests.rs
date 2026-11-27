@@ -58,6 +58,7 @@ relation vs : V key id generate sequence
 relation badges : Badge
   key id
   unique (name)
+relation spans : Span (Key us) key start
 ";
         let (first, second) = if self.rel_first {
             (relations, types)

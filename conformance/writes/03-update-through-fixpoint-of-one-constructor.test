@@ -1,0 +1,35 @@
+# An update or delete whose target is a fixpoint restricted to one constructor of a sum writes the rows of that constructor, and no other.
+schema
+  module test
+  type Shape { id: I64, name: Text } = Circle { r: I64 } | Square { side: I64 }
+  relation shapes : Shape key id
+run
+  insert shapes from ([Circle { id: 1, name: "c1", r: 1 },
+                       Square { id: 2, name: "s2", side: 2 },
+                       Circle { id: 3, name: "c3", r: 3 },
+                       Square { id: 4, name: "s4", side: 4 }])
+run
+  update x in (fix rows = shapes union rows in rows.Circle) set Circle { x with r: x.r * 10 }
+query rowsort
+  from x in shapes select x
+----
+Circle { id: 1, name: "c1", r: 10 }
+Circle { id: 3, name: "c3", r: 30 }
+Square { id: 2, name: "s2", side: 2 }
+Square { id: 4, name: "s4", side: 4 }
+run
+  update x in (fix rows = shapes union rows in rows.Square) set Square { x with name: "changed" }
+query rowsort
+  from x in shapes select x
+----
+Circle { id: 1, name: "c1", r: 10 }
+Circle { id: 3, name: "c3", r: 30 }
+Square { id: 2, name: "changed", side: 2 }
+Square { id: 4, name: "changed", side: 4 }
+run
+  delete x in (fix rows = shapes union rows in rows.Circle)
+query rowsort
+  from x in shapes select x
+----
+Square { id: 2, name: "changed", side: 2 }
+Square { id: 4, name: "changed", side: 4 }

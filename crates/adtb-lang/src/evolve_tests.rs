@@ -47,42 +47,50 @@ constraint login_present =
 type StateNames = (String, String, String);
 
 /// Returns the write states of `src` by the names of their objects: of constructor relations,
-/// then of value-level constructors.
+/// then of value-level constructors, a constructor of the source's or the engine's.
 fn named_states(src: &Source) -> (BTreeMap<StateNames, State>, BTreeMap<StateNames, State>) {
     let key = |id: u64, kind: ids_key::KeyKind| {
         src.ids
             .iter()
             .find(|(k, x)| **x == id && k.kind() == kind)
             .map(|(k, _)| k.clone())
-            .expect("a write state names objects the source holds")
+    };
+    let held = |id: u64, kind: ids_key::KeyKind| {
+        key(id, kind).expect("a write state names objects the source holds")
     };
     let named = |k: &ObjectKey| k.name().expect("a named object").to_string();
     let module = |k: &ObjectKey| match k.owner() {
         ids_key::Owner::Module(m) => m.clone(),
         ids_key::Owner::Object(..) => panic!("a module's object"),
     };
-    let ctor = |c: CatCtorId| {
-        let k = key(c.raw(), ids_key::KeyKind::Ctor);
+    let ctor = |c: CatCtorId| -> StateNames {
+        let Some(k) = key(c.raw(), ids_key::KeyKind::Ctor) else {
+            return ids_key::TYPES
+                .iter()
+                .find_map(|&(m, t, _, ctors)| {
+                    let (name, _) = ctors.iter().find(|&&(_, id)| id == c.raw())?;
+                    Some((m.to_string(), t.to_string(), (*name).to_string()))
+                })
+                .expect("a write state names a constructor of the source or the engine");
+        };
         let &ids_key::Owner::Object(_, t) = k.owner() else {
             panic!("a constructor is a type's");
         };
-        (key(t, ids_key::KeyKind::Type), named(&k))
+        let t = held(t, ids_key::KeyKind::Type);
+        (module(&t), named(&t), named(&k))
     };
     let relations = src
         .states
         .iter()
         .map(|(&(r, c), &v)| {
-            let r = key(r.raw(), ids_key::KeyKind::Relation);
-            ((module(&r), named(&r), ctor(c).1), v)
+            let r = held(r.raw(), ids_key::KeyKind::Relation);
+            ((module(&r), named(&r), ctor(c).2), v)
         })
         .collect();
     let values = src
         .value_states
         .iter()
-        .map(|(&c, &v)| {
-            let (t, c) = ctor(c);
-            ((module(&t), named(&t), c), v)
-        })
+        .map(|(&c, &v)| (ctor(c), v))
         .collect();
     (relations, values)
 }

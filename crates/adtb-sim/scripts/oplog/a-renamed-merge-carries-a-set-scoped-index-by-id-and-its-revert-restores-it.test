@@ -1,0 +1,45 @@
+# A merge of the constructors a set holds into one carries the set's index to it by its id, under
+# the field its carry renames, and a revert of the merge restores the index as it was.
+seed 1
+use empty
+
+migrate
+  module ts
+  add module ts
+  add type T { id: Key ts } = A { z: Text } | B { z: Text } | C { k: Text }
+  add relation ts : T key id generate sequence
+  add set S of ts = A | B
+  add index (z) in ts.S
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id select { id: i.id, clause: i.clause, dropped: i.dropped }
+----
+{ clause: "index (z) in (A | B)", dropped: None, id: indexes.key(1025) }
+{ clause: "key id", dropped: None, id: indexes.key(1024) }
+
+migrate
+  module ts
+  add type W = A | B
+  merge constructor T.(A | B) into AB { w: W, z2: Text }
+    by match
+      | A a -> AB { w: A, z2: a.z }
+      | B b -> AB { w: B, z2: b.z }
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id select { id: i.id, clause: i.clause, dropped: i.dropped }
+----
+{ clause: "index (z2) in AB", dropped: None, id: indexes.key(1025) }
+{ clause: "key id", dropped: None, id: indexes.key(1024) }
+
+migrate
+  module ts
+  revert 0002
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id select { id: i.id, clause: i.clause, dropped: i.dropped }
+----
+{ clause: "index (z) in (A | B)", dropped: None, id: indexes.key(1025) }
+{ clause: "key id", dropped: None, id: indexes.key(1024) }

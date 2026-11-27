@@ -476,9 +476,9 @@ fn a_revert_of_a_revert_of_a_revert_applies_as_its_inverse() {
         let next = applies(s.last().unwrap(), &headed(t));
         s.push(next);
     }
-    assert_eq!(restored(&s[2]), restored(&s[4]));
+    assert_eq!(restored(&s[0]), restored(&s[4]));
     let s5 = applies(&s[4], "module auth\nrevert 0004");
-    assert_eq!(restored(&s[3]), restored(&s5));
+    assert_eq!(restored(&s[1]), restored(&s5));
 }
 
 #[test]
@@ -500,7 +500,7 @@ fn a_revert_of_a_chain_of_reverts_restores_the_source_before_its_migration() {
             let next = applies(s.last().unwrap(), &t);
             s.push(next);
         }
-        assert_eq!(restored(&s[2]), restored(&s[4]), "{}", c.what);
+        assert_eq!(restored(&s[0]), restored(&s[4]), "{}", c.what);
         ran += 1;
     }
     assert_eq!(CASES.len(), ran);

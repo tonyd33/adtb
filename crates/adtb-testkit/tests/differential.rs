@@ -1479,17 +1479,16 @@ fn ad_hoc(db: &Database<SimRuntime>, text: &str) -> Option<Vec<String>> {
     (got.len() == 1).then(|| rows_of(got.remove(0)).ok())?
 }
 
-/// Returns the rows of every relation of module `app` on `db`, as one line each, sorted.
-fn contents(db: &Database<SimRuntime>, names: &[String]) -> Vec<String> {
-    names
-        .iter()
-        .flat_map(|r| {
-            ad_hoc(db, &format!("from x in {r} select x"))
-                .unwrap_or_default()
-                .into_iter()
-                .map(move |row| format!("{r}: {row}"))
-        })
-        .collect()
+/// Returns the rows of every relation `names` names on `db`, as one line each, sorted, or why the
+/// rows of one do not list.
+fn contents(db: &Database<SimRuntime>, names: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for r in names {
+        let rows = ad_hoc(db, &format!("from x in {r} select x"))
+            .ok_or_else(|| format!("the rows of `{r}` do not list"))?;
+        out.extend(rows.into_iter().map(|row| format!("{r}: {row}")));
+    }
+    Ok(out)
 }
 
 /// Open `log` registering every bundle of `laws`, each one the library translates: one the
@@ -1726,11 +1725,17 @@ fn carried(
 /// of the relations `names` on `db`.
 fn rewritten(db: &Database<SimRuntime>, rewrites: &[&Pinned], names: &[String]) -> Option<String> {
     rewrites.iter().find_map(|l| {
-        let before = contents(db, names);
+        let before = match contents(db, names) {
+            Ok(rows) => rows,
+            Err(e) => return Some(format!("before a rewrite pinned before it, {e}")),
+        };
         if let Err(e) = called(db, &l.name) {
             return Some(format!("a rewrite pinned before it fails: {e}"));
         }
-        let after = contents(db, names);
+        let after = match contents(db, names) {
+            Ok(rows) => rows,
+            Err(e) => return Some(format!("after a rewrite pinned before it, {e}")),
+        };
         (before != after).then(|| {
             format!(
                 "a rewrite pinned before it changes the rows {before:?} to {after:?}: {}",
