@@ -1,5 +1,5 @@
-//! An open of a database quarantined whole refuses a missing or changed host function as at any
-//! open, and the file's own log opens.
+//! An open of a database quarantined whole refuses a missing or changed host function and a
+//! downgrade as at any open, and the file's own log opens.
 
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_testkit::damage::DataFile;
@@ -136,6 +136,57 @@ fn an_open_under_a_whole_mark_binds_host_functions_as_on_any_file() {
             open::opened(&rt, FILE, &log, &hosted(label("1.0")))
                 .close()
                 .unwrap();
+        });
+        ran += 1;
+    }
+    assert_eq!(2, ran);
+}
+
+const PETS: &str = r"module app
+add module app
+add type User = { id: Key users, name: Text }
+add relation users : User key id generate sequence
+add type Pet { id: Key pets } = Cat
+add relation pets : Pet key id generate sequence
+";
+const DOGS: &str = "module app\nadd constructor Pet.Dog\nenable pets.Dog\n";
+
+/// Returns the version hash of the schema the migration `text` leaves, in hex.
+fn hash_of(text: &str) -> String {
+    use adtb_lang::parse::{Options, parse_migration};
+    let file = parse_migration(text, Options::default()).ok().unwrap();
+    let source = adtb_lang::evolve::Source::default()
+        .migrate(&file, text)
+        .unwrap();
+    let hash = crate::catalog::version_hash(&source).expect("the log resolves");
+    hash.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[test]
+fn an_open_under_a_whole_mark_refuses_a_downgrade_as_on_any_file() {
+    let mut ran = 0;
+    for (seed, mark) in MARKS {
+        let mut sim = marked(seed, mark, &[PETS, DOGS], &open::options(2));
+        finished(&mut sim, |rt| {
+            let pinned = crate::Registration::bundle(format!(
+                "bundle web-1.0 pins 1 ({}) edition \"2026-10\"\n  import app\n  \
+                 query ids () -> Set Key pets = from p in pets select p.id\n",
+                hash_of(PETS)
+            ))
+            .unwrap();
+            let options = OpenOptions {
+                registrations: vec![pinned],
+                ..open::options(2)
+            };
+            let got = Database::open_in(rt, FILE, &Log::new([PETS, DOGS]), &options);
+            let cause = "bundle web-1.0, pinned at version 1, reads pets.Dog, enabled since";
+            let Err(OpenError::DowngradeRefused { cause: refused }) = got else {
+                panic!(
+                    "{mark:?}: expected the downgrade refused, found {:?}",
+                    got.map(drop)
+                );
+            };
+            assert_eq!(cause, refused, "{mark:?}");
         });
         ran += 1;
     }

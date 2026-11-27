@@ -260,15 +260,21 @@ fn failing(body: impl Fn(&Batch) -> Result<Batch, HostError> + Send + Sync + 'st
     fns
 }
 
-fn faulted(got: Result<Vec<adtb::DynRows>, Error>) -> bool {
-    matches!(
-        got,
-        Err(Error::Rejected {
-            reason: RejectReason::Faulted {
-                fault: Fault::FunctionFailed
-            }
-        })
-    )
+/// Assert that `got`, the answer of case `what`, is the refusal of a statement whose host
+/// function call failed.
+#[track_caller]
+fn assert_faulted(got: Result<Vec<adtb::DynRows>, Error>, what: &str) {
+    let failed = Error::Rejected {
+        reason: RejectReason::Faulted {
+            fault: Fault::FunctionFailed,
+        },
+    };
+    let e = got.map(|rows| rows.len()).expect_err(what);
+    assert_eq!(
+        (&failed, "fault `FunctionFailed`"),
+        (&e, e.to_string().as_str()),
+        "{what}"
+    );
 }
 
 #[test]
@@ -307,7 +313,7 @@ fn a_host_function_that_errs_panics_or_returns_another_shape_faults_its_statemen
                 &[],
                 &CallOptions::default(),
             );
-            assert!(faulted(got), "{what}");
+            assert_faulted(got, what);
             assert_eq!(
                 vec!["Err { error: FunctionFailed }"],
                 query(&db, "from n in notes select try slugify(n.body)"),

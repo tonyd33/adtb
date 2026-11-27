@@ -11,10 +11,7 @@ use crate::key::{Scalar, Value as Stored};
 use crate::runtime::FatalIo;
 use crate::runtime::{IoError, OpKind};
 use crate::storage::Pager;
-use crate::{
-    CallOptions, Database, Determinism, Error, Fault, HostError, HostFns, Log, OpenOptions,
-    RejectReason,
-};
+use crate::{CallOptions, Database, Determinism, Error, HostError, HostFns, Log, OpenOptions};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
 
 use crate::test_world::load::options;
@@ -68,17 +65,6 @@ fn failing(body: impl Fn(&Batch) -> Result<Batch, HostError> + Send + Sync + 'st
     fns
 }
 
-fn faulted(got: Result<Vec<crate::DynRows>, Error>) -> bool {
-    matches!(
-        got,
-        Err(Error::Rejected {
-            reason: RejectReason::Faulted {
-                fault: Fault::FunctionFailed
-            }
-        })
-    )
-}
-
 #[test]
 fn a_host_callback_preserves_a_genuine_storage_failure() {
     let mut sim = Sim::new(8, Config::default());
@@ -111,8 +97,8 @@ fn a_host_callback_preserves_a_genuine_storage_failure() {
     let struck = sim.numbered().struck().map(|s| (s.at(), s.kind()));
     assert_eq!(Some((0, OpKind::Write)), struck, "the write failure fired");
     if let Some(got) = returned {
-        assert!(faulted(got), "the swallowed fatal became FunctionFailed");
-        panic!("the host catcher returned FunctionFailed instead of resuming fatal I/O");
+        let got = got.map(|rows| rows.len());
+        panic!("the host catcher returned {got:?} instead of resuming fatal I/O");
     }
     let payload = caught.expect_err("fatal I/O escapes after the simulator's crash lifecycle");
     let failure = payload

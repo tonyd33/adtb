@@ -241,16 +241,25 @@ mod tests {
             copied: vec![(0, a, a)],
         }]);
         match built(&step, &file.operators[0], TEXT) {
-            Err(Error::Refused(why)) => {
-                assert!(
-                    !why.is_empty()
-                        && why
-                            .iter()
-                            .all(|w| w.starts_with("`add type Pair = { a: I64 }` moves rows")),
-                    "{why:?}"
-                );
-            }
+            Err(Error::Refused(why)) => assert_eq!(
+                vec![
+                    "`add type Pair = { a: I64 }` moves rows into a schema that does not build: \
+                     no type `Missing`"
+                ],
+                why
+            ),
             other => panic!("refused, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_step_moving_no_rows_into_a_schema_that_does_not_build_folds_into_the_next() {
+        let file = parse_migration(TEXT, Options::default())
+            .ok()
+            .expect("the migration parses");
+        match built(&unbuilt(Vec::new()), &file.operators[0], TEXT) {
+            Ok(None) => {}
+            other => panic!("folded, not {other:?}"),
         }
     }
 }
