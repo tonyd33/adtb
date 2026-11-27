@@ -11,8 +11,7 @@ use adtb_lang::types::RelId;
 
 use crate::btree::{BTree, Index};
 use crate::exec::StoredHeap;
-use crate::heap::{Heap, LargeStore};
-use crate::key::Tid;
+use crate::heap::{Heap, LargeStore, Slots};
 use crate::mvcc::{Past, Scope, Transactions, Xid};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
@@ -28,7 +27,7 @@ use super::{Catalog, Error, IndexKeys, IndexSpec, Migrating, ROOTS};
 
 /// The transaction of each migration and the roots version recording it, by the version it made,
 /// and the version whose migration named each heap by heap id.
-type Migrations = (BTreeMap<u64, (Xid, Tid)>, BTreeMap<u32, u64>);
+type Migrations = (BTreeMap<u64, (Xid, (Pid, Slots))>, BTreeMap<u32, u64>);
 
 /// The history structures of a catalog.
 ///
@@ -358,7 +357,7 @@ impl Catalog {
         for (x, tid, row) in rows {
             match row {
                 RootsRow::Migration { version, .. } => {
-                    migrations.insert(version, (x, tid));
+                    migrations.insert(version, (x, (Pid(tid.page()), Slots::Versions(ROOTS))));
                 }
                 RootsRow::HeapRoot { heap, .. } => named.push((heap, x)),
                 RootsRow::IndexRoot { .. }

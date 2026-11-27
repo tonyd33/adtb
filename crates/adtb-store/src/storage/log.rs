@@ -193,7 +193,7 @@ impl Log {
     }
 
     /// Hold the log from `at` until the returned pin is given to a [`LogPin`] and that drops.
-    pub(super) fn pin(&mut self, at: Lsn) -> Pinned {
+    fn pin(&mut self, at: Lsn) -> Pinned {
         *self.pins.entry(at).or_default() += 1;
         Pinned(at)
     }
@@ -569,10 +569,10 @@ impl<R: Runtime> LogSource for FileSource<R> {
 }
 
 /// A count of a hold on the log, made only by [`Log::pin`] and given back only by the drop of
-/// the [`LogPin`] holding it.
+/// the [`LogPin`] holding it. It never leaves this module outside a [`LogPin`].
 #[derive(Debug)]
 #[must_use]
-pub(super) struct Pinned(Lsn);
+struct Pinned(Lsn);
 
 /// A hold on the log from an LSN: no recycle removes the segment holding the start of its batch,
 /// or any later one, while it lives.
@@ -593,11 +593,16 @@ impl<R: Runtime> std::fmt::Debug for LogPin<'_, R> {
 }
 
 impl<'p, R: Runtime> LogPin<'p, R> {
-    /// Returns the hold `pinned` counts on `pager`'s log, given back when it drops.
-    pub(super) fn new(pager: &'p Pager<R>, pinned: Pinned) -> Self {
+    /// Returns a hold on `pager`'s log from `at`, counted in `log`, the log `pager` holds, and
+    /// given back when it drops.
+    ///
+    /// Preconditions:
+    /// - `log` is the log of `pager`, under its lock, and the caller releases that lock before
+    ///   the pin drops.
+    pub(super) fn hold(pager: &'p Pager<R>, log: &mut Log, at: Lsn) -> Self {
         LogPin {
             pager,
-            pinned: Some(pinned),
+            pinned: Some(log.pin(at)),
         }
     }
 
@@ -728,8 +733,8 @@ impl<R: Runtime> Pager<R> {
         let mut segments = self.segments().lock(self.rt());
         let img = self.io(|d| segments.try_load(d))?;
         let at = img.first().unwrap_or(Lsn(0));
-        let pinned = self.log().pin(at);
-        Ok((LogPin::new(self, pinned), img))
+        let pin = LogPin::hold(self, &mut self.log(), at);
+        Ok((pin, img))
     }
 
     /// Change `pids` through `f` as [`Pager::update`] does, and log the commit record of

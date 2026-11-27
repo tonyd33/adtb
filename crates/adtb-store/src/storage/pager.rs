@@ -14,7 +14,7 @@ use super::error::{Damage, OpenError, Shape};
 use super::evidence::{Evidence, Judged, Met, Refusal, Unmapped};
 use super::header::{FileHeader, Header};
 use super::holding::{Holding, NO_HOLDER};
-use super::log::{Log, Pinned, Segments};
+use super::log::{Log, LogPin, Segments};
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN};
 use super::pagetable::{DirtyTable, Logged};
 use super::quarantine::Marks;
@@ -148,9 +148,9 @@ pub(super) struct Append<'a, R: Runtime> {
 
 /// A checkpoint's LSN, its redo LSN, the bitmap groups it captured, the damage records to fold
 /// into the list page when it folds, and the pin of its redo LSN when it pins.
-pub(super) type Checkpointed = (Lsn, Lsn, u64, Option<Recorded>, Option<Pinned>);
+pub(super) type Checkpointed<'a, R> = (Lsn, Lsn, u64, Option<Recorded>, Option<LogPin<'a, R>>);
 
-impl<R: Runtime> Append<'_, R> {
+impl<'a, R: Runtime> Append<'a, R> {
     pub(super) fn evidence(&self) -> &Evidence {
         &self.meta.evidence
     }
@@ -296,7 +296,7 @@ impl<R: Runtime> Append<'_, R> {
     ///   the damage records.
     /// - The redo LSN is at or past the start of the batch holding the durable checkpoint's redo
     ///   LSN.
-    pub(super) fn checkpoint(&mut self, fold: bool, pin: bool) -> Checkpointed {
+    pub(super) fn checkpoint(&mut self, fold: bool, pin: bool) -> Checkpointed<'a, R> {
         let Appended { log, map } = &mut *self.log;
         let m = &mut *self.meta;
         let lsn = log.next_lsn();
@@ -311,7 +311,7 @@ impl<R: Runtime> Append<'_, R> {
             dirty,
             map: *map,
         });
-        let pinned = pin.then(|| log.pin(redo));
+        let pinned = pin.then(|| LogPin::hold(self.pager, log, redo));
         let groups = self.pager.allocation().started();
         (at, redo, groups, folded, pinned)
     }

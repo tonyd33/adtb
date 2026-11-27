@@ -17,7 +17,7 @@ use crate::runtime::{Runtime, ThreadId};
 use crate::steps::{Checkpoint, Step};
 
 use super::Lsn;
-use super::log::{LogPin, Pinned};
+use super::log::LogPin;
 use super::lsnmap::folded;
 use super::pager::{Pager, Shared};
 
@@ -94,7 +94,7 @@ impl<R: Runtime> Pager<R> {
     pub(super) fn pinned_checkpoint(&self) -> (LogPin<'_, R>, Lsn, u64) {
         let (at, _, groups, pinned) = self.checkpoint_pinning(true, |_| {});
         let pinned = pinned.expect("a pinning checkpoint pins its redo LSN");
-        (LogPin::new(self, pinned), at, groups)
+        (pinned, at, groups)
     }
 
     /// Take a checkpoint, pinning its redo LSN when `pin`, in the hold of the log lock that logs
@@ -104,7 +104,7 @@ impl<R: Runtime> Pager<R> {
         &self,
         pin: bool,
         step: impl Fn(Checkpoint),
-    ) -> (Lsn, Lsn, u64, Option<Pinned>) {
+    ) -> (Lsn, Lsn, u64, Option<LogPin<'_, R>>) {
         let (mut list, (at, redo, groups, folded, pinned)) = loop {
             let list = self.list_to_fold();
             let mut append = self.append();

@@ -12,7 +12,7 @@ use crate::btree::Index;
 use crate::exec::{self, Histories, PastReads, Store, StoredHeap, Val};
 use crate::heap::{Heap, Refused, Slots};
 use crate::history::History;
-use crate::key::{CtorId, Tid, Value};
+use crate::key::{CtorId, Value};
 use crate::mvcc::{Marker, Past, PastError, Pinned, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexId};
 use crate::runtime::Runtime;
@@ -32,9 +32,9 @@ pub struct Retained {
     pub heaps: BTreeMap<HeapId, StoredHeap>,
     /// The history key index of each relation, by its key index.
     pub indexes: BTreeMap<IndexId, Index>,
-    /// The transaction that applied each migration and the TID of the roots version recording
-    /// it, by the version it made.
-    pub migrations: BTreeMap<u64, (Xid, Tid)>,
+    /// The transaction that applied each migration and the page and slots of the roots version
+    /// recording it, by the version it made.
+    pub migrations: BTreeMap<u64, (Xid, (Pid, Slots))>,
     /// The version whose migration made each heap; the heaps of the engine's own declarations
     /// are absent.
     pub born: BTreeMap<HeapId, u64>,
@@ -102,8 +102,11 @@ impl<R: Runtime> Pasts<R> {
 
     /// Returns whether the snapshot of `marker` sees the commit of `x`, the writer of the roots
     /// version at `at`.
-    fn sees_commit(&self, marker: &Marker, (x, at): (Xid, Tid)) -> Result<bool, exec::Error> {
-        let at = (Pid(at.page()), Slots::Versions(crate::catalog::ROOTS));
+    fn sees_commit(
+        &self,
+        marker: &Marker,
+        (x, at): (Xid, (Pid, Slots)),
+    ) -> Result<bool, exec::Error> {
         match self.txns.counts_committed(&self.pager, &marker.snapshot, x) {
             Ok(counted) => Ok(counted),
             Err(e) => match Heap::refuse_unreserved(&self.pager, at, (), e) {

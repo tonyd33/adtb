@@ -139,7 +139,7 @@ pub use adtb_lang::evolve::OWNER_ROLE;
 /// the catalog makes count up from here, above every index id and below every held key index's.
 const LARGE: u32 = 1 << 30;
 /// The heap id of the heap that names every other heap's and index's root.
-pub(crate) const ROOTS: u32 = LARGE + 1;
+const ROOTS: u32 = LARGE + 1;
 const FIRST_HEAP: u32 = LARGE + 2;
 /// No heap or tree the catalog makes has this id or a higher one.
 const HEAP_IDS_END: u32 = 1 << 31;
