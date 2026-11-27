@@ -113,12 +113,13 @@ an internet connection. No Node installation is required.
 
 The checked-in `book.toml` reads `docs/` directly. `docs/SUMMARY.md` lists every
 page: add a new page under `docs/manual/`, `docs/spec/` or `docs/design/` there. The
-suite fails on a page left out and on a listed path that does not exist. `mdbook
+repository stage of `cargo xtask check` fails on a page left out and on a listed path that is no
+file git tracks. `mdbook
 serve` rebuilds on an edit and watches the highlighting asset. `mdbook build` and
 `mdbook serve --hostname 127.0.0.1` also work directly from the repository root.
 After `mdbook build`, `lychee --offline --include-fragments --root-dir target/docs-site/html
 target/docs-site/html` checks every internal link and fragment. The suite compares the highlighter keywords with the
-lexer table. `cargo xtask check` runs both. Hosting is a separate task.
+lexer table. `cargo xtask check` runs the stage, the link check and the suite. Hosting is a separate task.
 
 ## Optional editor integration
 

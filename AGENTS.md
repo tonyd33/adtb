@@ -39,8 +39,13 @@ For a fresh clone, host prerequisites and optional editor setup, read
 - `cargo xtask test [ARGS]`: run the tests under a memory limit; ARGS go to
   `cargo nextest run`.
 - `cargo xtask check [REVSET]`: run every check, including the Loom models,
-  Miri, dependency policy, source-size limits, the documentation build with
-  its link check, `cargo xtask lint` and the editor grammar's generated sources and tests. With REVSET it
+  Miri, dependency policy, source-size limits, the repository stage, the documentation build with
+  its link check, `cargo xtask lint` and the editor grammar's generated sources and tests. The
+  repository stage, `repo`, reads only the files `git ls-files` lists, never an ignored or untracked one,
+  and fails on a nested `AGENTS.md` without a `CLAUDE.md` beside it holding only `@AGENTS.md`, or
+  holding an em dash or bold, or naming a path, word, package, test target or nextest profile the
+  tracked tree lacks, and on a page under `docs/manual`, `docs/spec` or `docs/design` that
+  `docs/SUMMARY.md` omits or a path it lists that is no tracked file. With REVSET it
   also checks the lint and structure allowlists against those of the parent of REVSET's root.
   Every stage starts at once. Clippy lints the workspace with every target, then, with `-p`, every
   member whose manifest lacks `test-support = true` under `[package.metadata.adtb]`, without test
@@ -121,7 +126,7 @@ The `xtask` crate's commands and the conformance runner:
   stated table no case asked and on a lasting unreadable page that no restart read again.
 - `mdbook build`, `mdbook serve` and `lychee --offline --include-fragments` build, serve and
   link-check the documentation site. A new page under `docs/manual`, `docs/spec` or `docs/design`
-  goes in `docs/SUMMARY.md`; the suite fails otherwise.
+  goes in `docs/SUMMARY.md`; the repository stage of `cargo xtask check` fails otherwise.
 
 ## Invariants and fixes
 

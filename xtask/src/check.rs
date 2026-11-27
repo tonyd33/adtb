@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crate::step::{self, say};
 use crate::tree::{self, Pidfd};
 use crate::workspace::Workspace;
-use crate::{grammar, lint, scope, size, test};
+use crate::{grammar, lint, repo, scope, size, test};
 
 /// The variable naming the directory of a nightly toolchain with Miri.
 const NIGHTLY: &str = "ADTB_NIGHTLY_BIN";
@@ -22,6 +22,7 @@ pub enum Stage {
     Lint,
     Deny,
     Size,
+    Repo,
     Docs,
     TreeSitter,
     Loom,
@@ -33,11 +34,12 @@ pub enum Stage {
 }
 
 /// The stages that share no build with the tests, each run at once.
-const FREE: [Stage; 8] = [
+const FREE: [Stage; 9] = [
     Stage::Fmt,
     Stage::Lint,
     Stage::Deny,
     Stage::Size,
+    Stage::Repo,
     Stage::Docs,
     Stage::TreeSitter,
     Stage::Loom,
@@ -64,6 +66,7 @@ impl Stage {
             Self::Lint => lint::STEP,
             Self::Deny => "deny",
             Self::Size => size::STEP,
+            Self::Repo => repo::STEP,
             Self::Docs => "docs",
             Self::TreeSitter => grammar::STEP,
             Self::Loom => "loom",
@@ -275,6 +278,7 @@ pub fn stage(
                 .args(&threads),
         ),
         Stage::Size => size::run(&workspace.root),
+        Stage::Repo => repo::run(&workspace.root),
         Stage::Docs => docs(workspace, name),
         Stage::TreeSitter => grammar::run(workspace),
     }

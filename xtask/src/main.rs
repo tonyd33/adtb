@@ -8,6 +8,7 @@ mod check;
 mod grammar;
 mod lint;
 mod listing;
+mod repo;
 mod scope;
 mod size;
 mod step;
@@ -68,7 +69,8 @@ enum Task {
     /// the tests and the damage profile run and report them stopped, and the others as did not
     /// run. Otherwise run clippy, then, once it passes, the build, then, once it passes, the
     /// tests, then the damage profile. Beside them run rustfmt,
-    /// the TQL rules, cargo-deny, the source-size limit, the documentation build and its link
+    /// the TQL rules, cargo-deny, the source-size limit, the rules of the nested `AGENTS.md` files
+    /// and `docs/SUMMARY.md` over the files git tracks, the documentation build and its link
     /// check, the editor grammar's generated sources and its corpus and highlight tests, the Loom
     /// models and Miri.
     /// Each stage's output goes to `check/STAGE.log` under the target directory. Print each

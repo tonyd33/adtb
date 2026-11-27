@@ -4,9 +4,6 @@ use std::path::{Path, PathBuf};
 
 use adtb_lang::lex::Kw;
 
-#[path = "docs_site/agents.rs"]
-mod agents;
-
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -37,51 +34,4 @@ fn highlighter_keywords_equal_the_lexer_table() {
         missing.is_empty() && extra.is_empty(),
         "tools/docs-site/adt-highlight.js differs from Kw::WORDS: missing {missing:?}, extra {extra:?}"
     );
-}
-
-fn summary_paths() -> BTreeSet<String> {
-    read(&repo().join("docs/SUMMARY.md"))
-        .lines()
-        .filter_map(|line| line.split_once("](")?.1.split_once(')'))
-        .map(|(path, _)| path.to_owned())
-        .collect()
-}
-
-fn pages_under(dir: &Path, docs: &Path, pages: &mut BTreeSet<String>) {
-    let entries = fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
-    for entry in entries {
-        let path = entry
-            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-            .path();
-        if path.is_dir() {
-            pages_under(&path, docs, pages);
-        } else if path.extension().is_some_and(|e| e == "md") {
-            let relative = path
-                .strip_prefix(docs)
-                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            pages.insert(relative.to_string_lossy().into_owned());
-        }
-    }
-}
-
-#[test]
-fn summary_lists_every_page() {
-    let docs = repo().join("docs");
-    let mut pages = BTreeSet::new();
-    for section in ["manual", "spec", "design"] {
-        pages_under(&docs.join(section), &docs, &mut pages);
-    }
-    let listed = summary_paths();
-    let missing: Vec<_> = pages.difference(&listed).collect();
-    assert!(missing.is_empty(), "docs/SUMMARY.md omits {missing:?}");
-}
-
-#[test]
-fn summary_lists_only_existing_pages() {
-    let docs = repo().join("docs");
-    let absent: Vec<_> = summary_paths()
-        .into_iter()
-        .filter(|path| !docs.join(path).is_file())
-        .collect();
-    assert!(absent.is_empty(), "docs/SUMMARY.md lists {absent:?}");
 }
