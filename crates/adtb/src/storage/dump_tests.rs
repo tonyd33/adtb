@@ -1087,7 +1087,7 @@ fn restored_as(files: &Files, log: &[String]) -> Restore {
 
 /// Returns whether the dump's contract fixes how a restore answers `edit` at line `i` of text part
 /// `part`: a `data/` text is for review and never read; a garbled line, any edit of a part's first
-/// line, which states its edition and schema version, a dropped row of `ids`, a rekeyed row of
+/// line, a dropped row of `ids`, a rekeyed row of
 /// `ids` whose key the log determines, and a changed field of a row whose key it does not damage
 /// the part; rows of `ids` swapped within one relation restore, and a key the log does not
 /// determine is data the dump states, so its row restores holding the new key.
@@ -1387,8 +1387,8 @@ const KNOWN_FAILURES: &[&str] = &[
 /// The default profile edits each kind of `DEFAULT_CELLS` whose answer the contract states once per
 /// part, a row of `ids` whose key the log does not determine among them; the profile `deep` edits
 /// the lines [`deep_rows`] returns, of the dump whose log grants only the rows of `ids` whose key the
-/// log does not determine, and every known failure. Plant parts the schema has
-/// no relation for and a part of another constructor's rows. Each restore is refused naming the
+/// log does not determine, and every known failure. Plant parts the schema has no relation for
+/// and a part of another constructor's rows. Each restore is refused naming the
 /// edited part, writing nothing, or restores a file answering every relation as the unedited
 /// dump's restore does; a stated cell answers as the contract states, a rekeyed row of `ids` whose
 /// key the log determines refused naming `ids` and one whose key it does not restoring that key.

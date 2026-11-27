@@ -603,7 +603,6 @@ add type User = { id: Key users, name: Text }
 add relation users : User key id generate sequence
 ";
 
-/// Commit the insert of user `id` to `db`.
 fn commit_user<R: Runtime>(db: &crate::Database<R>, id: i64) {
     let text = format!(r#"insert users {{ id: users.key({id}), name: "user {id}" }}"#);
     let mut t = db.begin(&crate::TxnOptions::default()).unwrap();

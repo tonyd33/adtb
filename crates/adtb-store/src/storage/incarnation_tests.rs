@@ -20,8 +20,7 @@ const SEED: u64 = 23;
 const OLD_OWNER: u32 = 7;
 const NEW_OWNER: u32 = 9;
 
-/// The kinds of the freed incarnation and of the next. The pager judges no page by its kind but
-/// the pages it keeps itself, which it never frees.
+/// The kinds of the freed incarnation and of the next.
 const OLD_KIND: PageKind = PageKind::HeapSlotted;
 const NEW_KIND: PageKind = PageKind::IndexLeaf;
 
@@ -305,7 +304,6 @@ const SHAPES: [(bool, bool); 4] = [(false, false), (false, true), (true, false),
 
 #[test]
 fn no_consumer_judges_a_reallocated_page_by_the_evidence_of_its_last_incarnation() {
-    let mut ran = 0;
     for evidence in EVIDENCE {
         for (atomic, reopened) in SHAPES {
             run(Case {
@@ -313,10 +311,8 @@ fn no_consumer_judges_a_reallocated_page_by_the_evidence_of_its_last_incarnation
                 atomic,
                 reopened,
             });
-            ran += 1;
         }
     }
-    assert_eq!(EVIDENCE.len() * SHAPES.len(), ran);
 }
 
 #[test]

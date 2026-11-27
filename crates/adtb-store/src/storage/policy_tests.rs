@@ -128,7 +128,7 @@ fn reachable(class: Class, holder: Holder, phase: Phase) -> bool {
 }
 
 #[test]
-fn every_fault_and_holder_marks_as_storage_md_states() {
+fn every_fault_and_holder_marks_as_its_stated_row() {
     let mut visits = [0; ROWS.len()];
     let mut differ = Vec::new();
     for class in CLASSES {

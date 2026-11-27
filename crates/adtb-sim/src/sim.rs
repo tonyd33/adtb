@@ -170,7 +170,8 @@ pub struct Sim {
 }
 
 impl Drop for Sim {
-    /// Drop the plan's rules and actions.
+    /// Drop the plan's rules and actions, whose `Run` and `Tear` closures may hold clones of the
+    /// runtime that keep its shared state alive.
     fn drop(&mut self) {
         let planned = lock(&self.shared.plan).forget();
         drop(planned);
