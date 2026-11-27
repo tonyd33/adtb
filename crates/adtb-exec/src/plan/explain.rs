@@ -1,7 +1,7 @@
 //! The plan of a statement as `explain` shows it: a tree of operators, as indented text and as
 //! a JSON document.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use adtb_lang::ids::CatCtorId;
@@ -273,10 +273,17 @@ pub struct Describe<'a> {
     heaps: BTreeMap<HeapId, (RelId, u32)>,
     indexes: BTreeMap<IndexId, (RelId, usize)>,
     catalog: &'a Catalog,
+    from_heaps: BTreeSet<IndexId>,
 }
 
 impl<'a> Describe<'a> {
-    pub fn new(schema: &'a Schema, catalog: &'a Catalog) -> Describe<'a> {
+    /// Returns the builder over `schema` and `catalog` that names each of `from_heaps`, the
+    /// indexes the store serves from the heaps, as served so.
+    pub fn new(
+        schema: &'a Schema,
+        catalog: &'a Catalog,
+        from_heaps: BTreeSet<IndexId>,
+    ) -> Describe<'a> {
         let mut heaps = BTreeMap::new();
         let mut indexes = BTreeMap::new();
         for (r, d) in catalog.relations() {
@@ -292,6 +299,7 @@ impl<'a> Describe<'a> {
             heaps,
             indexes,
             catalog,
+            from_heaps,
         }
     }
 
@@ -333,8 +341,13 @@ impl<'a> Describe<'a> {
                 super::Element::Derived { index, element } => format!("#{index}.{element}"),
             })
             .collect();
+        let served = if self.from_heaps.contains(&i) {
+            " from the heaps"
+        } else {
+            ""
+        };
         format!(
-            "{} ({})",
+            "{} ({}){served}",
             self.schema.relation(*r).name,
             elements.join(", ")
         )

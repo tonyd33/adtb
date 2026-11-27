@@ -9,7 +9,7 @@ use adtb_lang::types::{CtorSet, DenialIdx, RelId, RelRef, Ty};
 
 use crate::catalog::indexed_fields;
 use crate::plan::explain::{Describe, Node};
-use crate::plan::{self, Catalog, Facts, Plan};
+use crate::plan::{self, Catalog, Facts, IndexId, Plan};
 
 use super::Broken;
 
@@ -99,8 +99,14 @@ impl Delta {
         self.term
     }
 
-    /// Returns the check as `explain` shows it over `schema` and `catalog`.
-    pub fn explain(&self, schema: &Schema, catalog: &Catalog) -> CheckPlan {
+    /// Returns the check as `explain` shows it over `schema` and `catalog`, the indexes of
+    /// `from_heaps` named as served from the heaps.
+    pub fn explain(
+        &self,
+        schema: &Schema,
+        catalog: &Catalog,
+        from_heaps: &BTreeSet<IndexId>,
+    ) -> CheckPlan {
         let trigger = self.trigger.map(|t| {
             let i = self
                 .inputs
@@ -111,7 +117,7 @@ impl Delta {
         });
         CheckPlan {
             trigger,
-            plan: Describe::new(schema, catalog).plan(&self.plan),
+            plan: Describe::new(schema, catalog, from_heaps.clone()).plan(&self.plan),
         }
     }
 }

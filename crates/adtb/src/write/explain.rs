@@ -16,10 +16,11 @@ impl<R: Runtime> Database<R> {
     /// admitted with, or `None` when the schema has no constraint or check `name`.
     pub fn checks(&self, name: &str) -> Option<Vec<CheckPlan>> {
         let d = self.denials.iter().find(|d| d.name == name)?;
+        let from_heaps = self.quarantined_indexes();
         Some(
             d.deltas
                 .iter()
-                .map(|(delta, _)| delta.explain(&self.schema, &self.catalog))
+                .map(|(delta, _)| delta.explain(&self.schema, &self.catalog, &from_heaps))
                 .collect(),
         )
     }
@@ -28,7 +29,11 @@ impl<R: Runtime> Database<R> {
 impl<R: Runtime> Stmt<'_, R> {
     /// Returns the operators of the statement.
     pub fn explain(&self) -> Result<Node, Error> {
-        let d = Describe::new(self.schema(), &self.db.catalog);
+        let d = Describe::new(
+            self.schema(),
+            &self.db.catalog,
+            self.db.quarantined_indexes(),
+        );
         let root = self.root();
         match self.terms().kind(root) {
             Kind::Transact(b, _) => {

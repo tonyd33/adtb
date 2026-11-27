@@ -1,0 +1,65 @@
+# A lookup through a quarantined key index names the index as served from the heaps, in the plan
+# of a statement and of an incremental check.
+use planner
+
+migrate
+  module app
+  add constraint named_owner = from i in identities.Google where i.user.name == "" select i
+
+mark index app::users key id
+
+reopen
+
+probe plan
+  explain from i in identities.Google select i.user.name
+----
+Set total
+  reads users.User, identities.Google, users (id) from the heaps
+  Pipeline
+    Scan identities.Google
+    Bind
+      Let
+        Lookup users (id) from the heaps
+          User ->
+            Fetch users.User
+        Compute
+    Emit
+
+probe checks app::named_owner
+----
+on insert into app::identities.Google
+Set
+  reads users.User, users (id) from the heaps
+  Pipeline
+    One row
+    Unnest
+    Bind
+      Let
+        Let
+          Lookup users (id) from the heaps
+            User ->
+              Fetch users.User
+          Compute
+        Compute
+    Filter
+    Emit
+on change to app::users
+Set
+  reads users.User, identities.EmailPass, identities.Google, identities.Apple, users (id) from the heaps, identities (user)
+  Pipeline
+    One row
+    Unnest
+    Probe identities (user)
+      pruned EmailPass at compile, Apple at compile
+      Google ->
+        Chain
+          Bind
+            Let
+              Let
+                Lookup users (id) from the heaps
+                  User ->
+                    Fetch users.User
+                Compute
+              Compute
+          Filter
+          Emit

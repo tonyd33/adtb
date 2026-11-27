@@ -539,17 +539,27 @@ impl<R: Runtime> Database<R> {
     /// `None` when that is the whole catalog. A key lookup goes on naming its key index, and the
     /// store answers it from the heaps while the index is quarantined.
     pub(super) fn usable_catalog(&self) -> Option<Cow<'_, Catalog>> {
-        let marks = self.pager.quarantined();
-        if !marks.iter().any(|m| matches!(m, Quarantine::Index(_))) {
+        let quarantined = self.quarantined_indexes();
+        if quarantined.is_empty() {
             return None;
         }
         let mut catalog = (*self.catalog).clone();
-        catalog.retain_indexes(|i| {
-            !self.bindings.indexes().get(&i.id).is_some_and(|stored| {
-                marks.contains(&Quarantine::Index(stored.index.tree().owner()))
-            })
-        });
+        catalog.retain_indexes(|i| !quarantined.contains(&i.id));
         Some(Cow::Owned(catalog))
+    }
+
+    /// Returns the catalog's indexes that are quarantined now.
+    pub(super) fn quarantined_indexes(&self) -> BTreeSet<IndexId> {
+        let marks = self.pager.quarantined();
+        if !marks.iter().any(|m| matches!(m, Quarantine::Index(_))) {
+            return BTreeSet::new();
+        }
+        self.bindings
+            .indexes()
+            .iter()
+            .filter(|(_, stored)| marks.contains(&Quarantine::Index(stored.index.tree().owner())))
+            .map(|(id, _)| *id)
+            .collect()
     }
 }
 
