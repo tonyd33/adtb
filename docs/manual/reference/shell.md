@@ -110,7 +110,7 @@ and nothing it did commits.
 ```console
 $ adtb shelter.db -c 'insert pets.Dog { name: "rex", good: true }
 insert pets.Dog { name: "tom", good: false }'
-`shelter::pets` already holds a row with key `pets.key("tom")`
+`shelter::pets` would hold two rows with key `pets.key("tom")`
 $ adtb shelter.db -c 'from p in pets select p.name'
 "tom"
 ```

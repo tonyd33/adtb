@@ -1886,7 +1886,7 @@ fn a_statement_that_failed_leaves_no_write_for_the_commit_to_refuse() {
                     key: "identities.key(11)".to_owned(),
                 },
             },
-            "`app::identities` already holds a row with key `identities.key(11)`",
+            "`app::identities` would hold two rows with key `identities.key(11)`",
         );
         db.testing()
             .plant(Plant::Mark(user_index_mark(&db)))
@@ -2488,7 +2488,7 @@ fn an_insert_probes_again_when_its_orphan_entry_gives_way_to_a_row_of_its_key() 
                     key: "identities.key(800)".to_owned(),
                 },
             },
-            "`app::identities` already holds a row with key `identities.key(800)`",
+            "`app::identities` would hold two rows with key `identities.key(800)`",
         );
         assert!(replaced.load(Ordering::Acquire), "the refusal ran");
         assert_eq!(

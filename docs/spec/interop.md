@@ -857,7 +857,9 @@ their result, and `install` and `adopt tzdb` take their bytes from
 every dumped row without checking it, builds every index from sorted
 runs, checking uniqueness as it builds, then runs every constraint's
 query once over the whole database. If any uniqueness or constraint
-query finds a violation, the restore fails with the violation reports
+query finds a violation, the restore fails with one violation, the one
+a statement would report
+([constraints.md §7.2](constraints.md#72-which-violation-is-reported)),
 and the file is not usable. No reader ever sees a state the
 constraints have not checked.
 

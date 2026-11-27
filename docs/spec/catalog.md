@@ -121,6 +121,18 @@ add constructor Identity.Apple { sub: Text }
 -- Apple 1052; field sub 2013
 ```
 
+After the objects its row lists, every operator creates the implied
+index of each reference field that has none and that, once the
+operator applies, no key, unique or index leads with over every
+constructor holding the field: relation variables in id order, and
+within one the fields in the order `add relation` gives its implied
+indexes. So `drop index (h, id) in ts` creates the implied index of
+`h` when the only other index leading with `h` is `index (h) in ts.A`
+and `B` holds `h` too, and an `add field` of a reference field to a
+type that two relation variables hold creates an implied index for
+each. An implied index that a later operator's key, unique or index
+covers is dropped.
+
 An operator records the id of the first object it creates (§2.4); the
 ids of the others follow from this order and the operator's `decl`
 term.
@@ -946,7 +958,7 @@ wire's 32-bit epoch and 64-bit log position.
 | `UnknownQuery`, `UnknownTransaction`, `UnknownBundle`, `VersionMismatch` | the request names a call, transaction or bundle the binding does not have | [wire.md](wire.md#34-binding-and-ready) |
 | `CatalogMismatch` | a Hello binding names a catalog version other than the one the bundle pins; `catalog` is the pinned one | [wire.md](wire.md#32-hello) |
 | `Retired` | the bundle is retired; bound connections are refused too | [applications.md](applications.md#43-retirement) |
-| `BundleExpired` | a bind, call or lease renewal of an expired bundle, on the primary or a replica; or an expired or superseded bundle registered again fails the checks of a re-registration | [evolution.md](evolution.md#73-expired-bundles), [applications.md](applications.md#42-leases) |
+| `BundleExpired` | a bind, call or lease renewal of an expired bundle, on the primary or a replica; or a registration of an expired or superseded bundle one of whose queries or transactions has no translation to the current version; evolution.md §7.3 lists the other refusals of an expired one | [evolution.md](evolution.md#73-expired-bundles), [applications.md](applications.md#42-leases) |
 | `BundleStale` | a bundle registering at a version before an enabled constructor it would read | [applications.md](applications.md#41-registration) |
 | `DowngradeRefused` | an embedded open with an older bundle whose reads include a constructor enabled since, or whose host function was redefined since; `cause` names it, and nothing is changed | [embedding.md](embedding.md) |
 | `BundleSuperseded` | a binding names a bundle an embedded open or `supersede bundle` superseded and that has not been registered again | [applications.md](applications.md#8-embedded-databases) |
@@ -2174,8 +2186,11 @@ the file's log fails with `OpenError::Io` naming the failure.
 
 A `dump` of a database quarantined whole first checks every page of
 the commit log and the catalog as `verify` does (§11.1), by checksum
-and by log position. Any finding fails the dump with `Fatal { reason:
-Quarantined {..} }` naming the database, and it writes nothing.
+and by log position, and checks that the retained log, from the oldest
+commit log page holding a transaction in progress to the end recovery
+kept, is whole and readable. Any finding, or a retained log that is
+not, fails the dump with `Fatal { reason: Quarantined {..} }` naming
+the database, and it writes nothing.
 
 A call fails with `Fatal { reason: Quarantined {..} }` exactly when
 the constructors it reads

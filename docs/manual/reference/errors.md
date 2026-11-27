@@ -44,7 +44,7 @@ define fn shout (t: Text) -> Text = host "shout" version "1.0" deterministic
 $ adtb --create --schema migrations/0001.adt --schema migrations/0002.adt shelter.db
 adtb> insert pets.Cat { name: "tom", lives: 9 }
 adtb> insert pets.Cat { name: "tom", lives: 3 }
-`shelter::pets` already holds a row with key `pets.key("tom")`
+`shelter::pets` would hold two rows with key `pets.key("tom")`
 adtb> \q
 ```
 
@@ -88,7 +88,7 @@ fn main() {
 ```
 
 ```text
-`shelter::pets` already holds a row with key `pets.key("tom")`
+`shelter::pets` would hold two rows with key `pets.key("tom")`
 Rejected { reason: KeyViolation { relation: "shelter::pets", key: "pets.key(\"tom\")" } }
 shelter::pets holds pets.key("tom")
 ```

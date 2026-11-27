@@ -42,7 +42,7 @@ adtb> insert members { card: "c2", name: "Bo" }
 adtb> insert books.Shelved { isbn: "111", title: "Dune", shelf: "A1" }
 adtb> insert books.Lent { isbn: "222", title: "Emma", to: members.key("c2") }
 adtb> insert members { card: "c1", name: "Cy" }
-`library::members` already holds a row with key `members.key("c1")`
+`library::members` would hold two rows with key `members.key("c1")`
 ```
 
 ## Key types

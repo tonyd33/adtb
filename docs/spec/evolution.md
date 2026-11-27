@@ -349,7 +349,8 @@ therefore serialized against the migration by the ordinary rules
 
 Some operators require work proportional to the data: building an
 index or unique, validating an added constraint or key, moving rows
-for a split or merge, rebuilding a stored view. A migration holding
+for a split or merge, rebuilding a stored view, and rebuilding and
+validating the dependents of a `redefine fn` (§4.11). A migration holding
 one is staged: it is pending from the moment it is presented until it
 commits version `n` or fails.
 
@@ -992,7 +993,9 @@ names at its end is refused, naming the unique or index.
 
 `unique` may range over deterministic expressions of the row's fields
 as well as fields: `add unique (lower(email)) in identities.EmailPass`
-([derived.md §5.2](derived.md#52-expression-indexes)).
+([derived.md §5.2](derived.md#52-expression-indexes)). An `add unique`
+or `add index` whose expression faults on a stored row is refused with
+`SchemaRefused`, naming the operator and the fault.
 
 `rekey relation r key (f, ...)` changes the key of relation variable
 `r`:
@@ -1052,8 +1055,15 @@ drop fn display_name
 `define fn` adds a schema function; `redefine fn` replaces its body,
 and may change its signature; `drop fn` removes it. Every dependent
 (schema functions, constraints, stored views, computed fields,
-expression indexes) is rechecked at the new version (§3.2). Bundles
-pinned earlier evaluate the definitions of their version (§7.1).
+expression indexes) is rechecked at the new version (§3.2). A
+`redefine fn` that changes the body rebuilds every unique, index and
+stored view whose
+expression calls the function, directly or through another function,
+and validates every constraint, check and domain that calls it against
+the state the migration produces, as an added constraint is validated
+(§6.3); it is a staged change (§3.4). One that leaves the body as it
+was rebuilds and validates nothing. Bundles pinned earlier evaluate
+the definitions of their version (§7.1).
 
 ### 4.12 Constraints
 

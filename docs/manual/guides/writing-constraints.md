@@ -72,7 +72,7 @@ constraint `rooms::fits` is violated by 1 row
 adtb> insert bookings.Held { id: 5, room: rooms.key("cellar"), by: "bo", hour: 10, people: 1 }
 fault `NoSuchRow`
 adtb> insert bookings.Held { id: 1, room: rooms.key("attic"), by: "cy", hour: 11, people: 1 }
-`rooms::bookings` already holds a row with key `bookings.key(1)`
+`rooms::bookings` would hold two rows with key `bookings.key(1)`
 adtb> \q
 ```
 

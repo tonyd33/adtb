@@ -591,7 +591,7 @@ impl fmt::Display for RejectReason {
                 write!(f, "constraint `{constraint}` is violated by {rows} row{s}")
             }
             R::KeyViolation { relation, key } => {
-                write!(f, "`{relation}` already holds a row with key `{key}`")
+                write!(f, "`{relation}` would hold two rows with key `{key}`")
             }
             R::KeyChanged { relation } => {
                 write!(f, "a write changes the key of a row of `{relation}`")

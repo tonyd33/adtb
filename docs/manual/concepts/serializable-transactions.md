@@ -85,7 +85,7 @@ adtb> transact
   ...   update a in accounts where a.name == "ann" set { a with balance: a.balance - 10 }
   ...   update a in accounts where a.name == "ann" set { a with balance: a.balance - 20 }
   ...
-`bank::accounts` already holds a row with key `accounts.key("ann")`
+`bank::accounts` would hold two rows with key `accounts.key("ann")`
 adtb> transact
   ...   update a in accounts where a.name == "ann" set { a with balance: 0 }
   ...   fail "stop here"
@@ -97,8 +97,7 @@ adtb> from a in accounts select a.balance order by a.balance
 adtb> \q
 ```
 
-The message reads like an insert colliding with a row, but it means
-the block's two updates gave `accounts.key("ann")` two new values.
+The block's two updates gave `accounts.key("ann")` two new values.
 Write one update that computes the final value instead.
 
 `fail` ends a block with an error of your own, and nothing it did is

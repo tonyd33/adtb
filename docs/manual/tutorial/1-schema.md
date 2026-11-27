@@ -123,7 +123,7 @@ and checks every write against the keys:
 ```console
 $ adtb shelter.db
 adtb> insert adopters { email: "ann@example.com", name: "Annie", phone: "555-0199" }
-`shelter::adopters` already holds a row with key `adopters.key("ann@example.com")`
+`shelter::adopters` would hold two rows with key `adopters.key("ann@example.com")`
 adtb> insert pets { name: "kit", species: "cat" }
 field `age` of `Pet` is missing, and `pets` has no default for it
 adtb> insert pets { name: "kit", species: "cat", age: "one" }

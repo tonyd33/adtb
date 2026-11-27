@@ -90,7 +90,7 @@ all of them. A name used by a bird cannot be used by a snake:
 <!-- exit 1 -->
 ```console
 $ adtb zoo.db -c 'insert animals.Snake { name: "polly", born: 2000 }'
-`zoo::animals` already holds a row with key `animals.key("polly")`
+`zoo::animals` would hold two rows with key `animals.key("polly")`
 ```
 
 Changing a row's kind is an update whose new value has another

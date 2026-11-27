@@ -144,7 +144,7 @@ them all:
 <!-- exit 1 0 -->
 ```console
 $ adtb shelter.db -c 'insert pets.Dog { name: "fido", age: 2, size: Medium, diet: Normal, breed: "pug" } insert adoptions { pet: pets.key("fido"), adopter: adopters.key("bo@example.com"), fee: 25.00 } insert adoptions { pet: pets.key("fido"), adopter: adopters.key("ann@example.com"), fee: 25.00 }'
-`shelter::adoptions` already holds a row with key `adoptions.key(pets.key("fido"))`
+`shelter::adoptions` would hold two rows with key `adoptions.key(pets.key("fido"))`
 $ adtb shelter.db -c 'from p in pets where p.name == "fido" select p'
 ```
 
