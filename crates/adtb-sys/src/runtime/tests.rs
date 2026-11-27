@@ -185,12 +185,16 @@ fn expected_read(e: &mut Expect<'_>, f: &Faults, offset: u64, n: u64, bad: bool)
     ReadFate::Corrupt { byte, bit }
 }
 
-fn write_kind(fate: &WriteFate) -> &'static str {
+/// Returns the kind of `fate` for a write of `len` bytes at `offset` to a file of `file_len`
+/// bytes, a landing told apart as at its own offset, misdirected within the file, or past its end.
+fn write_kind(fate: &WriteFate, offset: u64, len: u64, file_len: u64) -> &'static str {
     match fate {
         WriteFate::Full => "Full",
         WriteFate::Fail { .. } => "Fail",
         WriteFate::Lost => "Lost",
-        WriteFate::At(_) => "At",
+        WriteFate::At(at) if *at == offset => "At",
+        WriteFate::At(at) if at + len > file_len.max(offset + len) => "Past the end",
+        WriteFate::At(_) => "Misdirected",
     }
 }
 
@@ -241,12 +245,15 @@ fn every_write_meets_its_fate_from_draws_in_the_stated_order() {
             "seed {seed}: {faults:?} @{offset}+{len} of {file_len}"
         );
         assert_eq!(e.asked, script.asked, "seed {seed}: the draws");
-        seen.insert(write_kind(&fate));
+        seen.insert(write_kind(&fate, offset, len, file_len));
     }
+    let fates = ["At", "Fail", "Full", "Lost", "Misdirected", "Past the end"];
+    // The first write past the end is at seed 87, past the cases Miri runs.
+    let reached = if cfg!(miri) { &fates[..5] } else { &fates[..] };
     assert_eq!(
-        ["At", "Fail", "Full", "Lost"].to_vec(),
+        reached.to_vec(),
         seen.into_iter().collect::<Vec<_>>(),
-        "every fate is reached"
+        "the fates the cases reach"
     );
 }
 

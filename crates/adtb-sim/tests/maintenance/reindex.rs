@@ -1,7 +1,7 @@
 //! `reindex`: its job row, rebuilds under writers and across crashes, and the release of a
 //! quarantined index.
 
-use crate::catalog_root::changing_words;
+use crate::catalog_root::changing;
 use adtb_testkit::refused_as;
 use adtb_testkit::scratch::Scratch;
 use adtb_testkit::{common, process};
@@ -173,12 +173,15 @@ fn a_panic_in_each_phase_of_the_job_ends_the_run_and_the_next_open_keeps_every_r
     for phase in PHASES {
         let mut sim = Sim::new(2, Config::default());
         let after = AtomicBool::new(false);
+        let during = Arc::new(Mutex::new(None));
         let run = catch_unwind(AssertUnwindSafe(|| {
             sim.run(|rt| {
                 let db = open_app(rt.clone());
                 seed_rows(&db, 3);
+                let (hooked, seen) = (db.clone(), during.clone());
                 steps::on_reindex(&db, move |p| {
                     if p == phase {
+                        *seen.lock().unwrap() = Some(changing(&hooked));
                         panic!("the injected failure at {phase:?}");
                     }
                 });
@@ -196,12 +199,17 @@ fn a_panic_in_each_phase_of_the_job_ends_the_run_and_the_next_open_keeps_every_r
             !after.load(Ordering::Relaxed),
             "{phase:?}: a call ran past the panic"
         );
+        assert_eq!(
+            Some("change Reindexing".to_owned()),
+            during.lock().unwrap().take(),
+            "{phase:?}: the root during the phase"
+        );
         process::run(&mut sim, |rt| {
             let db = open_app(rt);
             assert_every_row_found(&db, 1..=3, &format!("{phase:?}"));
             assert_eq!(Vec::<String>::new(), verified(&db), "{phase:?}");
             assert_eq!(Vec::<String>::new(), findings(&db), "{phase:?}");
-            assert_eq!(0, changing_words(&db), "{phase:?}");
+            assert_eq!("change None", changing(&db), "{phase:?}");
             db.close().unwrap();
         });
     }

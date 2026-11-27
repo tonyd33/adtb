@@ -97,6 +97,17 @@ impl OsRuntime {
         OsRuntime::start(Files::new(root.into(), None), backend)
     }
 
+    /// Returns a runtime whose paths are relative to the directory `root`, on one io_uring of
+    /// `entries` submission entries where [`OsRuntime::try_new`] admits it, else on a pool of
+    /// `threads` threads.
+    ///
+    /// Panic if `entries` is zero, or if the host refuses io_uring and `threads` is zero.
+    pub fn on_host(root: impl Into<PathBuf>, entries: u32, threads: usize) -> OsRuntime {
+        let root = root.into();
+        OsRuntime::try_new(root.clone(), Backend::Uring { entries })
+            .unwrap_or_else(|_| OsRuntime::new(root, Backend::Pool { threads }))
+    }
+
     /// Returns a runtime whose paths are relative to the directory `root`, injecting `faults`
     /// into every op on its files.
     ///

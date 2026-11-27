@@ -134,13 +134,15 @@ fn a_denied_io_uring_is_refused_at_construction() {
 #[test]
 #[cfg_attr(miri, ignore = "Miri runs neither seccomp nor io_uring_setup")]
 fn the_pool_is_the_fallback_where_io_uring_is_denied() {
-    on_host_thread(|| {
+    let on_pool = on_host_thread(|| {
         deny_io_uring_setup();
-        let backend = Backend::Uring { entries: 8 };
-        OsRuntime::try_new(std::env::temp_dir(), backend)
-            .or_else(|_| OsRuntime::try_new(std::env::temp_dir(), Backend::Pool { threads: 1 }))
-            .expect("the pool is never refused");
+        let rt = OsRuntime::on_host(std::env::temp_dir(), 8, 1);
+        matches!(rt.backend.engine, super::Engine::Pool(_))
     });
+    assert!(
+        on_pool,
+        "the host's runtime under a denied io_uring_setup is not on the pool"
+    );
 }
 
 #[test]

@@ -100,6 +100,7 @@ The real runtime is `adtb_sys::os::OsRuntime` (Linux):
 ```text
 OsRuntime::try_new(root, backend) -> Result<OsRuntime, Unavailable>   // paths are relative to root
 OsRuntime::new(root, backend) -> OsRuntime                            // panics where try_new errs
+OsRuntime::on_host(root, entries, threads) -> OsRuntime               // Uring where try_new admits it, else Pool
 enum Backend { Pool { threads }, Uring { entries } }
 enum Unavailable { Refused(io::Error), Missing(op) }
 ```
@@ -108,9 +109,9 @@ A caller picks the backend at construction. `Backend::Uring` needs
 Linux 5.15 or later; `try_new` refuses it with `Unavailable` when the
 host has no io_uring, denies `io_uring_setup` (a sandbox or
 `kernel.io_uring_disabled`), or lacks one of the operations it runs.
-`Backend::Pool` is never refused. A caller that wants io_uring where
-the host allows it tries `Uring` first and falls back to `Pool` on
-`Unavailable`; nothing falls back after construction.
+`Backend::Pool` is never refused. `on_host` tries `Uring` first and
+falls back to `Pool` on any `Unavailable`; nothing falls back after
+construction.
 
 Both backends meet every postcondition below and open every file with
 the same direct I/O flags, so the same alignment rules hold: where the

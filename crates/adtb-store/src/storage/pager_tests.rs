@@ -768,6 +768,8 @@ struct Tally {
     torn: usize,
     /// The writes, forces and allocations the faults failed.
     failed: usize,
+    /// The writes of the data file the faults failed.
+    failed_page_writes: usize,
     /// Findings, refused page reads and refused opens.
     damage: usize,
     /// Each acknowledged commit a round allowed lost, by seed, round and id.
@@ -930,6 +932,9 @@ fn crash_rounds(tally: &mut Tally, seed: u64, fault: Fault, layout: Layout) {
     for line in sim.trace().lines() {
         tally.torn += usize::from(line.starts_with("crash torn"));
         tally.failed += usize::from(line.starts_with("fault fail"));
+        tally.failed_page_writes += usize::from(
+            line.starts_with("fault fail write") && line.contains(&format!(" {NAME:?} ")),
+        );
     }
     for (round, v) in out.allowed() {
         if let Violation::Lost(x) = v {
@@ -1040,14 +1045,15 @@ fn os_rounds(tally: &mut Tally, backend: Backend, fault: Fault, shape: Shape, se
 ///
 /// A real device runs no failing fault under threads: the failure ends the host process from
 /// the worker thread it reaches. Torn writes run only on the simulator without atomic page writes,
-/// where a write can be wider than its atomic unit.
+/// where a write can be wider than its atomic unit. That leaves 26 cells on the simulator and 10
+/// on a real device.
 fn every_cell(device: Device) {
     let (rounds, shapes) = match device {
         Simulated => (4, &Shape::ALL[..]),
         Pool | Uring => (6, &[Plain, Atomic, Threaded][..]),
     };
     let real = device != Simulated;
-    let mut refused = 0;
+    let (mut refused, mut ran) = (0, 0);
     for &shape in shapes {
         for fault in Fault::ALL {
             let tears = matches!(fault, Torn | TornAll);
@@ -1063,8 +1069,10 @@ fn every_cell(device: Device) {
                 floors.served = REAL_CELL_SERVED;
             }
             refused += crash_row(device, fault, shape, start..start + 1, floors).refused;
+            ran += 1;
         }
     }
+    assert_eq!(if real { 10 } else { 26 }, ran, "{device:?}: the cells run");
     if real {
         assert_reached(
             &format!("{device:?}: pages refused"),
@@ -1108,12 +1116,14 @@ fn crashes_with_atomic_page_writes_lose_nothing() {
 
 #[test]
 fn a_failed_write_under_atomic_page_writes_loses_nothing() {
-    crash_row(Simulated, Failed, Atomic, 10257..10258, floors(1, 0, 0));
+    let t = crash_row(Simulated, Failed, Atomic, 10257..10258, floors(1, 0, 0));
+    assert_reached("a failed write of the data file", t.failed_page_writes, 1);
 }
 
 #[test]
 fn a_failed_write_of_threads_under_atomic_page_writes_loses_nothing() {
-    crash_row(Simulated, Failed, Everything, 10451..10452, floors(1, 0, 0));
+    let t = crash_row(Simulated, Failed, Everything, 10451..10452, floors(1, 0, 0));
+    assert_reached("a failed write of the data file", t.failed_page_writes, 1);
 }
 
 #[test]

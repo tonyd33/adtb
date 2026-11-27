@@ -431,7 +431,8 @@ fn found(lsn: Lsn, problem: LogProblem) -> LogFinding {
 }
 
 /// Space: each kind of block past the last accepted batch, a gap, a skipped sequence number and
-/// an unreadable segment, each scanned for recovery, and for verify but the last three.
+/// an unreadable segment, each scanned for recovery, and for verify but the last two. Verify
+/// resumes past a gap at the next batch's first block.
 #[test]
 fn a_scan_accepts_whole_batches_in_sequence_and_stops_or_reports_at_the_rest() {
     use LogProblem::{Damaged, Gap, Stale, Unreadable};
@@ -492,7 +493,13 @@ fn a_scan_accepts_whole_batches_in_sequence_and_stops_or_reports_at_the_rest() {
         fatal: Some(gap),
         ..ended(vec![(s[0], 3)], s[1], vec![gap])
     };
-    row("a batch after a bad one", img, stopped, None);
+    let mut findings = vec![found(s[1], Damaged), gap];
+    findings.sort();
+    let resumed = Scanned {
+        resumed: vec![1],
+        ..ended(vec![(s[0], 3), (s[2], 2)], s[1], findings)
+    };
+    row("a batch after a bad one", img, stopped, Some(resumed));
 
     let (mut img, s) = image(&[2]);
     let at = s[1].0 as usize;
@@ -538,7 +545,7 @@ fn a_scan_accepts_whole_batches_in_sequence_and_stops_or_reports_at_the_rest() {
     };
     row("an unreadable segment", img, stopped, None);
 
-    assert_eq!(13, got.len());
+    assert_eq!(14, got.len());
     assert_eq!(want, got);
 }
 

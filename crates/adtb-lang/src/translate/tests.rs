@@ -1334,7 +1334,7 @@ fn replayed(cases: &[(Vec<String>, Model)]) -> Vec<Result<Source, signature::Rep
 const THREE_STRIDE: usize = 8;
 
 #[test]
-fn a_pinned_insert_translates_across_every_generated_history_of_two_relations() {
+fn a_pinned_insert_translates_across_the_sampled_generated_histories_of_two_relations() {
     let pinned = checked(&[PIN]);
     let body = "txn put_x () -> I64 =
   transact

@@ -203,7 +203,7 @@ fn reopen(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (bool, u64) {
 const CREATE_CRASHES: u64 = 8;
 
 #[test]
-fn a_crash_at_every_flush_during_create_reopens_to_a_whole_catalog() {
+fn a_crash_at_spread_flushes_during_create_reopens_to_a_whole_catalog() {
     let seed = 2;
     let (sim, start) = created(seed);
     let recording = sim.recording();

@@ -384,8 +384,8 @@ of runtime `rt`.
 
 Postconditions:
 
-- `Database::open` runs on `Backend::Uring` where `OsRuntime::try_new`
-  admits it, else on `Backend::Pool`
+- `Database::open` runs on the runtime `OsRuntime::on_host` returns:
+  `Backend::Uring` where `OsRuntime::try_new` admits it, else `Backend::Pool`
   ([runtime.md §2](runtime.md#2-io-interface)).
 - An open with `options.create` that creates the file and then fails
   removes the file and its log, and leaves nothing behind; an open of

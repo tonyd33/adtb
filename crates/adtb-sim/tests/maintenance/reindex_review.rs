@@ -3,7 +3,7 @@
     reason = "drives real threads and clocks against a real file; removing it needs these races on the simulator"
 )]
 
-use crate::catalog_root::changing_words;
+use crate::catalog_root::changing;
 use adtb_testkit::process;
 use adtb_testkit::refused_as;
 use adtb_testkit::scratch::Scratch;
@@ -1790,6 +1790,11 @@ fn a_panic_inside_the_swap_ends_the_run_and_the_next_open_leaves_a_clean_file() 
                     *before.lock().unwrap() = t.allocated().unwrap();
                 }
                 if p == Reindex::Swap {
+                    assert_eq!(
+                        "change Reindexing",
+                        changing(&w),
+                        "the root during the swap"
+                    );
                     let was = before.lock().unwrap().clone();
                     let new: Vec<_> = t
                         .allocated()
@@ -1821,7 +1826,7 @@ fn a_panic_inside_the_swap_ends_the_run_and_the_next_open_leaves_a_clean_file() 
             Vec::<String>::new(),
             api::printed(db.testing().verify_holding().unwrap())
         );
-        assert_eq!(0, changing_words(&db));
+        assert_eq!("change None", changing(&db));
         for i in 1..=3 {
             assert_eq!(
                 vec![i.to_string()],

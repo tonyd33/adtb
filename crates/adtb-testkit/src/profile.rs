@@ -39,15 +39,12 @@ pub fn share(seeds: Range<u64>, count: usize) -> usize {
     count * kept.min(all) as usize / all as usize
 }
 
-/// Returns up to `most` of `items`, evenly spread and holding both ends.
+/// Returns `most` of `items` in order, all of them when they are fewer, evenly spread: both ends
+/// when `most` is at least two, the first alone when it is one, and none when it is zero.
 pub fn spread<T: Copy>(items: &[T], most: u64) -> Vec<T> {
     let len = items.len() as u64;
     if len <= most || most < 2 {
-        return items
-            .iter()
-            .copied()
-            .take(most.max(len.min(1)) as usize)
-            .collect();
+        return items.iter().copied().take(most as usize).collect();
     }
     (0..most)
         .map(|i| items[(i * (len - 1) / (most - 1)) as usize])
@@ -61,4 +58,31 @@ pub fn assert_reached(what: &str, count: usize, floor: usize) {
         count >= floor,
         "{what}: reached {count} times, under the floor of {floor}"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spread;
+
+    #[test]
+    fn a_spread_keeps_order_both_ends_and_at_most_its_count_over_every_small_input() {
+        for len in 0..12usize {
+            let items: Vec<usize> = (0..len).collect();
+            for most in 0..14u64 {
+                let got = spread(&items, most);
+                let want = len.min(most as usize);
+                assert_eq!(want, got.len(), "{len} items, most {most}: {got:?}");
+                assert!(
+                    got.windows(2).all(|w| w[0] < w[1]),
+                    "{len}, {most}: {got:?}"
+                );
+                if want >= 1 {
+                    assert_eq!(Some(&0), got.first(), "{len}, {most}: {got:?}");
+                }
+                if want >= 2 {
+                    assert_eq!(Some(&(len - 1)), got.last(), "{len}, {most}: {got:?}");
+                }
+            }
+        }
+    }
 }

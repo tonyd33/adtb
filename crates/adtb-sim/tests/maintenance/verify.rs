@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use adtb::key::{CtorId, Entry, Tid, Value};
 use adtb::runtime::Threads;
@@ -930,13 +930,15 @@ fn writes(db: &Database<SimRuntime>, text: &str) -> bool {
     }
 }
 
-/// Run writers on `db` until `body` ends or a finding stops them. Each updates, inserts, retags
-/// and deletes its own rows.
-fn with_writers(rt: &SimRuntime, db: &Database<SimRuntime>, body: impl FnOnce()) {
+/// Run writers on `db`, and `body` once as many of their statements as there are writers have
+/// ended, until `body` ends or a finding stops them. Each updates, inserts, retags and deletes its
+/// own rows. Returns how many of their statements ended while `body` ran.
+fn with_writers(rt: &SimRuntime, db: &Database<SimRuntime>, body: impl FnOnce()) -> usize {
     let stop = Arc::new(AtomicBool::new(false));
+    let ran = Arc::new(AtomicUsize::new(0));
     let workers: Vec<_> = (0..3i64)
         .map(|w| {
-            let (rt2, db, stop) = (rt.clone(), db.clone(), stop.clone());
+            let (rt2, db, stop, ran) = (rt.clone(), db.clone(), stop.clone(), ran.clone());
             rt.spawn(&format!("writer {w}"), move || {
                 let mut n = 0i64;
                 while !stop.load(Ordering::Relaxed) {
@@ -948,17 +950,20 @@ fn with_writers(rt: &SimRuntime, db: &Database<SimRuntime>, body: impl FnOnce())
                     if !writes(&db, &text) {
                         return;
                     }
+                    ran.fetch_add(1, Ordering::Relaxed);
                     let renamed = format!(
                         r#"update u in users where key u == users.key({row}) set User {{ u with name: "r{row}" }}"#
                     );
                     if !writes(&db, &renamed) {
                         return;
                     }
+                    ran.fetch_add(1, Ordering::Relaxed);
                     if n % 3 == 0 {
                         let gone = format!("delete i in identities where key i == identities.key({row})");
                         if !writes(&db, &gone) || !writes(&db, "vacuum identities") {
                             return;
                         }
+                        ran.fetch_add(2, Ordering::Relaxed);
                     }
                     n += 1;
                     rt2.yield_now();
@@ -966,20 +971,27 @@ fn with_writers(rt: &SimRuntime, db: &Database<SimRuntime>, body: impl FnOnce())
             })
         })
         .collect();
+    while ran.load(Ordering::Relaxed) < workers.len() {
+        rt.yield_now();
+    }
+    let before = ran.load(Ordering::Relaxed);
     body();
+    let during = ran.load(Ordering::Relaxed) - before;
     stop.store(true, Ordering::Relaxed);
     for t in workers {
         rt.join(t);
     }
+    during
 }
 
 #[test]
 fn a_run_under_concurrent_writers_finds_nothing_when_nothing_is_wrong() {
+    let mut during = 0;
     for seed in adtb_testkit::seeds::sweep(0..3) {
         stressed(seed, |rt| {
             let db = open_stressed(rt.clone());
             seed_app(&db);
-            with_writers(&rt, &db, || {
+            during += with_writers(&rt, &db, || {
                 let got = verified(&db, None);
                 assert_eq!(Vec::<String>::new(), got, "seed {seed}");
             });
@@ -987,15 +999,18 @@ fn a_run_under_concurrent_writers_finds_nothing_when_nothing_is_wrong() {
             assert!(marks.is_empty(), "seed {seed}: {marks:?}");
         });
     }
+    let floor = adtb_testkit::seeds::share(0..3, 3);
+    adtb_testkit::seeds::assert_reached("a write during a run", during, floor);
 }
 
 #[test]
 fn a_run_under_concurrent_writers_finds_exactly_the_one_fault_planted() {
+    let mut during = 0;
     for seed in adtb_testkit::seeds::sweep(100..103) {
         stressed(seed, |rt| {
             let db = open_stressed(rt.clone());
             seed_app(&db);
-            with_writers(&rt, &db, || {
+            during += with_writers(&rt, &db, || {
                 plant_orphan(&db, "app::users", "User");
                 let got = verified(&db, None);
                 assert_eq!(1, got.len(), "seed {seed}: {got:?}");
@@ -1003,6 +1018,8 @@ fn a_run_under_concurrent_writers_finds_exactly_the_one_fault_planted() {
             });
         });
     }
+    let floor = adtb_testkit::seeds::share(100..103, 3);
+    adtb_testkit::seeds::assert_reached("a write during a run", during, floor);
 }
 
 #[test]
@@ -1092,12 +1109,15 @@ fn a_running_verify_has_a_job_row_and_a_finished_one_none() {
 
 #[test]
 fn repeated_runs_find_nothing_while_writers_delete_and_vacuum() {
+    let mut during = 0;
     for seed in adtb_testkit::seeds::sweep(300..302) {
         stressed(seed, |rt| {
             let db = open_stressed(rt.clone());
             seed_app(&db);
             let stop = Arc::new(AtomicBool::new(false));
-            let (rt2, writer, stopped) = (rt.clone(), db.clone(), stop.clone());
+            let rounds = Arc::new(AtomicUsize::new(0));
+            let (rt2, writer, stopped, done) =
+                (rt.clone(), db.clone(), stop.clone(), rounds.clone());
             let worker = rt.spawn("churn", move || {
                 let opts = CallOptions::default();
                 let mut n = 0i64;
@@ -1116,18 +1136,23 @@ fn repeated_runs_find_nothing_while_writers_delete_and_vacuum() {
                     );
                     writer.query_text(&gone, &[], &opts).expect("deletes");
                     writer.query_text("vacuum users", &[], &opts).expect("vacuums");
+                    done.fetch_add(1, Ordering::Relaxed);
                     n += 1;
                     rt2.yield_now();
                 }
             });
+            let before = rounds.load(Ordering::Relaxed);
             for round in 0..4 {
                 let got = verified(&db, Some("users"));
                 assert_eq!(Vec::<String>::new(), got, "seed {seed} round {round}");
             }
+            during += rounds.load(Ordering::Relaxed) - before;
             stop.store(true, Ordering::Relaxed);
             rt.join(worker);
         });
     }
+    let floor = adtb_testkit::seeds::share(300..302, 2);
+    adtb_testkit::seeds::assert_reached("a delete and vacuum during the runs", during, floor);
 }
 
 const BILLING: &str = r"module billing
@@ -1315,7 +1340,8 @@ fn a_vacuum_during_the_index_phase_leaves_no_false_orphan() {
             assert_eq!(Vec::<String>::new(), got, "seed {seed}");
         });
     }
-    adtb_testkit::seeds::assert_reached("a vacuum begun in the index phase", during, 3);
+    let floor = adtb_testkit::seeds::share(0..4, 3).max(1);
+    adtb_testkit::seeds::assert_reached("a vacuum begun in the index phase", during, floor);
 }
 
 #[test]
@@ -1554,6 +1580,7 @@ fn a_fault_planted_in_each_kind_of_index_is_a_missing_finding() {
 
 #[test]
 fn a_run_under_writers_of_expression_and_path_indexes_finds_nothing() {
+    let mut during = 0;
     for seed in adtb_testkit::seeds::sweep(400..402) {
         stressed(seed, |rt| {
             let options = adtb::OpenOptions {
@@ -1562,9 +1589,10 @@ fn a_run_under_writers_of_expression_and_path_indexes_finds_nothing() {
             };
             let db = Database::open_in(rt.clone(), NAME, &Log::new([BILLING]), &options).unwrap();
             let stop = Arc::new(AtomicBool::new(false));
+            let rounds = Arc::new(AtomicUsize::new(0));
             let workers: Vec<_> = (0..3i64)
                 .map(|w| {
-                    let (rt2, d, s) = (rt.clone(), db.clone(), stop.clone());
+                    let (rt2, d, s, done) = (rt.clone(), db.clone(), stop.clone(), rounds.clone());
                     rt.spawn(&format!("writer {w}"), move || {
                         let mut n = 0i64;
                         while !s.load(Ordering::Relaxed) {
@@ -1589,13 +1617,16 @@ fn a_run_under_writers_of_expression_and_path_indexes_finds_nothing() {
                                 run_text(&d, &format!("delete {target}"));
                                 run_text(&d, "vacuum invoices");
                             }
+                            done.fetch_add(1, Ordering::Relaxed);
                             n += 1;
                             rt2.yield_now();
                         }
                     })
                 })
                 .collect();
+            let before = rounds.load(Ordering::Relaxed);
             let got = verified(&db, None);
+            during += rounds.load(Ordering::Relaxed) - before;
             stop.store(true, Ordering::Relaxed);
             for t in workers {
                 rt.join(t);
@@ -1603,6 +1634,8 @@ fn a_run_under_writers_of_expression_and_path_indexes_finds_nothing() {
             assert_eq!(Vec::<String>::new(), got, "seed {seed}");
         });
     }
+    let floor = adtb_testkit::seeds::share(400..402, 2);
+    adtb_testkit::seeds::assert_reached("a writer's round during a run", during, floor);
 }
 
 #[test]
@@ -1666,6 +1699,8 @@ fn findings_survive_a_crash_and_a_later_migration() {
 #[test]
 fn a_file_after_a_crash_of_writers_and_vacuums_holds_clean() {
     crash::silence_fatal_panics();
+    let mut kept = 0;
+    let rounds = AtomicUsize::new(0);
     for seed in adtb_testkit::seeds::sweep(0..5) {
         let config = Config {
             faults: Faults {
@@ -1678,25 +1713,25 @@ fn a_file_after_a_crash_of_writers_and_vacuums_holds_clean() {
         let open =
             |rt| Database::open_in(rt, NAME, &Log::new([BILLING]), &open::options(2)).unwrap();
         process::run(&mut sim, |rt| open(rt).close().unwrap());
-        sim.crash_at(sim.now() + crash::crash_after(seed, 1, 2_000, 300_000));
         let outcome = crash::run_process(
             &mut sim,
             Box::new(|rt| {
-                let db = open(rt);
+                let db = open(rt.clone());
+                rt.crash_after(crash::crash_after(seed, 1, 2_000, 300_000));
                 let big = "x".repeat(30_000);
-                let o = CallOptions::default();
                 let mut n = 0i64;
                 loop {
                     let t = format!(
                         r#"insert invoices {{ id: invoices.key({n}), status: Draft, email: "A{n}", n: {n}, score: 1.5, note: "{big}" }}"#
                     );
-                    db.query_text(&t, &[], &o).ok();
+                    run_text(&db, &t);
                     let gone = format!(
                         "delete i in invoices where key i == invoices.key({})",
                         n / 2
                     );
-                    db.query_text(&gone, &[], &o).ok();
-                    db.query_text("vacuum invoices", &[], &o).ok();
+                    run_text(&db, &gone);
+                    run_text(&db, "vacuum invoices");
+                    rounds.fetch_add(1, Ordering::Relaxed);
                     n += 1;
                 }
             }),
@@ -1707,9 +1742,13 @@ fn a_file_after_a_crash_of_writers_and_vacuums_holds_clean() {
             assert_eq!(Vec::<String>::new(), verified(&db, None), "seed {seed}");
             let file = api::printed(db.testing().verify_holding().unwrap());
             assert_eq!(Vec::<String>::new(), file, "seed {seed}");
+            kept += api::query(&db, "from i in invoices select i.n").len();
             db.close().unwrap();
         });
     }
+    let rounds = rounds.load(Ordering::Relaxed);
+    adtb_testkit::seeds::assert_reached("a round before the crash", rounds, 1);
+    adtb_testkit::seeds::assert_reached("an invoice kept across the crash", kept, 1);
 }
 
 const ROWS_LOG: &str = "module app

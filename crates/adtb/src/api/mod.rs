@@ -676,14 +676,7 @@ impl Database<adtb_sys::os::OsRuntime> {
 /// on a pool of `workers` threads.
 #[cfg(target_os = "linux")]
 fn os_runtime(dir: &std::path::Path, workers: usize) -> adtb_sys::os::OsRuntime {
-    use adtb_sys::os::{Backend, OsRuntime};
-    OsRuntime::try_new(
-        dir,
-        Backend::Uring {
-            entries: URING_ENTRIES,
-        },
-    )
-    .unwrap_or_else(|_| OsRuntime::new(dir, Backend::Pool { threads: workers }))
+    adtb_sys::os::OsRuntime::on_host(dir, URING_ENTRIES, workers)
 }
 
 /// Open the database file at `path` as the one process that holds it and run `verify` over it,
